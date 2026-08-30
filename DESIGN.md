@@ -3,6 +3,21 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 5 — reworked after Codex's fourth review requested changes on
+`e0f1347`. One finding, and it lands on this design's own deciding criterion:
+§6.2 picked a transport by **what it retains**, then rev 4 moved the state into a
+SQLite-backed Durable Object without checking that store's retention. Cloudflare
+keeps a **30-day point-in-time recovery window** over the whole object, on by
+default, with no opt-out — so "an overwrite leaves only the current value", "the
+old key decrypts nothing that still exists" and "deleting the snapshot removes
+the one thing its key could decrypt" were all true of live state and overstated
+as guarantees. New **§6.2.2** states what the window holds, what reaching it
+would take, what the residual actually is, and why the recommendation survives
+it; §6.2, §6.3.1, §9.3, **O5** and §19 are scoped to match, and tasks 20 and 19a
+carry it as acceptance criteria. The retention line is now stated in O5 as the
+one thing only the owner can weigh, because Tailscale is the branch that retains
+nothing at all.
+
 Revision 4 — reworked after Codex's third review requested changes on
 `93e7556`. Its five findings were about mechanisms that could not be built as
 specified, not about prose: §6.2.1/§6.3.1 (the pairing path promised atomic,
@@ -33,7 +48,7 @@ Revision 2 — reworked after Codex requested changes on `02c9126`. Its seven
 findings are answered in §1 (I5/I6), §2, §4 (F5/F6), §6, §7, §8.1/§8.4/§8.5, §9,
 §13, §14a and the task graph.
 
-In both rounds, each place the earlier draft was wrong is called out inline
+In every round, each place the earlier draft was wrong is called out inline
 rather than quietly corrected.
 
 ---
@@ -269,7 +284,7 @@ authenticated, and must not publish the owner's net worth to the internet.
               write token   │  ciphertext only
                     ┌───────▼──────────────┐        ┌──────────┐
                     │  transport (§6)      │◄───────┤  Plaid   │
-                    │  current value only  │ webhook│ webhooks │
+                    │  live: current only  │ webhook│ webhooks │
                     └───────┬──────────────┘  (§8.4)└──────────┘
               read token    │
    ┌────────────────────────▼─────────────────────────────────────┐
@@ -285,8 +300,10 @@ token, never calls Plaid, and cannot mutate anything. That asymmetry is what
 makes the phone safe to lose.
 
 Three properties of that picture are load-bearing and each is defended below:
-the transport holds **only the current value** (§6.2), the phone's credentials
-arrive by **runtime pairing** rather than being compiled in (§6.3), and the two
+the transport **serves only the current value** (§6.2) — over a bounded
+provider-side recovery window that §6.2.2 states rather than hides — the phone's
+credentials arrive by **runtime pairing** rather than being compiled in (§6.3),
+and the two
 directions use **different credentials** — the Mac can write, the phone can only
 read (§6.2).
 
@@ -408,16 +425,17 @@ key.
 
 | Transport | Auth | Free? | Mac asleep? | **What it retains** | Verdict |
 |---|---|---|---|---|---|
-| **Cloudflare Worker + Durable Object** — Mac `PUT`s ciphertext into one DO; phone `GET`s it (KV keeps only the webhook queue, §6.2.1) | Two distinct bearer tokens (write / read), checked in the Worker | 100k Worker requests/day; DO free tier 100k req + 100k rows written/day, 5 GB. We need ~1 write and a handful of reads a day | **Yes** | **Current value only**, by design — an overwrite replaces it | **Recommended** |
-| Tailscale — phone reaches the Mac directly over WireGuard | Tailnet device identity, **plus** the payload key, which *is* the read credential on this branch (§6.3.2); no bearer token anywhere | Personal tier, long-standing | **No** — Mac must be awake | Nothing; there is no third party | Best on pure security; loses availability **and the webhook accelerator** (§6.3.2) |
-| Private GitHub repo (`…-data`) | Fine-grained read-only PAT | Free private repos are mature | Yes | **Every payload ever published**, permanently, by design | **Rejected** — see above |
+| **Cloudflare Worker + Durable Object** — Mac `PUT`s ciphertext into one DO; phone `GET`s it (KV keeps only the webhook queue, §6.2.1) | Two distinct bearer tokens (write / read), checked in the Worker | 100k Worker requests/day; DO free tier 100k req + 100k rows written/day, 5 GB. We need ~1 write and a handful of reads a day | **Yes** | **Application state: the current value only** — an overwrite replaces it. **Provider: a 30-day point-in-time recovery window** over the whole object, on by default, with no documented opt-out — bounded, self-clearing, and reachable only by deploying code to the account (**§6.2.2**) | **Recommended** |
+| Tailscale — phone reaches the Mac directly over WireGuard | Tailnet device identity, **plus** the payload key, which *is* the read credential on this branch (§6.3.2); no bearer token anywhere | Personal tier, long-standing | **No** — Mac must be awake | **Nothing at all** — there is no third party to retain anything, which after §6.2.2 is a real point of difference rather than a formality | Best on pure security; loses availability **and the webhook accelerator** (§6.3.2) |
+| Private GitHub repo (`…-data`) | Fine-grained read-only PAT | Free private repos are mature | Yes | **Every payload ever published**, permanently — and readable with the **same read credential the phone itself carries** | **Rejected** — see above |
 | Public static host (Pages, etc.) | None | Free | Yes | — | **Rejected** — publishes net worth |
 | ntfy / public pubsub free tiers | None or weak | Varies | Yes | — | **Rejected** — no real auth |
 
 **Recommendation: Cloudflare Workers.** It is the only candidate that is
-simultaneously available while the Mac sleeps and free of an accumulating
-corpus, and its free limits sit three orders of magnitude above one user's
-traffic. It costs one new free account (owner-only, §19) and a small Worker —
+simultaneously available while the Mac sleeps and free of an *accumulating*
+corpus — its recovery window is bounded at 30 days and ages out unattended
+(§6.2.2), where Git's grows for as long as the transport runs — and its free
+limits sit three orders of magnitude above one user's traffic. It costs one new free account (owner-only, §19) and a small Worker —
 which, not incidentally, is also the zero-cost webhook receiver §8.4 needs, so
 the second use pays for the setup a second time.
 
@@ -431,9 +449,13 @@ the current payload and the phone's local cache — which do contain the history
 window the curve renders, because the curve has to come from somewhere. What
 they do *not* get is every payload ever published, the ability to publish, any
 Plaid token, or the full history, all of which stay on the Mac. Rotation is then
-real rather than theoretical: re-pairing (§6.3) mints a new key, the next
-publication overwrites the only stored copy, and the old key decrypts nothing
-that still exists.
+real rather than theoretical: re-pairing (§6.3) mints a new key, and the rotate
+replaces the verifier and deletes the snapshot in one transaction, so the old
+key decrypts nothing **the transport will serve**. That is a statement about
+live state, not an erasure: Cloudflare keeps a bounded recovery history that no
+application route can reach and that expires on its own — **§6.2.2** states
+exactly what it holds, what reaching it would take, and why the recommendation
+survives it.
 
 Tailscale remains the stronger choice on pure security and stays a documented
 swap behind the `Publisher` seam. It costs two things: opening the app away from
@@ -505,6 +527,85 @@ that the transport is serving what it published — would have to treat a genuin
 mismatch and a propagation lag identically, which turns the one alert that means
 "someone is tampering" into an alert that fires for nothing. A tamper alert
 nobody trusts is worse than no tamper alert.)*
+
+#### 6.2.2 What Cloudflare retains anyway: the 30-day recovery window
+
+*(From review, and the catch lands on this section's own axis: §6.2 chose a
+transport on **what it retains**, then §6.2.1 picked a store whose retention the
+text never checked. Cloudflare documents that a SQLite-backed Durable Object can
+be restored "to any point in time in the past 30 days", and that this covers the
+**entire embedded database** — the SQL data and the key-value data. It is **on
+by default** for every SQLite-backed object, with no documented opt-out and no
+configurable window. The Free plan offers *only* the SQLite backend (§6.2.1), so
+this is not avoidable by choosing a different one.)*
+
+**Three claims in this document are scoped by that, not deleted:** §6.2's table
+row, §6.2's blast-radius paragraph, and §6.3.1's "deleting the stored object
+removes the one thing its key could still decrypt". Each is true of **live
+application state** — what the transport will serve on any request anyone can
+make — and none is true of Cloudflare's recovery history. That distinction is
+now written into all three rather than implied here.
+
+**What the window contains, precisely.** Everything the object held over 30 days:
+on a once-daily publication, up to ~30 **ciphertexts**, plus the pairing rows.
+The pairing rows are `SHA-256(read_token)` verifiers, never tokens (§6.3.1).
+What is *not* in there, because it is never sent to the transport at all: the
+**payload key** (Mac and phone only), the **read token** itself, the **write
+token** (a Worker secret, not object state), and every Plaid credential. A party
+who reads the entire recovery history and holds nothing else therefore holds
+**bytes they cannot decrypt**.
+
+**What reaching it would take.** The PITR methods — `getCurrentBookmark`,
+`getBookmarkForTime`, `onNextSessionRestoreBookmark` — exist only on
+`ctx.storage` **inside the Durable Object class**, and there is no documented CLI
+or REST route that restores a Durable Object from outside it. So a restore means
+**deploying code into the Worker**, which needs the owner's own Cloudflare
+account login — an owner-only credential this machine never holds (§19), and a
+different and far more powerful thing than the write token the Mac does hold.
+None of the six routes in §16
+calls a PITR method, and **task 20 carries "no route and no handler invokes
+PITR" as an acceptance criterion**, so the application exposes no path to it. A
+stolen phone, holding a revoked read token and no account access, has no path at
+all.
+
+**The residual, named.** Someone holding **both** an old phone's payload key
+**and** the owner's Cloudflare account can recover up to 30 days of daily
+snapshots, and can make a **revoked pairing live again** by restoring an earlier
+bookmark. Three things bound it:
+
+- It is **bounded and self-clearing.** The window is 30 days and it moves;
+  nothing accumulates behind it and no action is needed for it to expire.
+- It needs the **conjunction**. Account access alone yields undecryptable
+  ciphertext; the old phone key alone yields nothing the transport will serve.
+- For the scenario this design actually worries about — a stolen phone — the
+  marginal disclosure is close to nothing, because that phone already holds the
+  rendered history window in cleartext on its own disk (§6.2, blast radius). The
+  genuinely new capability is **pairing resurrection**, and it belongs to whoever
+  compromises the Cloudflare account, not to whoever takes the phone.
+
+**And a restore is not silent**, which is worth stating because it was not
+designed for this and defends it anyway. Rolling the object back to an earlier
+bookmark makes the transport serve an older `seq`, which is exactly the case
+**I6** already refuses: the current phone rejects any payload below its
+`last_seq` and raises a persistent transport-integrity warning, and the Mac's
+next read-back records `MISMATCH` and alerts (§9.3). The restored old snapshot
+also stops being live at the Mac's next publication (§13). So the window in
+which a resurrected pairing could fetch a decryptable old snapshot is bounded by
+the publish interval, and both ends of the pipe say something is wrong.
+
+**Against the transport this replaced**, since retention is the criterion: Git
+retains every payload ever published, **forever**, readable with the **read
+credential the phone itself carries**. Cloudflare retains **30 days**, reachable
+only by **deploying code to the account**. Unbounded vs. bounded on one axis,
+application credential vs. control plane on the other; both point the same way.
+The recommendation stands — but it now stands on this paragraph instead of on
+"current value only".
+
+**The branch that retains nothing is Tailscale**, because there is no third
+party to retain anything (§6.3.2). After this section that is a genuine
+distinguishing property, so it is stated in **O5** where the choice is made: an
+owner who wants no provider-side window anywhere in the picture has exactly one
+option here, and it costs Mac-must-be-awake and the Plaid webhook accelerator.
 
 #### 6.3 Provisioning the phone's secrets: pairing, not compilation
 
@@ -583,7 +684,10 @@ so that no step can leave the *old* token working:
    walks to their desk. This claim is only true because of the store: every
    `GET /snapshot` is a request to the same single-threaded object, serialized
    after the transaction that revoked the old verifier — there is no second
-   replica that could still be answering with the old one.
+   replica that could still be answering with the old one. *(Locked out of
+   everything the transport will serve, which is every request any phone can
+   make; Cloudflare's 30-day recovery history is a separate layer with no route
+   into it — §6.2.2.)*
 4. Publish immediately under the new key with the next `seq`. If this fails, the
    pairing is still correct — the phone pairs and shows "no data yet" until the
    publish job retries on the next tick (§13), and `doctor` reports the
@@ -621,6 +725,13 @@ stolen phone, and it holds the old payload key. Revoking its token stops it
 fetching *new* ciphertext; deleting the stored object removes the one thing its
 key could still decrypt if it kept fetching. Both halves are needed, which is
 why they are one route.
+
+What that deletion does **not** do is erase Cloudflare's recovery history
+(§6.2.2). The honest form of the claim: the rotate ends the stolen phone's
+access to anything the transport will serve, and the 30-day window behind it
+ages out unattended and is unreachable without deploying code to the owner's
+account. Deletion here is a revocation, not a shredder, and the runbook (§19
+step 3a) says so where the owner would otherwise assume otherwise.
 
 `networth revoke` is the same path without minting: it is the lost-phone
 command, and it deliberately does not require a replacement phone to be present.
@@ -1349,8 +1460,9 @@ Rules the implementation must hold:
 
 AES-GCM proves a payload is authentic. It does not prove it is *current*: an old
 ciphertext is authentic forever. Anyone able to write to the transport — or a
-transport that silently serves a cached older object — could roll the phone back
-to a comfortable old number that verifies perfectly.
+transport that silently serves a cached older object, or a provider-side restore
+that rolls the whole object back (§6.2.2) — could roll the phone back to a
+comfortable old number that verifies perfectly.
 
 - Every publication carries a **monotonic `seq`** (§7), inside the authenticated
   data along with `pairing_id`, `schema_version` and `published_at`, so none of
@@ -1889,7 +2001,7 @@ project; it applies here.
 | O2 | Does the Trial plan actually reach the in-scope brokerages via OAuth? (**F4** — go/no-go) | owner, via dashboard | **the Production-Link path: tasks 07, 07a, 08 and everything downstream of a real Item** (09, 12b, 26) — see below |
 | O3 | How many distinct card-issuer logins? | owner | Item budget sizing |
 | O4 | Real property: purchase price only, or a revision log? (recommend: revision log — nearly free) | owner | task 13 |
-| O5 | Transport: **Cloudflare Worker** (recommended — current value only, works while the Mac sleeps, **keeps the webhook accelerator**) or **Tailscale** (no third party at all and revocation is a local transaction, but the Mac must be awake **and Plaid webhooks become impossible**, §6.3.2)? Both branches are now fully specified — pairing, rotation, revocation and lost-phone included | owner | tasks 20, 24 (and 12a, which **exists only on the Cloudflare branch**) |
+| O5 | Transport: **Cloudflare Worker** (recommended — serves the current value only, works while the Mac sleeps, **keeps the webhook accelerator**; accepts a **30-day provider-side recovery window** that cannot be turned off and that only an account compromise could reach, §6.2.2) or **Tailscale** (no third party, so **nothing is retained anywhere**, and revocation is a local transaction — but the Mac must be awake **and Plaid webhooks become impossible**, §6.3.2)? Both branches are fully specified — pairing, rotation, revocation and lost-phone included. **The retention line is the one thing only the owner can weigh**, because it trades a bounded window at a third party against availability | owner | tasks 20, 24 (and 12a, which **exists only on the Cloudflare branch**) |
 | O6 | Android only, or iOS too? iOS has no sideloading story, which changes delivery entirely | owner | tasks 21, 24 |
 | O7 | Create a free Cloudflare account? It is the one new account this design adds, and it disappears if O5 picks Tailscale. The Workers Free plan covers everything used here — Worker requests, **SQLite-backed Durable Objects**, and KV — and over-limit operations **fail rather than bill** (§6.2.1) | owner | tasks 20, 12a |
 | O8 | **Where do backups land?** A destination in a separate failure domain is a gate on the first Production Link (§14a.1). External disk / Time Machine volume / another machine over Tailscale — or an explicit decision to link Items without one | owner | tasks 03a, and through it 08 |
@@ -1976,13 +2088,29 @@ the phone with no way to decrypt anything.*
    secret was ever compiled into the APK (§6.3).
 4. Re-run `networth pair` any time to rotate: the previous phone stops reading
    **immediately**, before the new one has scanned anything, and the stored
-   snapshot is deleted so the old key has nothing left to decrypt. No rebuild.
+   snapshot is deleted so the old key has nothing left to fetch. No rebuild.
 5. **Phone lost or stolen:** run `networth revoke`. Same lockout, no replacement
-   phone needed. The Mac keeps publishing; nobody can read.
+   phone needed. The Mac keeps publishing; nobody can read. **Know the one
+   limit** (§6.2.2): Cloudflare keeps a 30-day recovery copy of the object that
+   cannot be switched off, so "deleted" means the transport will never serve it
+   again — not that it is shredded. Nothing in the app or on the phone can reach
+   that copy; it would take your Cloudflare account login and a code deploy, and
+   it expires by itself within 30 days. If a phone is stolen *and* you think the
+   Cloudflare account is compromised too, change that account's password and
+   rotate the Worker's write token (step 7) — that is the case the window
+   actually matters in.
 6. If `networth pair` ever reports **pairing uncertain** (it lost the connection
    mid-rotation and cannot know whether it landed), publishing is suspended on
    purpose: just run it again. Re-running is correct whichever way the previous
    attempt resolved (§6.3.1).
+7. **Rotating the write token** — owner-only, because no route can change it
+   (§6.3.1) and that is deliberate. Generate a new random value, set it on the
+   Worker with `wrangler secret put`, and write the same value into
+   `~/agents/secrets/networth-transport.env`. Do both, back to back: while the
+   two disagree the Mac cannot publish and `doctor` reports the publication
+   overdue (§6.4) — which is also how you confirm the rotation took. Not routine
+   maintenance; this is the response to a suspected Cloudflare account
+   compromise (step 5).
 
 **Step 3b — if O5 chooses Tailscale** (no account to create; **O7** disappears)
 1. Have the Mac and the phone on the same tailnet — the owner already runs
