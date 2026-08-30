@@ -3,6 +3,47 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 7 — reworked after Codex's sixth review requested changes on
+`a65a5e0`. Three findings, and the first two are again **defects in what rev 6
+added while fixing rev 5** — a new check that misfires on ordinary operation, and
+a credential bracket that closed one of the two doors it named. The third is
+older and larger: a guarantee this document has been making since rev 1 without
+saying whom it is against.
+
+- **The pre-write check called normal operation an attack.** It compared the live
+  object to the *last `publication` row*, but that table deliberately records
+  failed attempts, and `rotate`/`revoke` deliberately delete the snapshot — so a
+  write that failed harmlessly read as `ROLLBACK`, every rotation read as an
+  unexplained deletion, and a `PUT` whose response was lost read as `FOREIGN`,
+  the gravest alert here, aimed at the Mac's own write. §9.3 now compares against
+  an **expected-live set** built from confirmed *and* unconfirmed attempts plus
+  explicit local deletes, and identifies its own bytes by
+  `payload_sha256 = SHA-256(nonce ‖ ciphertext)` rather than by `seq`, which
+  anything able to write can forge. `publication.outcome` becomes
+  `LANDED | UNCONFIRMED`: the Mac cannot tell "did not apply" from "applied,
+  answer lost", so it stops pretending it can. The one case that stays ambiguous
+  is named and decided in §9.3 rather than left to the implementation.
+- **`wrangler logout` closes the CLI token, not the browser session that
+  authorised it.** Rev 6 bracketed (a) and treated `wrangler whoami` as proof;
+  Cloudflare keeps a dashboard session on its own terms — **72 hours of
+  inactivity** by default — and that session can redeploy the Worker, which is
+  the access §6.2.2 turns on. §19 step 3a.0 now closes **both** layers:
+  `wrangler login --device` so the browser step happens on another device, and,
+  when it cannot, an explicit sign-out **verified from a second device** (the
+  dashboard will not let you revoke your current session).
+- **"An old number cannot look current" needed a threat boundary, and had
+  none.** AES-256-GCM is symmetric: the tag proves the writer held the payload
+  key, not that it was this Mac. Against §6.2.2's own conjunction — active
+  payload key *plus* control plane — an old total can be resealed under today's
+  `published_at`. §6.2.2 now **decides** the boundary (guaranteed against parties
+  without the active payload key; that conjunction accepted as out of scope) and
+  names the unbuilt remedy, and O5 carries the line to the owner.
+
+Following from the last two together, and worth more than either: **this Mac
+already holds the payload key**, so a Mac that also keeps a standing Cloudflare
+session holds *both* halves of §6.2.2's conjunction at once. The bracket in step
+3a.0 is load-bearing for that section, not hygiene.
+
 Revision 6 — reworked after Codex's fifth review requested changes on
 `1f554cf`. Both findings were **claims rev 5 made while mitigating rev 4's
 finding** — the mitigation was right and the reassurances around it were not:
@@ -13,9 +54,11 @@ finding** — the mitigation was right and the reassurances around it were not:
   phone has **itself seen**, so a lagging phone accepts a restore as new. The
   claim is withdrawn in §6.2.2 and replaced with what actually holds. §9.3 adds
   a **pre-write compare** so the Mac can observe a rollback still live at its
-  next tick, with `ROLLBACK`/`FOREIGN`/`ABSENT` kept distinct — `FOREIGN` means
-  the write token is not exclusively ours, which is a different emergency. What
-  no check can bound is stated plainly: whoever holds the control plane can also
+  next tick, with `ROLLBACK`/`FOREIGN`/`ABSENT` kept distinct. *(Rev 7 corrects
+  two things this bullet said: the comparison basis, and "`FOREIGN` means the
+  write token is not exclusively ours" — a control-plane holder needs no write
+  token.)* What no check can bound is stated plainly: whoever holds the control
+  plane can also
   redeploy the Worker, so checks that run *through* the transport cannot police
   its owner.
 - **"This machine never holds a Cloudflare credential" contradicted the
@@ -25,11 +68,13 @@ finding** — the mitigation was right and the reassurances around it were not:
   operation is bracketed `wrangler login --use-keyring` → operation →
   `wrangler logout` → `wrangler whoami`. Logout invalidates server-side, so the
   bracket is real; staying logged in is offered as an explicit trust-boundary
-  change rather than an unexamined default.
+  change rather than an unexamined default. *(Rev 7: that bracket was half of
+  one — the browser session it opens survives it.)*
 
-The through-line of both: **freshness lives inside the signed payload, not in
+The through-line of both: **freshness lives inside the encrypted payload, not in
 the transport's liveness** — so an undetected rollback can cost a *current*
-number, but cannot make an old one look current.
+number, but cannot make an old one look current *to anyone who does not hold the
+payload key* (the scope rev 7 supplies, §6.2.2).
 
 Revision 5 — reworked after Codex's fourth review requested changes on
 `e0f1347`. One finding, and it lands on this design's own deciding criterion:
@@ -426,10 +471,17 @@ any nonce-reuse boundary.
 **What encryption does not buy: currency.** A valid ciphertext stays valid
 forever, so an old payload replayed by anyone able to write to the transport
 decrypts perfectly — an authentic, stale number, which is precisely this
-product's cardinal sin wearing a signature. That gap is narrowed by `seq` and
-**I6** in §9.3, not by the cipher — and §9.3 states exactly how far, since I6
-measures against what *that phone* has already seen and the Mac's own checks run
-through the transport they are checking.
+product's cardinal sin wearing the cipher's own authenticity tag. That gap is
+narrowed by `seq` and **I6** in §9.3, not by the cipher — and §9.3 states exactly
+how far, since I6 measures against what *that phone* has already seen and the
+Mac's own checks run through the transport they are checking.
+
+**And what the tag does not buy: authorship.** GCM is **symmetric** — one key
+seals and opens — so a valid tag proves the writer held the payload key, nothing
+more. Every freshness claim in this document is therefore scoped to parties
+*without* that key; **§6.2.2 decides that boundary explicitly** and says why the
+alternative (a Mac-only signing key, the phone holding only its public half) is
+named but not built.
 
 #### 6.2 Choosing the transport: the deciding property is what it *retains*
 
@@ -559,19 +611,39 @@ better but still on the machine — and `wrangler logout` **invalidates the toke
 at Cloudflare and deletes the local copy**. "This Mac never holds account
 access" was therefore false as stated.
 
-So the lifecycle is specified rather than assumed (**§19 step 3a.0**): every
-owner `wrangler` operation is bracketed `wrangler login --use-keyring` → do the
-one thing → `wrangler logout` → `wrangler whoami` to confirm. Because logout
-invalidates server-side, that is a real close, not a tidy-up. The accurate claim,
-and the one the rest of this document relies on, is: **account-level access is
-present only during an owner-run operation and is not retained between them.**
-Staying logged in is a legitimate alternative, but it is a *change to the trust
+**And the CLI token is only one of the two doors that login opens.** *(From
+review, one revision later — rev 6 bracketed the token and treated
+`wrangler whoami` as proof the account was closed.)* The default flow signs a
+**browser** in to the Cloudflare dashboard, and that session is a separate
+object from the OAuth token: Cloudflare's logout documentation covers the token
+and Wrangler's stored credentials, while dashboard sessions have their own
+lifetime (**72 hours of inactivity** by default) and their own revocation UI. A
+browser still signed in on this Mac can redeploy the Worker, which is exactly the
+capability the tiering here is about — so `whoami`, which reports only on
+Wrangler, cannot certify it.
+
+So the lifecycle is specified rather than assumed, and it covers **both layers**
+(**§19 step 3a.0**): `wrangler login --device --use-keyring` — the device-code
+grant, so the browser that signs in is on *another* machine — → do the one thing
+→ `wrangler logout` → `wrangler whoami`; and where the browser step has to happen
+here anyway (creating the account is a dashboard action), an explicit sign-out
+**verified from a second device** via My Profile → Sessions, because the
+dashboard will not let you revoke the session you are using. Logout invalidates
+the token server-side and a revoked session is gone server-side, so together that
+is a real close rather than a tidy-up. The accurate claim, and the one the rest
+of this document relies on, is: **account-level access — CLI token and dashboard
+session both — is present only during an owner-run operation and is not retained
+between them.**
+
+Staying signed in is a legitimate alternative, but it is a *change to the trust
 boundary*, not a convenience. This whole section separates an **application
 credential** (the write token, on the Mac) from the **control plane** (owner-only,
-and the only route to §6.2.2's recovery window). A permanent login collapses
-that separation onto one machine: compromising the Mac would then also yield the
-ability to redeploy the Worker and reach the window. The runbook states that
-where the choice is made, rather than leaving it as a default nobody decided.
+and the only route to §6.2.2's recovery window). A permanent login of either kind
+collapses that separation onto one machine: compromising the Mac would then also
+yield the ability to redeploy the Worker and reach the window — and, because the
+Mac holds the payload key as well (§6.1 is symmetric), **both halves of §6.2.2's
+conjunction at once**. The runbook states that where the choice is made, rather
+than leaving it as a default nobody decided.
 
 *(Rejected alternative: keep KV and weaken the claims — "revocation within ~60
 seconds", read-back retried through the propagation window before alerting. It
@@ -615,9 +687,11 @@ who reads the entire recovery history and holds nothing else therefore holds
 `ctx.storage` **inside the Durable Object class**, and there is no documented CLI
 or REST route that restores a Durable Object from outside it. So a restore means
 **deploying code into the Worker**, which needs the owner's own Cloudflare
-account login — a credential this machine holds **only for the duration of an
-owner-run `wrangler` operation and not between them** (§6.2.1, §19 step 3a.0),
-and a different and far more powerful thing than the write token the Mac does
+account login — access this machine holds **only for the duration of an owner-run
+`wrangler` operation and not between them**, provided the bracket closes the
+**browser session** as well as the CLI token (§6.2.1, §19 step 3a.0; rev 6's
+bracket closed only the token, which left a 72-hour dashboard session standing).
+It is a different and far more powerful thing than the write token the Mac does
 hold.
 None of the six routes in §16
 calls a PITR method, and **task 20 carries "no route and no handler invokes
@@ -663,6 +737,50 @@ the Mac, if it is still live at that tick**; and — detected or not — the res
 payload carries its own age, so it ages out on the phone rather than passing for
 current (§9.1). The exposure is a resurrected pairing reading **old ciphertext
 it could already decrypt**, not a stale number presented as fresh.
+
+**Where that last clause stops being true — decided here, because it is a threat
+model choice and not wording to defer.** *(From review.)* The payload is sealed
+with **AES-256-GCM under a key the Mac and the phone both hold** (§6.1).
+Symmetric authentication proves the sealer held that key and nothing else.
+Replay and restore therefore stay honest against anyone who does *not* hold it:
+the only ciphertexts they can serve are ones the Mac already made, carrying the
+`published_at` the Mac sealed into them. But the conjunction named just above
+holds **both** halves, and against an **active** pairing that party can seal an
+old total under today's `published_at` and a higher `seq`; the phone, which
+verifies only the key, takes it. (Against a **revoked** pairing it still fails —
+the phone rejects a foreign `pairing_id`.)
+
+**Decided: freshness is guaranteed against any party without the active payload
+key, and the active-key-plus-control-plane case is out of scope.** That scope is
+not a dodge — it is the party this section exists for. The 30-day window is
+reachable only through the control plane, and the control plane holds no payload
+key. And a party holding **both** halves can already read every number this
+product publishes — the account access serves them the object, the key opens it —
+so what forging *adds* to what they have is misrepresenting one number's **age**
+to the owner's own phone. Stated without softening, because it is a real harm to
+a product whose premise is the honesty of the age: that attack works, and this
+design declines to defend against it at the price of a second key, on the
+grounds that it requires two independent compromises to reach a display.
+
+**With one consequence that decides §19 step 3a.0 rather than merely informing
+it.** The Mac holds the payload key too — §6.1 is symmetric, and `pairing.key_ref`
+lives on this machine so the daily publication can be sealed at all. A Mac that
+*also* keeps a standing Cloudflare credential therefore holds **both halves of
+the conjunction on one machine**, and this residual stops needing two
+independent compromises to reach. That is what makes the login/logout bracket of
+§19 step 3a.0 load-bearing for this section instead of hygiene, and it is why
+that step now closes the browser session as well as the CLI token.
+
+The remedy, if the boundary ever stops being acceptable, is named so the choice
+stays open rather than being rediscovered: a **Mac-only signing key**, with the
+phone holding only the public half, makes the envelope unforgeable without the
+Mac and leaves the payload key doing confidentiality alone. It is deliberately
+not built — it adds a key to mint, escrow, rotate and re-pair for a threat that
+needs the phone's key *and* the account, and the last three revisions of this
+document have been about mechanisms described more confidently than they were
+built.
+**O5 carries the boundary**, so the owner weighs it beside the retention window
+rather than after it.
 
 **Against the transport this replaced**, since retention is the criterion: Git
 retains every payload ever published, **forever**, readable with the **read
@@ -989,7 +1107,18 @@ pairing(id, created_at, key_ref, read_token_ref,   -- refs only, never the mater
 
 publication(                                       -- §6 audit trail
   id, snapshot_id, pairing_id, seq UNIQUE,         -- monotonic, NEVER reset (§6.3.1); replay defence (I6)
-  schema_version, published_at, transport, ok, error,
+  schema_version, published_at, transport,
+  outcome,                                         -- LANDED | UNCONFIRMED (§9.3). A 2xx is the ONLY
+                                                   --   confirmation; a timeout, a dropped connection
+                                                   --   and any non-2xx all stay UNCONFIRMED, because
+                                                   --   the Mac cannot tell "did not apply" from
+                                                   --   "applied, answer lost". "The last successful
+                                                   --   publication" everywhere else means LANDED
+  error,
+  payload_sha256,                                  -- SHA-256(nonce ‖ ciphertext) — identity of OUR
+                                                   --   bytes, over the AEAD output and NOT the JSON
+                                                   --   envelope (§8.4.2's whitespace trap). The
+                                                   --   provenance half of the pre-write check (§9.3)
   prewrite_state,                                  -- MATCH | ROLLBACK | FOREIGN | ABSENT
                                                    --   | UNAVAILABLE (§9.3) — what the transport was
                                                    --   serving BEFORE this write; the only way a
@@ -1606,16 +1735,96 @@ while the Mac is idle is invisible to it:
 The Mac never observed 99, nothing in that sequence looks anomalous to it, and
 the restored value was the one the transport served for most of a day.
 
-So `Publisher` also **reads before it writes**, comparing what the transport is
-serving now against the last `publication` row it recorded:
+So `Publisher` also **reads before it writes**. *What it compares against* is
+the part rev 6 got wrong, so that is specified before the states are.
 
-| Pre-write outcome | Meaning | Response |
+**The last `publication` row is the wrong thing to compare against.** *(From
+review.)* That row records an *attempt*, and `publication` keeps failed attempts
+on purpose because they are audit state. Comparing the live object to it files
+three ordinary timelines as attacks:
+
+- an attempt that **failed without changing anything** leaves the last row at
+  `seq = 101` while the object is still the perfectly correct `100` → read as
+  `ROLLBACK`, though nothing rolled back;
+- **`rotate` and `revoke` delete the snapshot deliberately** (§6.3.1), so the
+  next pre-write read finds nothing → read as a deletion "the Mac did not
+  perform", which it did. Every rotation would fire the alarm, by construction;
+- a `PUT` whose **response was lost** may have landed. Against the last
+  *successful* row, the Mac's own write comes back as an unexpected higher `seq`
+  → read as `FOREIGN`, the gravest alert here, fired at itself.
+
+A check that cries wolf on normal operation is worse than no check: it teaches
+the owner to dismiss the one case that matters.
+
+**So the Mac keeps an expected-live set, and asks two questions instead of one.**
+
+The **expected-live set `E`** — what the transport should be serving right now,
+computed from local state only:
+
+- the newest publication **confirmed landed** (a 2xx), plus **every attempt after
+  it that was not confirmed** — a timeout, a dropped connection, any non-2xx.
+  The Mac cannot distinguish "did not apply" from "applied, answer lost", so it
+  declines to guess and treats both as *possibly live*;
+- or **`ABSENT`**, when a successful `rotate`/`revoke` (§6.3.1) came *after* that
+  publication, or nothing has been published yet — plus, again, any unconfirmed
+  attempts since.
+
+`E` is a single element in the ordinary case and grows only across a lost
+response.
+
+**Provenance** answers the other question — *whose bytes are these?* — and needs
+an identity `seq` cannot provide, since anything able to write can write any
+`seq`. Every attempt records `payload_sha256 = SHA-256(nonce ‖ ciphertext)`:
+the AEAD output, **not** the JSON envelope, so the check does not inherit the
+whitespace sensitivity that §8.4.2 has to work around. A live object is **ours**
+iff its `(seq, payload_sha256)` pair matches a row this Mac wrote. The *pair*
+matters — our own ciphertext re-declared under a different `seq` is not ours; it
+is precisely what §6.1's AAD binding makes undecryptable on the phone, and it is
+a foreign write here.
+
+Two ordering rules make those records complete rather than best-effort, both the
+"state before the action" idiom task 15 already uses:
+
+1. **the attempt row is written before the request is sent** — `seq` allocated,
+   `payload_sha256` stored, `outcome = UNCONFIRMED`. A crash between sending and
+   recording would otherwise leave the Mac unable to recognise its own write.
+   A retry is a **new attempt with a new `seq`**, never a reuse of the one whose
+   answer was lost: `seq` is `UNIQUE`, and reusing it would put two different
+   ciphertexts under one identity — the exact ambiguity this pair exists to
+   remove. Gaps in the sequence are harmless: **I6** refuses `seq < last_seq`,
+   a comparison that never requires the numbers to be consecutive;
+2. **`rotate`/`revoke` record the local delete transition** on 2xx, which is what
+   makes the absence that follows an expected state rather than an alarm.
+
+Classification is then mechanical:
+
+| Observed | State | Response |
 |---|---|---|
-| `MATCH` | the transport still serves the `seq` last published | — |
-| `ROLLBACK` | it serves a **lower** `seq` — the object was rolled back, or replaced with an older value | **integrity alert** (§11); publish anyway (the number still has to move) and record the `seq` observed |
-| `FOREIGN` | it serves a **higher or unrecognised** `seq` — something other than this Mac is writing | **integrity alert**, and the graver of the two: it says the write token is not exclusively ours |
-| `ABSENT` | no object at all | expected exactly once, before the first publication; afterwards an integrity alert — a snapshot that vanished is a revocation the Mac did not perform |
-| `UNAVAILABLE` | the check could not be run | **transport health, never integrity** — the same rule as the read-back, for the same reason |
+| an object in `E` — or no object where `ABSENT ∈ E` | `MATCH` | — |
+| **ours, but not in `E`** — a superseded publication of this Mac is live again | `ROLLBACK` | **integrity alert** (§11); publish anyway (the number still has to move) and record the `seq` observed |
+| **no object**, and no local delete or first-publication explains it | `ABSENT` | **integrity alert** — a snapshot vanished with nothing local to account for it |
+| a `(seq, payload_sha256)` pair **no local row carries** | `FOREIGN` | **integrity alert**, the gravest: something that is not this Mac wrote to our object |
+| the read could not be performed | `UNAVAILABLE` | **transport health, never integrity** — the read-back's rule, for the read-back's reason |
+
+**The pre-write read is also how an unconfirmed attempt gets resolved.** Finding
+one of them live proves it landed; finding the previous landed publication
+instead is taken as proof it did not. Either way the row stops being
+`UNCONFIRMED` and `E` collapses back to one element, so the widening a lost
+response causes lasts exactly until the next successful pre-write read. An
+observation that is neither — a `ROLLBACK`, a `FOREIGN`, an `UNAVAILABLE` —
+resolves nothing, and the row stays `UNCONFIRMED` until one does: an alert is
+not evidence about which of our own writes landed.
+
+**One ambiguity, named rather than papered over.** Those two readings are not
+distinguishable from the Mac: a restore that rolls the object back to the
+*immediately previous* publication, landing inside a lost-response gap, is
+indistinguishable from a write that simply never applied — and this design reads
+it as the latter. That is the mundane explanation, and choosing the other one
+would raise an integrity alert on every ordinary timeout, which is the noise
+failure this section keeps refusing. The cost is stated so it is not discovered
+later: one specific rollback, in one specific window, is read as a failed write.
+Every rollback to any *earlier* publication is still `ROLLBACK`, and the restore
+that stays live is still caught at the following tick.
 
 It costs a second request a day and needs no new route: `GET /snapshot` already
 accepts the write token (§16) so the Mac can read its own writes back.
@@ -1638,12 +1847,22 @@ make a rollback impossible to miss, and this document no longer implies they do.
   adversary.
 
 **What holds without detecting anything** is the part the product's promise
-actually rests on: freshness travels **inside** the signed payload, never in the
-transport's liveness. A restored old snapshot carries its own `published_at` and
-its own deadline (§9.1), so the phone renders it as what it is — a copy going
+actually rests on: freshness travels **inside** the encrypted payload, never in
+the transport's liveness. A restored old snapshot carries its own `published_at`
+and its own deadline (§9.1), so the phone renders it as what it is — a copy going
 stale — and it crosses `COPY_STALE` on schedule with no rollback detection
-involved. A rollback can cost the owner a *current* number. It cannot make an
-old number look current, and that is the failure this project exists to refuse.
+involved. A rollback can cost the owner a *current* number; it cannot dress an
+old one up as current.
+
+**Against whom, though — because that claim has a boundary and rev 6 stated it
+without one.** *(From review.)* AES-256-GCM is **symmetric** (§6.1): a valid tag
+proves the writer held the payload key, not that the writer was this Mac. So the
+paragraph above holds against every party **without the active payload key** —
+which includes the provider performing a restore and includes a control-plane
+holder, both of whom can serve a past ciphertext but cannot mint one carrying
+today's `published_at`. Against a holder of the *active* key it does not hold at
+all. §6.2.2 is where that boundary is decided and accepted, so it is not
+re-argued here.
 
 On the Tailscale branch the read-back reads back through the served endpoint
 (§6.3.2), which is local and consistent by construction; the three states and
@@ -1705,7 +1924,7 @@ net_worth = Σ(asset accounts) − Σ(liability accounts)
 
 | Channel | Used for | Mechanism |
 |---|---|---|
-| macOS notification | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **publication overdue**, **read-back mismatch**, **read-back unavailable**, **pre-write rollback**, **foreign write**, **pairing uncertain**, **accounts pending reconciliation**, **drain stalled** | `osascript -e 'display notification'` |
+| macOS notification | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **publication overdue**, **read-back mismatch**, **read-back unavailable**, **pre-write rollback**, **foreign write**, **snapshot missing**, **pairing uncertain**, **accounts pending reconciliation**, **drain stalled** | `osascript -e 'display notification'` |
 | `alert` table + in-app banner | everything above, persistent | DB row, travels in the payload; cleared on resolve |
 | **Phone-local warning** | **rejected rollback / foreign `pairing_id`** (§9.3) | in-app, persistent until a newer `seq` arrives — **never reaches the Mac** |
 | Agent mailbox | any Mac-side alert unresolved >24h | write to `~/agents/inbox/claude/new/` |
@@ -1729,14 +1948,20 @@ are the ones a naive build would not have:
   could not be run at all, after retries): one says the value is wrong, the
   other says the evidence is missing, and merging them would make the tamper
   signal fire on ordinary network weather until nobody read it.
-- **Pre-write rollback / foreign write** — *before* publishing, the transport was
-  serving something other than the last `seq` this Mac published (§9.3). The two
-  read differently and must not be merged: `ROLLBACK` (a lower `seq`) is the
-  provider-side-restore signal of §6.2.2, while `FOREIGN` (higher or
-  unrecognised) says **something else is writing under our write token**, which
-  is a credential compromise and the more urgent of the two. `ABSENT` after the
-  first publication alerts as well — the snapshot was deleted by something that
-  was not this Mac. `UNAVAILABLE` is transport health, exactly as above.
+- **Pre-write rollback / foreign write / snapshot missing** — *before* publishing,
+  the transport was serving something other than what this Mac expects to be live
+  (§9.3 defines "expects": it is a **set** computed from confirmed and
+  unconfirmed attempts, not the last row). The three read differently and must
+  not be merged: `ROLLBACK` — the Mac's own superseded bytes are live again — is
+  the provider-side-restore signal of §6.2.2; `FOREIGN` — an object no local row
+  explains — is the more urgent; `ABSENT` alerts **only when no local `rotate`,
+  `revoke` or first publication accounts for it**, because those deletions are
+  intended and an alert that fired on them would fire on every rotation by
+  construction. `UNAVAILABLE` is transport health, exactly as above.
+  **`FOREIGN` does not name the credential**, and rev 6 said it did: a leaked
+  write token explains it, and so does anyone holding the Cloudflare account, who
+  needs no write token at all (§6.2.2). The runbook's response covers both
+  because the alert cannot tell them apart.
 - **Pairing uncertain** — a `rotate` whose outcome the Mac never learned
   (§6.3.1). Publishing is suspended until the owner re-runs `networth pair`,
   because the alternative is publishing under a key that may already be revoked
@@ -1755,7 +1980,7 @@ different event from the pre-write rollback above.** The distinction is the
 | Event | Who sees it | Where it alerts |
 |---|---|---|
 | **Rejected rollback (I6)** | the **phone**, when the transport serves *it* a `seq` below its own `last_seq` | phone-local, persistent (§9.3) — it never reaches the Mac |
-| **Pre-write `ROLLBACK`** | the **Mac**, when the object it is about to overwrite carries a `seq` below the one it last published | macOS alert |
+| **Pre-write `ROLLBACK`** | the **Mac**, when the object it is about to overwrite is one of its own superseded publications rather than what it expects to be live (§9.3) | macOS alert |
 
 An earlier draft put the phone's event in the macOS row, promising an alert
 about something only the phone can see, over a channel the architecture does not
@@ -2155,7 +2380,7 @@ project; it applies here.
 | O2 | Does the Trial plan actually reach the in-scope brokerages via OAuth? (**F4** — go/no-go) | owner, via dashboard | **the Production-Link path: tasks 07, 07a, 08 and everything downstream of a real Item** (09, 12b, 26) — see below |
 | O3 | How many distinct card-issuer logins? | owner | Item budget sizing |
 | O4 | Real property: purchase price only, or a revision log? (recommend: revision log — nearly free) | owner | task 13 |
-| O5 | Transport: **Cloudflare Worker** (recommended — serves the current value only, works while the Mac sleeps, **keeps the webhook accelerator**; accepts a **30-day provider-side recovery window** that cannot be turned off, that only an account compromise could reach, and whose *use* the Mac detects only if the restored value is still live at the next daily publication, §6.2.2) or **Tailscale** (no third party, so **nothing is retained anywhere**, and revocation is a local transaction — but the Mac must be awake **and Plaid webhooks become impossible**, §6.3.2)? Both branches are fully specified — pairing, rotation, revocation and lost-phone included. **The retention line is the one thing only the owner can weigh**, because it trades a bounded window at a third party against availability | owner | tasks 20, 24 (and 12a, which **exists only on the Cloudflare branch**) |
+| O5 | Transport: **Cloudflare Worker** (recommended — serves the current value only, works while the Mac sleeps, **keeps the webhook accelerator**; accepts a **30-day provider-side recovery window** that cannot be turned off, that only an account compromise could reach, and whose *use* the Mac detects only if the restored value is still live at the next daily publication, §6.2.2 — and with it the stated boundary that **freshness is unforgeable only against parties without the payload key**, so an attacker holding *both* that key and the account could make an old number look current, which is why step 3a.0 keeps the account credential off this Mac) or **Tailscale** (no third party, so **nothing is retained anywhere**, and revocation is a local transaction — but the Mac must be awake **and Plaid webhooks become impossible**, §6.3.2)? Both branches are fully specified — pairing, rotation, revocation and lost-phone included. **The retention line is the one thing only the owner can weigh**, because it trades a bounded window at a third party against availability | owner | tasks 20, 24 (and 12a, which **exists only on the Cloudflare branch**) |
 | O6 | Android only, or iOS too? iOS has no sideloading story, which changes delivery entirely | owner | tasks 21, 24 |
 | O7 | Create a free Cloudflare account? It is the one new account this design adds, and it disappears if O5 picks Tailscale. The Workers Free plan covers everything used here — Worker requests, **SQLite-backed Durable Objects**, and KV — and over-limit operations **fail rather than bill** (§6.2.1) | owner | tasks 20, 12a |
 | O8 | **Where do backups land?** A destination in a separate failure domain is a gate on the first Production Link (§14a.1). External disk / Time Machine volume / another machine over Tailscale — or an explicit decision to link Items without one | owner | tasks 03a, and through it 08 |
@@ -2234,26 +2459,65 @@ the phone with no way to decrypt anything.*
 
 **Step 3a — if O5 chooses Cloudflare**
 
-0. **Bracket every `wrangler` command with login and logout** — this step and
-   step 7 are the only two on this machine that use account-level Cloudflare
-   access, and the rest of the design depends on it not being kept (§6.2.1,
-   §6.2.2). `wrangler login` leaves an OAuth **access and refresh** token on the
-   Mac, in plaintext under the Wrangler config directory unless you ask
-   otherwise. So:
+0. **Bracket every `wrangler` command — and close the browser session too.** This
+   step and step 7 are the only two on this machine that use account-level
+   Cloudflare access, and the rest of the design depends on it not being kept
+   (§6.2.1, §6.2.2). There are **two credentials to close, not one**, and rev 6
+   closed only the first:
+
+   **(a) Wrangler's OAuth token.** `wrangler login` leaves an **access and
+   refresh** token on the Mac, in plaintext under the Wrangler config directory
+   unless you ask otherwise.
+
+   **(b) The Cloudflare dashboard session in whatever browser authorised it.**
+   *(From review.)* The default flow opens a browser and signs it in to the
+   account. Cloudflare documents `wrangler logout` as invalidating the **OAuth
+   token** and deleting Wrangler's stored credentials, and says nothing about
+   that browser session — which the dashboard documents separately, with its own
+   lifetime (**72 hours of inactivity** by default) and its own revocation UI. A
+   browser still signed in here can redeploy the Worker, which is the exact
+   access §6.2.2 turns on, and `wrangler whoami` reports on (a) only. So do not
+   infer (b) from (a) in either direction: close it, and check it.
+
+   Keep the browser off this Mac where you can:
 
    ```
-   wrangler login --use-keyring   # encrypted at rest; key in the macOS keychain
+   wrangler login --device --use-keyring   # device-code grant: authorise in a
+                                           #   browser on ANOTHER device. Token
+                                           #   lands in the macOS keychain
    #   ... run exactly the one operation you came to run ...
-   wrangler logout                # invalidates the token at Cloudflare, then deletes it
-   wrangler whoami                # confirm: not authenticated
+   wrangler logout                         # invalidates the token at Cloudflare,
+                                           #   then deletes it locally
+   wrangler whoami                         # confirms (a). It says nothing about (b)
    ```
 
-   Logout is server-side invalidation, not just a local delete, so this genuinely
-   closes the window. **If you would rather stay logged in**, that is your call
-   to make — but make it knowingly: the Mac then permanently holds a credential
-   that can redeploy the Worker and reach the 30-day recovery window of §6.2.2,
-   which merges the two credential tiers this design deliberately keeps apart.
-   Nothing breaks; the threat model changes.
+   `--device` uses the OAuth 2.0 Device Authorization Grant instead of the
+   default `localhost` callback, so the browser that signs in does not have to be
+   this one, and the session that outlives the bracket sits on a device you
+   chose. (`--browser=false` is *not* a substitute: it only prints the link
+   instead of opening it, while the callback still comes back to this machine —
+   `--callback-host` defaults to `localhost` — so the browser you paste it into
+   has to be one that can reach this Mac.) If a Wrangler build rejects the two flags
+   together, drop `--use-keyring` — it governs at-rest storage of a token this
+   bracket deletes anyway, while `--device` is the flag that moves the durable
+   session.
+
+   **If the browser step happens here regardless** — creating the account in
+   step 1 is a dashboard action, and the owner may simply prefer this machine —
+   then close (b) explicitly, and **verify it from another device**: sign out in
+   the browser here, then open **My Profile → Sessions** on the other device and
+   confirm no session for this Mac remains, revoking it there if one does. The
+   dashboard will not let you revoke the session you are currently using, which
+   is why a check run from the machine being checked is worth nothing.
+
+   **If you would rather stay signed in** — either layer — that is your call to
+   make, but make it knowingly. This Mac already holds the **payload key**
+   (§6.1 is symmetric), so a Mac that also holds standing account access holds
+   **both halves of §6.2.2's conjunction at once**: the residual there stops
+   needing two independent compromises, and freshness stops being guaranteed
+   against anyone who gets into this machine. Nothing breaks; the threat model
+   changes, and it changes by more than the convenience is worth unless you have
+   a reason.
 1. Create a free Cloudflare account (**O7**) and run the provided `wrangler`
    deploy, inside the step-0 bracket. Agents can write the Worker; only the
    owner creates the account and only the owner logs in.
@@ -2334,10 +2598,17 @@ the phone with no way to decrypt anything.*
   suspect: change its password and rotate the write token (step 3a.7). The
   number itself is already corrected — the publication that raised this alert
   overwrote the old value.
-- **Foreign write** → the transport was serving a `seq` this Mac never published,
-  or the snapshot had been deleted (§9.3). This is the one alert that says the
-  **write token is not exclusively yours**. Rotate it (step 3a.7) and re-pair the
-  phone (step 3a.4) before trusting the pipe again.
+- **Foreign write** → before publishing, the transport was serving an object no
+  local row explains (§9.3). It does **not** tell you which credential did it: a
+  leaked write token explains it, and so does anyone holding the Cloudflare
+  account, who needs no write token at all (§6.2.2). So cover both — rotate the
+  write token (step 3a.7), re-pair the phone (step 3a.4), and check the account
+  itself: password, two-factor, and **My Profile → Sessions** for a login you do
+  not recognise (step 3a.0).
+- **Snapshot missing** → the object was gone when the Mac went to publish and no
+  local `rotate`, `revoke` or first publication accounts for it (§9.3). Expected
+  deletions never raise this, so it is the same question as a foreign write —
+  who else can write here — arriving as an absence. Same response.
 - **Pairing uncertain** → publishing is deliberately suspended; run
   `networth pair` again (§19 step 3a.6). This is the one alert where the phone
   will visibly stop updating, which is intended: the alternative is publishing
