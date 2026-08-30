@@ -3,6 +3,34 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 9 — **not review-driven.** Two owner decisions arrived while rev 8 was
+in flight, and folding them into the same review round is cheaper than a round of
+their own (the owner said so explicitly). No finding from any review is answered
+here, and no mechanism changed.
+
+- **O6 answered: Android only.** Decided, not postponed — the iOS branch and its
+  sideloading problem are gone from the document rather than parked. Tasks 21
+  and 24 are Android-only, and 21 stops being blocked on an owner answer.
+- **Credit cards are deferred** ("先不做了" — deferred, not rejected). v0 is
+  **assets only**: the Plaid Liabilities product, the card category and every
+  credit-account path leave the model, the sync engine and the UI. **O3** is
+  void. What stays is the cheap half — `account.sign`, and a rule that nothing
+  may assume an account's value is positive — so cards return later as a link
+  flow and a UI row, never a migration of history. §14's budget changes by more
+  than a row: card issuers were the only category with an **unbounded** count,
+  so the reserve doubles from 2 to 4, and against **F2** the reserve *is* the
+  number of link mistakes this project can survive.
+- **§1 now opens by saying there is exactly one deliverable**, the Android app,
+  and that the Mac component is a headless daemon with no interface. This is the
+  one change here that came from a *misunderstanding* rather than a decision:
+  the owner had read this project's progress reporting as building two apps. The
+  reporting was at fault, but a design a reader can come away from with the same
+  impression shares the defect.
+- §6 Option 3 records why the Mac cannot simply be replaced by a Cloudflare
+  Worker on a Cron Trigger — 10 ms CPU per invocation on the free plan, no retry
+  of failed scheduled runs, and it would put the Plaid master credential at the
+  third party — so the question is not re-litigated later.
+
 Revision 8 — reworked after Codex's seventh review requested changes on
 `fa7d7b9`. Two of the three findings are again **defects in what rev 7 added
 while fixing rev 6**, and the third is a command in the runbook that does not do
@@ -171,9 +199,24 @@ rather than quietly corrected.
 
 ## 1. What this is
 
-One number — total net worth, assets minus debts — rebuilt at least once a day
-from linked financial accounts plus a few manually-valued assets, and displayed
-on a phone. Single user, one Mac, zero marginal cost.
+**There is exactly one deliverable: an Android app.** It is the only thing the
+owner installs, opens or looks at. The "Mac" this document then talks about on
+nearly every page is **not** a second app — it is a headless launchd daemon with
+no window, no icon and no interface, which the owner never opens and never
+touches again after the one-time setup in §19.
+
+*(Stated first, before any architecture, because the progress reporting on this
+project left the owner believing two apps were being built. That was a reporting
+failure, but a design a reader can come away from with the same impression has
+the same defect — so this line is load-bearing, not a preamble. **One app.**)*
+
+One number — total net worth — rebuilt at least once a day from linked financial
+accounts plus a few manually-valued assets, and displayed on that phone. Single
+user, one Mac, zero marginal cost.
+
+**v0 is assets only.** Credit cards are **deferred** by owner decision
+(2026-08-30), so the headline is a sum rather than a difference; §10 keeps the
+one place a liability would re-enter, and §14 counts the Item slots that frees.
 
 **The number is not the product. The number's honesty is the product.**
 
@@ -290,7 +333,6 @@ repository, which is public.
 | Retirement (employer plan) | Plaid Investments | + | daily |
 | Taxable brokerage | Plaid Investments | + | daily |
 | Employer equity compensation | Plaid Investments if reachable, else manual (below) | + | daily |
-| Credit cards | Plaid Liabilities / balances | **−** | daily |
 | Equity comp fallback | manual share count × live quote for a configured ticker | + | price daily, quantity manual |
 | Real property | manual fixed value at purchase price | + | **never** |
 
@@ -303,6 +345,13 @@ Notes that shape the design:
   manual fallback (§12) needs no Plaid Item, no waiting, and no OAuth approval —
   so it is the **primary plan**, not a consolation prize. If the linked path
   happens to work later, it supersedes the manual entry for that account.
+- **Credit cards are deferred, not rejected** *(owner, 2026-08-30 —
+  "信用卡先不做了")*. They were a row in this table through rev 8, subtracted as
+  debt. v0 drops the Plaid **Liabilities** product and every credit-account path
+  from the model, the sync engine and the UI. What is deliberately *kept* is the
+  one thing that would be expensive to retrofit: `account.sign` stays in the
+  schema and nothing anywhere assumes an account's value is positive (§7, §10).
+  Adding cards back is then a link flow and a UI row, not a migration of history.
 - **Non-goals:** transactions and budgeting, trading, tax lots, cost basis,
   multi-currency, intraday valuation.
 
@@ -317,8 +366,10 @@ two of which came out of review:**
 
 **F1 — The Trial plan is free, capped at 10 Production Items, no stated expiry.**
 US/CA teams created on or after 2026-04-15. Bundled: Auth, Transactions,
-Balance, Identity, Assets, **Liabilities**, **Investments**, Statements. Both
-products this project needs are included.
+Balance, Identity, Assets, Liabilities, **Investments**, Statements. Every
+product this project needs is included — since rev 9 that is **Investments plus
+account balances**; Liabilities is bundled too and simply goes unused while
+cards are deferred, so bringing them back costs no plan change.
 
 **F2 — `/item/remove` does NOT free a slot.** *(New.)* Plaid's billing docs:
 removing Items created on a Trial plan "will *not* allow you to create more
@@ -346,8 +397,8 @@ gate, Sandbox rehearsal) survives a `NO` intact, because a `NO` changes how
 accounts get linked, not the staleness machine, the snapshot model, the
 manual-asset path or the transport. Recorded as a gate (§18, O2), not asserted.
 
-**F5 — Real-time balance is bundled on Trial, and it is the only way a cash or
-card balance's age can be known at all.** *(From review.)* Plaid's accounts docs
+**F5 — Real-time balance is bundled on Trial, and it is the only way a cash
+balance's age can be known at all.** *(From review.)* Plaid's accounts docs
 are explicit that `/accounts/get` "retrieves cached information, rather than
 extracting fresh information from the institution," and point to
 `/accounts/balance/get` — which they label a **paid** endpoint — for real-time
@@ -425,8 +476,9 @@ read (§6.2).
 
 Seams (interfaces the rest of the code depends on, never concrete classes):
 
-- `PlaidClient` — link tokens, exchange, item status, holdings, liabilities. The
-  only place Plaid's error taxonomy becomes our states.
+- `PlaidClient` — link tokens, exchange, item status, holdings, balances. The
+  only place Plaid's error taxonomy becomes our states. *(Liabilities dropped in
+  rev 9 with credit cards; the seam is where it would return.)*
 - `QuoteClient` — `get_quote(symbol) -> (price, as_of)`; the quote must carry its
   own timestamp, because a stale price is precisely the failure being hunted.
 - `TokenStore` — narrow interface over secret storage (§2 reservation 3).
@@ -1099,6 +1151,20 @@ self-hosted server contradicts "no 24/7 server" and costs money. Push
 notification as transport (rather than as an alert) has payload limits and no
 delivery guarantee.
 
+**Running the whole sync in a Cloudflare Worker on a Cron Trigger — dismissed,
+and recorded so it is not proposed again.** *(Checked in rev 9, after the owner
+asked whether the Mac could be eliminated entirely.)* It is the obvious "no
+computer of my own" answer and it fails on the free plan for two independent
+reasons: each invocation is capped at **10 ms of CPU** — network wait does not
+count, but parsing a holdings response and doing AES-GCM over the payload is
+real CPU — and **failed scheduled invocations are not retried**, which breaks
+the once-a-day guarantee (§1) outright rather than degrading it. Paid Workers is
+$5/month, so the zero-money rule (§4) ends the discussion before the technical
+one starts. It would also put the Plaid `client_id`/`secret` — the master
+credential, not a per-Item token — inside the same third party this design
+deliberately keeps them away from (§6.2.2). The daily guarantee needs a host
+that is awake and allowed to be slow; that is what §13 assumes.
+
 ---
 
 ## 7. Data model
@@ -1128,7 +1194,9 @@ account(
   id, item_id,                         -- item_id NULL for manual assets
   plaid_account_id, name, official_name, mask,
   type, subtype, currency,
-  sign,                                -- +1 asset, -1 liability
+  sign,                                -- +1 asset, -1 liability. v0 writes only +1
+                                       --   (cards deferred, rev 9), and the column stays
+                                       --   so nothing downstream may assume "positive"
   freshness_policy,                    -- SYNCED_HOLDINGS | SYNCED_BALANCE
                                        --   | MANUAL_STATIC | MANUAL_QTY_LIVE_PRICE
   include_in_net_worth,                -- exclude without deleting
@@ -1157,7 +1225,10 @@ observation(                           -- append-only, one row per account per r
 snapshot(
   id, sync_run_id UNIQUE,              -- one snapshot per successful run; the idempotency key
   taken_at,
-  total_net_worth_minor, total_assets_minor, total_liabilities_minor,
+  total_net_worth_minor, total_assets_minor,
+  total_liabilities_minor,             -- always 0 in v0: no liability account can exist
+                                       --   while cards are deferred. Kept so the curve
+                                       --   does not need rewriting when they return
   account_count, stale_account_count, unknown_freshness_account_count,
   static_account_count,                -- MANUAL_STATIC; outside the age basis (§8.1 R3)
   reauth_account_count, unreconciled_account_count,
@@ -1366,9 +1437,8 @@ say so rather than compute an age over an empty set.
 | Account kind | Call | `source_as_of` comes from | Fresh while |
 |---|---|---|---|
 | Investments / holdings | `/investments/holdings/get` + `/item/get` | the **older** of: the minimum `institution_price_datetime` (else `institution_price_as_of`) across contributing holdings, and `status.investments.last_successful_update` | at or after the most recent market close (+12h posting grace) |
-| Cash / card balance, `balance_mode: realtime` | `/accounts/balance/get` | `balance.last_updated_datetime` when the institution provides it, else `fetched_at` — justified **only** because this endpoint extracts live (F5) | within 36h |
-| Cash / card balance, `balance_mode: cached` | `/accounts/get` | nothing — `UNKNOWN` (R2) | never; permanently labelled unverifiable |
-| Liabilities detail | `/liabilities/get` | the balance clock above. Statement dates are *not* freshness evidence | as above |
+| Cash balance, `balance_mode: realtime` | `/accounts/balance/get` | `balance.last_updated_datetime` when the institution provides it, else `fetched_at` — justified **only** because this endpoint extracts live (F5) | within 36h |
+| Cash balance, `balance_mode: cached` | `/accounts/get` | nothing — `UNKNOWN` (R2) | never; permanently labelled unverifiable |
 | Manual, static | — | `valued_as_of` | always, by policy (§12) |
 | Manual, qty × quote | `QuoteClient` | the quote's own `as_of` | quote at or after the last market close |
 | Carried forward | — | inherited, **never advanced** | ages continuously |
@@ -1384,8 +1454,8 @@ Market-close awareness stays where it belongs — on this axis. Plaid updates
 investments after close on market days, so a Friday-close value is legitimately
 ~63h old on Monday morning and must **not** alarm. A naive 24h rule would scream
 every weekend, and an alarm that cries wolf every Saturday is worse than no
-alarm at all. Cash and card accounts, which have no market calendar, use plain
-wall-clock 36h (the owner's threshold).
+alarm at all. Cash accounts, which have no market calendar, use plain wall-clock 36h (the
+owner's threshold).
 
 ### 8.2 Axis A: connection state, per Item
 
@@ -2106,7 +2176,7 @@ read, which is the only one holding the state to judge it.
 ## 10. Net-worth computation
 
 ```
-net_worth = Σ(asset accounts) − Σ(liability accounts)
+net_worth = Σ(account value × account.sign)     -- v0: every sign is +1, so this is Σ(assets)
 ```
 
 1. **A stale account still contributes its last known value**, flagged
@@ -2136,8 +2206,13 @@ net_worth = Σ(asset accounts) − Σ(liability accounts)
    the one place the total is knowingly understated, and it is loud about it —
    the alternative is double-counting a replaced account, which looks like the
    owner suddenly got richer.
-4. Credit cards enter **negative**. Sign is set once at link time from the Plaid
-   account type and stored, never inferred at render time.
+4. **v0 has no liability accounts at all** — cards are deferred (§1, §3), so the
+   sum has no negative term and the UI has no debt row. The formula is written
+   over `sign` rather than as "assets minus debts" for one reason: a subtraction
+   term left lying around for a category that cannot exist is exactly the
+   cross-section contradiction the last six reviews kept finding. When cards
+   return, `sign` is set once at link time from the Plaid account type and
+   stored, never inferred at render time — and nothing else in §10 changes.
 5. History renders incomplete snapshots visually distinct (dashed/hollow) — a gap
    in the record must look like a gap.
 6. Single currency (USD). The schema carries currency so mixed units fail loudly
@@ -2285,8 +2360,8 @@ The two clocks in §8.1 are why the two predicates are not redundant:
 - **Holdings move on market time.** Institutions post after close, so
   *market close + 1h* is when new data can actually exist. Nothing else fetches
   it earlier.
-- **Cash and card balances move on wall-clock time.** Spending does not wait for
-  a market day. `/accounts/balance/get` returns a real-time balance whenever it
+- **Cash balances move on wall-clock time.** Money moves without waiting for a
+  market day. `/accounts/balance/get` returns a real-time balance whenever it
   is called (**F5**), so a weekend call returns genuinely newer data.
 
 `min(market-close rule, 20h)` covers both with one job and one code path, which
@@ -2332,16 +2407,24 @@ all accounts behind that login are free, so consolidation is the whole game.
 | Retirement plan | 1 | may be a different login from a personal account at the same firm — verify before linking |
 | Taxable brokerages | 1 each | |
 | Employer equity | 0 | **prefer the §12 manual path and spend nothing** |
-| Card issuers | 1 each | one per issuer login, not per card |
-| **Reserve** | **2** | permanent headroom for a mislink or a future institution |
+| Card issuers | **0** | deferred with credit cards (§1, rev 9) — they were one slot per issuer *login* |
+| **Reserve** | **4** | permanent headroom for a mislink or a future institution |
 
-Working budget: **8**. Spending rules:
+Working budget: **6**, and the change is worth stating rather than just
+recalculating. Card issuers were the only category with an unbounded count in
+it, so deferring cards does not merely free their slots — it removes the part of
+the budget nobody could size in advance. Every slot not spent on an issuer login
+becomes headroom, and against **F2** headroom is the only currency that matters:
+a slot is never recycled, so reserve is *literally* the number of link mistakes
+this project can survive. Rev 9 doubles it, from two to four.
+
+Spending rules:
 
 1. **Rehearse every Link flow in Sandbox first.** Sandbox is unlimited and free;
    Production mistakes are permanent.
 2. Confirm the exact institution *and login* before each Production exchange.
 3. Never spend a slot on an account whose balance could be typed in once a
-   month. A low-balance card is a manual entry, not an Item.
+   month. A small, rarely-moving account is a manual entry, not an Item.
 4. Re-auth via update mode costs nothing (§8). Only `REVOKED` can require a new
    slot, and that is an owner decision.
 5. Track remaining slots in the DB and surface them in `doctor` and the app.
@@ -2603,14 +2686,17 @@ project; it applies here.
 | # | Question | Owner of the answer | Blocks |
 |---|---|---|---|
 | O2 | Does the Trial plan actually reach the in-scope brokerages via OAuth? (**F4** — go/no-go) | owner, via dashboard | **the Production-Link path: tasks 07, 07a, 08 and everything downstream of a real Item** (09, 12b, 26) — see below |
-| O3 | How many distinct card-issuer logins? | owner | Item budget sizing |
+| ~~O3~~ | ~~How many distinct card-issuer logins?~~ **VOID** — it existed only to size the card share of the Item budget, and cards are deferred (§1, rev 9). Nothing waits on it | — | — |
 | O4 | Real property: purchase price only, or a revision log? (recommend: revision log — nearly free) | owner | task 13 |
 | O5 | Transport: **Cloudflare Worker** (recommended — serves the current value only, works while the Mac sleeps, **keeps the webhook accelerator**; accepts a **30-day provider-side recovery window** that cannot be turned off, that only an account compromise could reach, and whose *use* the Mac detects only if the restored value is still live at the next daily publication, §6.2.2 — and with it the stated boundary that **freshness is unforgeable only against parties without the payload key**, so an attacker holding *both* that key and the account could make an old number look current, which is why step 3a.0 keeps the account credential off this Mac) or **Tailscale** (no third party, so **nothing is retained anywhere**, and revocation is a local transaction — but the Mac must be awake **and Plaid webhooks become impossible**, §6.3.2)? Both branches are fully specified — pairing, rotation, revocation and lost-phone included. **The retention line is the one thing only the owner can weigh**, because it trades a bounded window at a third party against availability | owner | tasks 20, 24 (and 12a, which **exists only on the Cloudflare branch**) |
-| O6 | Android only, or iOS too? iOS has no sideloading story, which changes delivery entirely | owner | tasks 21, 24 |
+| ~~O6~~ | **ANSWERED (owner, 2026-08-30): Android only.** No iOS, and it is *decided* rather than postponed — the iOS branch and its sideloading problem are gone from this design rather than parked. Tasks 21 and 24 are Android-only | — | — |
 | O7 | Create a free Cloudflare account? It is the one new account this design adds, and it disappears if O5 picks Tailscale. The Workers Free plan covers everything used here — Worker requests, **SQLite-backed Durable Objects**, and KV — and over-limit operations **fail rather than bill** (§6.2.1) | owner | tasks 20, 12a |
 | O8 | **Where do backups land?** A destination in a separate failure domain is a gate on the first Production Link (§14a.1). External disk / Time Machine volume / another machine over Tailscale — or an explicit decision to link Items without one | owner | tasks 03a, and through it 08 |
 
-*(O1 — phone vs Mac/browser — was answered by the owner: **Flutter phone app**.)*
+*(O1 — phone vs Mac/browser — was answered by the owner: **Flutter phone app**.
+O6 above narrows that to **Android only**, and O3 is void. Answered questions are
+struck through rather than deleted so a reader of an old review comment can still
+find them.)*
 
 **O2 blocks the Plaid path, not the project.** *(Narrowed in review, which
 caught this table saying "all implementation" while the task graph and the
