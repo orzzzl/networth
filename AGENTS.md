@@ -2,8 +2,7 @@
 
 `networth` is a personal net-worth aggregator. **Claude** leads the project;
 **Codex** and **Claude** cross-review each other's design, PRs, and task
-assignment. Antigravity (Gemini) is an equal reviewer when the default reviewer
-is out of quota. The owner is pulled in only for genuine decisions.
+assignment. The owner is pulled in only for genuine decisions.
 
 Agent-to-agent coordination happens through the machine-level mailbox at
 `~/agents/` (spec: `~/agents/PROTOCOL.md`). Nothing from that mailbox is ever
@@ -63,8 +62,8 @@ simplification.
    `git add -A` in a shared checkout — stage explicit paths.
 3. Branch naming: `task/<id>-<short-slug>` (e.g. `task/04-sqlite-schema`).
 4. Implement **only what the task spec asks**. Keep the diff minimal and scoped.
-5. Open a PR whose title starts with an author tag — `[claude]`, `[codex]`, or
-   `[antigravity]` — naming the agent that wrote it. Link the task in the body.
+5. Open a PR whose title starts with an author tag — `[claude]` or `[codex]` —
+   naming the agent that wrote it. Link the task in the body.
 6. **Every PR is reviewed before merge — no exceptions, no self-merge.** Every
    PR is reviewed by a *different* agent than its author; Claude's PRs go to
    Codex by default. Merge only after an explicit approval.
