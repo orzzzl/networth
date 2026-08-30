@@ -3,6 +3,46 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 8 — reworked after Codex's seventh review requested changes on
+`fa7d7b9`. Two of the three findings are again **defects in what rev 7 added
+while fixing rev 6**, and the third is a command in the runbook that does not do
+what the step around it says. The pattern rev 7 named — check the new mechanism
+against the boring timelines — held; what it missed is the **other** direction,
+the older sentence the new mechanism has just made false.
+
+- **The audit model had no state for an attempt proven not to have landed.**
+  Rev 7's resolver says observing the previous object proves a later attempt did
+  not land, and then had nowhere to write that: `LANDED` is false, `UNCONFIRMED`
+  keeps the row in the expected-live set forever, and deleting it discards the
+  audit. `publication.outcome` gains **`NOT_LANDED`** — and **`SUPERSEDED`**,
+  which is the same gap seen from the other side: a row that may well have
+  applied before a later write replaced it cannot honestly be called either
+  landed or not. §9.3.1 now states the resolver as a table over the **whole**
+  pending set, so "`E` collapses back to one element" is derived rather than
+  hoped for, and a 2xx stops being described as the only confirmation.
+- **The new fingerprint was not the identity of the authenticated object, and
+  the read-back never used it.** GCM authenticates the AAD *and* the ciphertext,
+  so `SHA-256(nonce ‖ ciphertext)` left `pairing_id`, `schema_version` and
+  `published_at` outside the comparison: an object the phone would refuse to
+  decrypt classified as ours. `payload_fingerprint` (§9.3.1) hashes a canonical
+  length-delimited tuple over every authenticated field, the nonce and the AEAD
+  output including its tag — and the read-back, which still compared `seq`
+  alone three sections away, now compares the same value. §6.1 pins the envelope
+  and the exact AAD bytes both ends have to agree on.
+- **`wrangler login --device` still opens the browser on this Mac** — in the one
+  step whose stated purpose is that it should not. Cloudflare documents
+  `--browser=false` as the way to suppress it, so §19 step 3a.0 and task 20 now
+  carry `wrangler login --device --browser=false --use-keyring`, all three flags,
+  with what each one is for.
+
+Two smaller things fell out of the first two rather than being asked for: the
+read-back now runs **only after a 2xx** (running it after a failed `PUT` would
+report the previous object — still correctly in place — as tampering, which is
+rev 7's own defect arriving through the other check), and §9.3.1 exists at all
+because review's diagnosis was structural: this state machine was being
+explained in five distant places, and every one of the last three rounds found
+drift between two of them.
+
 Revision 7 — reworked after Codex's sixth review requested changes on
 `a65a5e0`. Three findings, and the first two are again **defects in what rev 6
 added while fixing rev 5** — a new check that misfires on ordinary operation, and
@@ -17,12 +57,15 @@ saying whom it is against.
   unexplained deletion, and a `PUT` whose response was lost read as `FOREIGN`,
   the gravest alert here, aimed at the Mac's own write. §9.3 now compares against
   an **expected-live set** built from confirmed *and* unconfirmed attempts plus
-  explicit local deletes, and identifies its own bytes by
-  `payload_sha256 = SHA-256(nonce ‖ ciphertext)` rather than by `seq`, which
-  anything able to write can forge. `publication.outcome` becomes
-  `LANDED | UNCONFIRMED`: the Mac cannot tell "did not apply" from "applied,
-  answer lost", so it stops pretending it can. The one case that stays ambiguous
-  is named and decided in §9.3 rather than left to the implementation.
+  explicit local deletes, and identifies its own bytes by a hash of them rather
+  than by `seq`, which anything able to write can forge. `publication.outcome`
+  becomes a state machine rather than a boolean: the Mac cannot tell "did not
+  apply" from "applied, answer lost", so it stops pretending it can. The one case
+  that stays ambiguous is named and decided in §9.3 rather than left to the
+  implementation. *(Rev 8 corrects two things this bullet said: the hash covered
+  only `nonce ‖ ciphertext`, which is not the identity of a GCM-authenticated
+  object, and `LANDED | UNCONFIRMED` was one state short of being able to record
+  the resolver's own conclusion. §9.3.1 supersedes both.)*
 - **`wrangler logout` closes the CLI token, not the browser session that
   authorised it.** Rev 6 bracketed (a) and treated `wrangler whoami` as proof;
   Cloudflare keeps a dashboard session on its own terms — **72 hours of
@@ -468,6 +511,37 @@ binds `schema_version`, `pairing_id`, `seq` and `published_at` so none of them
 can be swapped between valid ciphertexts. One publication a day is nowhere near
 any nonce-reuse boundary.
 
+**The envelope, and the exact bytes of the AAD.** *(Specified in rev 8. The
+phone has to rebuild the AAD to decrypt at all, and §9.3.1 has to hash it to
+identify an object, so "binds these four fields" is not enough — the encoding
+has to be one both ends compute the same way.)* The published object is:
+
+```json
+{ "schema_version": "1", "pairing_id": "<uuid>", "seq": "137",
+  "published_at": "2026-08-30T09:00:00Z",
+  "nonce": "<base64url>", "payload": "<base64url of ciphertext ‖ GCM tag>" }
+```
+
+with the four authenticated fields carried **in the clear** — they are inputs to
+decryption, not secrets — and `seq` as a **decimal string**, so no JSON number
+coercion sits between the two ends. `published_at` appears twice, once here and
+once inside the plaintext, and **the phone reads the plaintext copy** (§9.1):
+the header copy exists only so decryption is possible at all, and a party
+without the key cannot change it without breaking the tag. A key holder could
+seal the two apart, which is §6.2.2's conjunction and not a new exposure. The AAD is the length-delimited tuple
+
+```
+LP(x) = uint64_be(byte_length(x)) ‖ x        -- length-delimited: no field boundary
+                                             --   is ambiguous, no field can absorb
+                                             --   another by containing a separator
+aad   = LP(schema_version) ‖ LP(pairing_id) ‖ LP(seq) ‖ LP(published_at)
+```
+
+over the UTF-8 bytes of each field **as they appear in the envelope**. The
+Worker stores the request body and returns it unchanged — it is a relay (§16),
+not a parser — but nothing above depends on that: the AAD is rebuilt from parsed
+values, so a re-encoded envelope still decrypts and still identifies.
+
 **What encryption does not buy: currency.** A valid ciphertext stays valid
 forever, so an old payload replayed by anyone able to write to the transport
 decrypts perfectly — an authentic, stale number, which is precisely this
@@ -623,9 +697,11 @@ capability the tiering here is about — so `whoami`, which reports only on
 Wrangler, cannot certify it.
 
 So the lifecycle is specified rather than assumed, and it covers **both layers**
-(**§19 step 3a.0**): `wrangler login --device --use-keyring` — the device-code
-grant, so the browser that signs in is on *another* machine — → do the one thing
-→ `wrangler logout` → `wrangler whoami`; and where the browser step has to happen
+(**§19 step 3a.0**): `wrangler login --device --browser=false --use-keyring` —
+the device-code grant, so the browser that signs in is on *another* machine, and
+`--browser=false` because **device mode still opens the verification URL here
+without it** *(from review; Cloudflare documents both halves)* — → do the one
+thing → `wrangler logout` → `wrangler whoami`; and where the browser step happens
 here anyway (creating the account is a dashboard action), an explicit sign-out
 **verified from a second device** via My Profile → Sessions, because the
 dashboard will not let you revoke the session you are using. Logout invalidates
@@ -903,9 +979,11 @@ only purpose is to tell the Mac something it can simply overwrite is a route
 that can also be abused.
 
 **Suspending publishing there is deliberate.** If an uncertain rotate did land,
-the Mac's local `ACTIVE` row is stale and it would keep publishing under a key
-no phone can use, while the read-back — which only compares `seq` — reported
-success. That is a green indicator over a broken pipe: this product's cardinal
+the Mac's local `ACTIVE` row is stale and it would keep publishing under a key no
+phone can use, while the read-back reported success — it compares the Mac's own
+fingerprint (§9.3.1) against the object the transport serves, and both are the
+Mac's, so nothing about the *phone's* ability to decrypt is in that comparison at
+all. That is a green indicator over a broken pipe: this product's cardinal
 sin, arriving through the control path. Refusing to publish makes it loud and
 self-healing instead.
 
@@ -1108,25 +1186,35 @@ pairing(id, created_at, key_ref, read_token_ref,   -- refs only, never the mater
 publication(                                       -- §6 audit trail
   id, snapshot_id, pairing_id, seq UNIQUE,         -- monotonic, NEVER reset (§6.3.1); replay defence (I6)
   schema_version, published_at, transport,
-  outcome,                                         -- LANDED | UNCONFIRMED (§9.3). A 2xx is the ONLY
-                                                   --   confirmation; a timeout, a dropped connection
-                                                   --   and any non-2xx all stay UNCONFIRMED, because
-                                                   --   the Mac cannot tell "did not apply" from
-                                                   --   "applied, answer lost". "The last successful
-                                                   --   publication" everywhere else means LANDED
+  outcome,                                         -- UNCONFIRMED | LANDED | NOT_LANDED | SUPERSEDED.
+                                                   --   States, transitions and the resolver are
+                                                   --   NORMATIVE in §9.3.1 and defined ONLY there.
+                                                   --   Two things a reader will otherwise assume:
+                                                   --   a 2xx is not the only confirmation (a later
+                                                   --   observation of this row's fingerprint is the
+                                                   --   other), and "the last successful publication"
+                                                   --   everywhere else in this document means LANDED
+  outcome_resolved_at,                             -- when it left UNCONFIRMED; NULL while pending
+  outcome_resolved_by_seq,                         --   the publication whose pre-write read or 2xx
+                                                   --   settled THIS row; NULL when its own 2xx did
   error,
-  payload_sha256,                                  -- SHA-256(nonce ‖ ciphertext) — identity of OUR
-                                                   --   bytes, over the AEAD output and NOT the JSON
-                                                   --   envelope (§8.4.2's whitespace trap). The
-                                                   --   provenance half of the pre-write check (§9.3)
+  payload_fingerprint,                             -- §9.3.1 — SHA-256 over the WHOLE authenticated
+                                                   --   object (every AAD field, nonce, ciphertext,
+                                                   --   tag), not over the JSON envelope. Identity
+                                                   --   for both checks below; rev 7's
+                                                   --   (seq, SHA-256(nonce ‖ ciphertext)) missed
+                                                   --   every AAD field GCM authenticates
   prewrite_state,                                  -- MATCH | ROLLBACK | FOREIGN | ABSENT
                                                    --   | UNAVAILABLE (§9.3) — what the transport was
                                                    --   serving BEFORE this write; the only way a
                                                    --   rollback BETWEEN publications is ever seen
-  prewrite_seq,                                    --   the seq observed, when there was one
+  prewrite_fingerprint, prewrite_seq,              --   what was observed; the seq is a diagnostic,
+                                                   --   the fingerprint is the comparison (§9.3.1)
   readback_state,                                  -- OK | MISMATCH | UNAVAILABLE (§9.3) — a failed
-                                                   --   request is not evidence of a wrong value
-  readback_attempts, readback_seq)                 -- what the transport served straight back
+                                                   --   request is not evidence of a wrong value.
+                                                   --   Runs ONLY after a 2xx (§9.3.1)
+  readback_attempts,
+  readback_fingerprint, readback_seq)              -- what the transport served straight back
 
 webhook_event(                                     -- §8.4; advisory input, never a dependency
   id,
@@ -1696,33 +1784,49 @@ therefore withdrawn rather than the channel built. **The warning lives where the
 evidence is.**
 
 What the Mac *can* observe, it now does. `Publisher` performs a **read-back**
-after every publication: it re-fetches the object it just wrote and asserts the
-returned `seq` matches. A mismatch means the transport is serving something
-other than the current value, and that raises a Mac-side alert (§11), recorded
-in `publication.readback_state` / `readback_seq`. It costs one extra request per
-day.
+after a publication the transport said it applied: it re-fetches the object and
+asserts that what comes back is **the object it just wrote** — the full
+`payload_fingerprint` of §9.3.1, not the `seq` alone. A mismatch means the
+transport is serving something other than the current value, and that raises a
+Mac-side alert (§11), recorded in `publication.readback_state` /
+`readback_fingerprint`. It costs one extra request per day.
+
+**`seq` alone was never an identity, and this check used to rest on it.** *(From
+review, which caught rev 7 asserting in one place that anything able to write can
+choose any `seq`, while the read-back three sections away still compared only
+`seq`.)* A same-`seq`, different-ciphertext object — or the same ciphertext
+re-declared under a changed `pairing_id` or `published_at`, which the phone will
+refuse to decrypt — passed as `OK` under the old rule. §9.3.1 gives both checks
+one identity so they cannot drift apart again.
+
+**And it runs only after a 2xx**, which is the other half of not crying wolf. A
+`PUT` that failed outright leaves the previous object correctly in place; a
+read-back there would find "something other than what I wrote" on an ordinary
+failed write and file it as tampering. An attempt whose answer was never seen is
+not the read-back's business either — resolving *that* is the pre-write read's
+job (§9.3.1), and it is the only check that can do it.
 
 **The read-back is only meaningful because of §6.2.1.** *(From review: on a KV
 snapshot an immediate post-write read could legitimately return the previous
 value — up to 60 seconds or more — so a "mismatch" would have meant "tampering
 **or** normal propagation", indistinguishably. An integrity alert that fires
 routinely is not an integrity alert.)* Reads and writes go to the same Durable
-Object, serialized, so the read-back observes the write it follows and a
-differing `seq` has exactly one meaning.
+Object, serialized, so the read-back observes the write it follows and an object
+that is not the one just written has exactly one meaning.
 
 That leaves one distinction the schema has to carry, because collapsing it would
 re-introduce the same noise from the other direction:
 
 | Outcome | Meaning | Response |
 |---|---|---|
-| `OK` | the transport serves what was just published | — |
-| `MISMATCH` | it serves something else | **integrity alert** (§11) — this is the tamper/rollback signal |
+| `OK` | the object served back has the fingerprint just written (§9.3.1) | — |
+| `MISMATCH` | it serves anything else — a different `seq`, the same `seq` over different ciphertext, or our ciphertext under altered authenticated fields | **integrity alert** (§11) — this is the tamper/rollback signal |
 | `UNAVAILABLE` | the read-back could not be performed (timeout, 5xx) | retried up to 3 times over ~30s, then recorded and surfaced as **transport health**, not integrity |
 
 A failed *request* is not evidence of a wrong *value*. Filing it as one would
 teach the owner to ignore the row that matters.
 
-**A check that runs after every write cannot see a change between writes.**
+**A check that runs after a write cannot see a change between writes.**
 *(From review, which found this gap inside rev 5's own reassurance about §6.2.2.)*
 The read-back inspects the object the Mac has just written, so a rollback landing
 while the Mac is idle is invisible to it:
@@ -1735,8 +1839,9 @@ while the Mac is idle is invisible to it:
 The Mac never observed 99, nothing in that sequence looks anomalous to it, and
 the restored value was the one the transport served for most of a day.
 
-So `Publisher` also **reads before it writes**. *What it compares against* is
-the part rev 6 got wrong, so that is specified before the states are.
+So `Publisher` also **reads before it writes**. *What it compares against* is the
+part rev 6 got wrong, so that is what the rest of this section is about; §9.3.1
+then states it normatively, in one place, for the same reason.
 
 **The last `publication` row is the wrong thing to compare against.** *(From
 review.)* That row records an *attempt*, and `publication` keeps failed attempts
@@ -1758,73 +1863,57 @@ the owner to dismiss the one case that matters.
 
 **So the Mac keeps an expected-live set, and asks two questions instead of one.**
 
-The **expected-live set `E`** — what the transport should be serving right now,
-computed from local state only:
-
-- the newest publication **confirmed landed** (a 2xx), plus **every attempt after
-  it that was not confirmed** — a timeout, a dropped connection, any non-2xx.
-  The Mac cannot distinguish "did not apply" from "applied, answer lost", so it
-  declines to guess and treats both as *possibly live*;
-- or **`ABSENT`**, when a successful `rotate`/`revoke` (§6.3.1) came *after* that
-  publication, or nothing has been published yet — plus, again, any unconfirmed
-  attempts since.
-
-`E` is a single element in the ordinary case and grows only across a lost
-response.
+The **expected-live set `E`** is what the transport should be serving right now,
+computed from local state alone: the newest publication confirmed landed, plus
+every attempt after it whose answer was never seen — the Mac cannot distinguish
+"did not apply" from "applied, answer lost", so it declines to guess and treats
+both as *possibly live* — or `ABSENT`, when a local delete (§6.3.1) or the
+absence of any publication accounts for an empty object.
 
 **Provenance** answers the other question — *whose bytes are these?* — and needs
 an identity `seq` cannot provide, since anything able to write can write any
-`seq`. Every attempt records `payload_sha256 = SHA-256(nonce ‖ ciphertext)`:
-the AEAD output, **not** the JSON envelope, so the check does not inherit the
-whitespace sensitivity that §8.4.2 has to work around. A live object is **ours**
-iff its `(seq, payload_sha256)` pair matches a row this Mac wrote. The *pair*
-matters — our own ciphertext re-declared under a different `seq` is not ours; it
-is precisely what §6.1's AAD binding makes undecryptable on the phone, and it is
-a foreign write here.
+`seq`. That identity is the `payload_fingerprint` of §9.3.1: one hash over the
+whole authenticated object, so it covers exactly what the phone's decryption
+covers.
 
-Two ordering rules make those records complete rather than best-effort, both the
-"state before the action" idiom task 15 already uses:
-
-1. **the attempt row is written before the request is sent** — `seq` allocated,
-   `payload_sha256` stored, `outcome = UNCONFIRMED`. A crash between sending and
-   recording would otherwise leave the Mac unable to recognise its own write.
-   A retry is a **new attempt with a new `seq`**, never a reuse of the one whose
-   answer was lost: `seq` is `UNIQUE`, and reusing it would put two different
-   ciphertexts under one identity — the exact ambiguity this pair exists to
-   remove. Gaps in the sequence are harmless: **I6** refuses `seq < last_seq`,
-   a comparison that never requires the numbers to be consecutive;
-2. **`rotate`/`revoke` record the local delete transition** on 2xx, which is what
-   makes the absence that follows an expected state rather than an alarm.
+Both, and the ordering rules that make the local records complete rather than
+best-effort, are defined once in **§9.3.1**; the rest of this section is what
+they are for. `E` has one element in the ordinary case, grows only across a lost
+response, and returns to one element at the next read that resolves it.
 
 Classification is then mechanical:
 
 | Observed | State | Response |
 |---|---|---|
-| an object in `E` — or no object where `ABSENT ∈ E` | `MATCH` | — |
-| **ours, but not in `E`** — a superseded publication of this Mac is live again | `ROLLBACK` | **integrity alert** (§11); publish anyway (the number still has to move) and record the `seq` observed |
+| an object whose fingerprint is in `E` — or no object where `ABSENT ∈ E` | `MATCH` | — |
+| **ours, but not in `E`** — a superseded publication of this Mac is live again | `ROLLBACK` | **integrity alert** (§11); publish anyway (the number still has to move) and record the fingerprint observed |
 | **no object**, and no local delete or first-publication explains it | `ABSENT` | **integrity alert** — a snapshot vanished with nothing local to account for it |
-| a `(seq, payload_sha256)` pair **no local row carries** | `FOREIGN` | **integrity alert**, the gravest: something that is not this Mac wrote to our object |
+| a fingerprint **no local row carries**, or bytes that are not an envelope at all | `FOREIGN` | **integrity alert**, the gravest: something that is not this Mac wrote to our object |
 | the read could not be performed | `UNAVAILABLE` | **transport health, never integrity** — the read-back's rule, for the read-back's reason |
 
-**The pre-write read is also how an unconfirmed attempt gets resolved.** Finding
-one of them live proves it landed; finding the previous landed publication
-instead is taken as proof it did not. Either way the row stops being
-`UNCONFIRMED` and `E` collapses back to one element, so the widening a lost
-response causes lasts exactly until the next successful pre-write read. An
-observation that is neither — a `ROLLBACK`, a `FOREIGN`, an `UNAVAILABLE` —
-resolves nothing, and the row stays `UNCONFIRMED` until one does: an alert is
-not evidence about which of our own writes landed.
+**The pre-write read is also how an unconfirmed attempt gets resolved**, and rev
+7 left that half-built. *(From review.)* It said such a row "stops being
+`UNCONFIRMED`" while offering no state to move it to: `LANDED` is false,
+`UNCONFIRMED` keeps it in `E` forever, and deleting the row discards the audit
+this table exists to keep. §9.3.1 now carries the terminal outcomes and the rule
+that settles **every** pending row from one observation — not only the row that
+was observed — which is what makes the collapse of `E` a fact rather than a hope.
+An observation that resolves nothing — a `ROLLBACK`, a `FOREIGN`, an
+`UNAVAILABLE` — leaves them all pending: an alert is not evidence about which of
+our own writes landed.
 
-**One ambiguity, named rather than papered over.** Those two readings are not
-distinguishable from the Mac: a restore that rolls the object back to the
-*immediately previous* publication, landing inside a lost-response gap, is
-indistinguishable from a write that simply never applied — and this design reads
-it as the latter. That is the mundane explanation, and choosing the other one
-would raise an integrity alert on every ordinary timeout, which is the noise
-failure this section keeps refusing. The cost is stated so it is not discovered
-later: one specific rollback, in one specific window, is read as a failed write.
-Every rollback to any *earlier* publication is still `ROLLBACK`, and the restore
-that stays live is still caught at the following tick.
+**One ambiguity, named rather than papered over.** A restore that rolls the
+object back to **another member of `E`** — a publication of ours from inside a
+lost-response gap — is not distinguishable from the later attempts having simply
+never applied, and this design reads it as the latter. That is the mundane
+explanation, and choosing the other one would raise an integrity alert on every
+ordinary timeout, which is the noise failure this section keeps refusing. The
+cost is stated so it is not discovered later: inside a lost-response window a
+rollback to one of our own pending publications is read as a write that never
+applied, and the audit row says `NOT_LANDED` (§9.3.1) for an attempt that may
+have applied and been rolled back. Every rollback to a publication *outside* `E`
+— which is every rollback at all in the ordinary single-element case — is still
+`ROLLBACK`, and a restore that stays live is still caught at the following tick.
 
 It costs a second request a day and needs no new route: `GET /snapshot` already
 accepts the write token (§16) so the Mac can read its own writes back.
@@ -1875,6 +1964,142 @@ an edge serving only the phone an older object — different edge, different
 cache. That case is caught by the phone,
 warned about on the phone, and reaches the owner when he looks at the phone,
 which is where he was already looking at the number.
+
+### 9.3.1 Publication identity and outcome — the normative definitions
+
+*(New in rev 8, at review's suggestion — and the useful half of that suggestion
+is its diagnosis. The publication outcome, the identity of an object, the
+expected-live set, the read-back and the acceptance criteria in `tasks/` had
+become **one state machine explained in five distant places**, and rev 7's
+defects were drift between those explanations rather than errors inside any one
+of them. This subsection is the single normative source for **the identity of an
+object, the outcome states, the ordering rules, `E` and the resolver**: §7's
+schema names the values it stores, the tables above classify an observation, and
+tasks 19 / 19a point here — none of them defines these again. Scoped that way on
+purpose: a section claiming to be the only place anything is said would be the
+next sentence this document could not cash.)*
+
+**Identity.** One hash, over the whole authenticated object:
+
+```
+payload_fingerprint = SHA-256( LP("networth/publication/v1")  -- domain separator
+                             ‖ LP(aad)                         -- §6.1: the bytes GCM seals
+                             ‖ LP(nonce)
+                             ‖ LP(aead_output) )               -- ciphertext ‖ 16-byte GCM tag
+```
+
+`LP` and `aad` are §6.1's. Three properties rev 7's
+`(seq, SHA-256(nonce ‖ ciphertext))` did not have:
+
+- **It covers everything GCM authenticates.** *(From review.)* The tag is
+  computed over the AAD **and** the ciphertext, so an object with an altered
+  `pairing_id`, `schema_version` or `published_at` is a different authenticated
+  object — one the phone refuses to decrypt. Under the old pair it carried our
+  `seq` and our ciphertext bytes, so the Mac called it `MATCH`: the two ends
+  disagreed about whether the same object was ours, and the end that could have
+  raised the alert was the one saying nothing.
+- **`seq` is inside it**, so identity is one value rather than a pair — and our
+  own ciphertext re-declared under a different `seq` still comes out `FOREIGN`,
+  which is what it is.
+- **It is over values, not the envelope's JSON**, so it inherits neither
+  §8.4.2's whitespace trap nor a dependency on the transport returning bytes it
+  never promised to preserve.
+
+Two rules keep it from misfiring on ordinary operation:
+
+1. **Always recomputed from the object as observed**, never from local
+   configuration. Recompute with *today's* `schema_version` and the first
+   version bump files every object published before it as foreign.
+2. **Bytes that do not parse as the §6.1 envelope have no fingerprint**, and are
+   `FOREIGN` rather than `UNAVAILABLE`: the read succeeded, and what came back is
+   not our publication.
+
+**Outcome.** What the Mac knows about one attempt:
+
+| `publication.outcome` | Means | Set when | Terminal |
+|---|---|---|---|
+| `UNCONFIRMED` | may or may not have applied | at row creation, **before** the request is sent | no — the only state that puts a row in `E` |
+| `LANDED` | applied | the `PUT` returned 2xx, **or** a later read observed this attempt's fingerprint live | yes |
+| `NOT_LANDED` | did not apply | a later read observed a **lower** member of `E` live, or the expected absence | yes |
+| `SUPERSEDED` | never confirmed and can no longer be live: an attempt with a **higher** `seq` is `LANDED` | at that moment | yes |
+
+Rev 7 had only the first two, and its resolver — which says observing the
+previous object *proves* a later attempt did not land — had no truthful value to
+write. `NOT_LANDED` is the state it was missing. `SUPERSEDED` is the other half
+of the same gap: for a row that may perfectly well have applied before a later
+write replaced it, `NOT_LANDED` is the same false claim in the opposite
+direction and `LANDED` invents evidence. **A 2xx is therefore no longer the only
+confirmation** — a later observation of an attempt's own fingerprint is the
+second, and it is the one that settles a lost response. Every transition out of
+`UNCONFIRMED` records `outcome_resolved_at`, plus `outcome_resolved_by_seq`: the
+publication whose pre-write read or whose 2xx settled *this* row, `NULL` only
+when the row's own 2xx did. So the audit says how each row was decided, and a
+`SUPERSEDED` row names the later write that displaced it.
+
+**Ordering rules** — the "state before the action" idiom of task 15. Without
+them the records are best-effort and the resolver's premises are false:
+
+1. **The attempt row is written before the request is sent** — `seq` allocated,
+   `payload_fingerprint` stored, `outcome = UNCONFIRMED`. A crash in between
+   would otherwise leave the Mac unable to recognise its own write.
+2. **A retry is a new attempt with a new `seq`**, never a reuse of the one whose
+   answer was lost. `seq` is `UNIQUE`, and — the reason that matters here — the
+   resolver orders the set **by `seq`**, so two rows sharing one would have no
+   order between them and neither of rule 3's readings would be available.
+   (Rev 7 justified this by identity instead. That justification stopped being
+   true when the fingerprint absorbed `seq`: two ciphertexts under one `seq` now
+   have two distinct fingerprints. The rule survives; its reason changed.) Gaps
+   are harmless — **I6** compares `seq < last_seq`, which never requires
+   consecutive numbers.
+3. **At most one publish request is in flight, and attempts are sent in `seq`
+   order.** The `Publisher` is a single daily job (§13), so this costs nothing —
+   but the resolver reads "a higher `seq` would be live instead, had it applied",
+   and that is only true if a higher `seq` was never sent first.
+4. **`rotate` / `revoke` record the local delete transition** on 2xx (§6.3.1) —
+   what makes the absence that follows an expected state rather than an alarm.
+
+**The expected-live set.** `E` = the newest `LANDED` publication, plus every
+`UNCONFIRMED` attempt with a higher `seq`; or `ABSENT` in place of that
+publication when a recorded local delete is newer than it, or when nothing has
+been published yet. Terminal non-landed rows are not in `E` — which is precisely
+what lets it collapse.
+
+**The resolver.** One pre-write read that observes the fingerprint of a row
+`p ∈ E` — or observes nothing where `ABSENT ∈ E` — settles the whole set:
+
+| Row | Becomes | Because |
+|---|---|---|
+| `p` itself | `LANDED` (unchanged if it already was) | its bytes are live |
+| every `UNCONFIRMED` row with `seq > seq(p)` | `NOT_LANDED` | sent after `p`, so it would be live *instead of* `p` had it applied (rule 3) |
+| every `UNCONFIRMED` row with `seq < seq(p)` | `SUPERSEDED` | a later attempt is live; whether this one ever applied is undecidable and no longer relevant |
+| — the absence case instead of the three above — every `UNCONFIRMED` row in `E` | `NOT_LANDED` | nothing is live, and had any applied, one of them would be |
+
+The same collapse happens on a 2xx: every `UNCONFIRMED` row below the landing
+`seq` becomes `SUPERSEDED`. After either, `E` holds exactly one element — that
+is what "collapses back" means, and it is now derivable rather than asserted:
+the widening a lost response causes lasts until the next resolving observation,
+and no longer. `ROLLBACK`, `FOREIGN` and `UNAVAILABLE` resolve nothing.
+
+The observation is recorded on the attempt it precedes (`prewrite_state`,
+`prewrite_fingerprint`); the transitions it triggers are written to the rows they
+settle. **A terminal row is never revisited.** If a `NOT_LANDED` object turns up
+live later, that is a `ROLLBACK` — something restored a write this design decided
+never applied — and it belongs in an alert, not in an audit row quietly changing
+its mind.
+
+**Where the identity is compared.** Twice, both times against the stored
+`payload_fingerprint`, which is the whole reason one definition suffices:
+
+| Check | When | `MATCH` / `OK` means |
+|---|---|---|
+| **pre-write read** | before every `PUT` | the live fingerprint is in `E`, or the expected absence |
+| **read-back** | after a `PUT` that returned **2xx**, and only then | the live fingerprint is the one just written |
+
+The read-back is deliberately not run after a failed or unanswered `PUT`. The
+previous object is legitimately still there, so comparing it against what the Mac
+*meant* to write would report an ordinary failed write as tampering — the rev-7
+defect, arriving through the other check. That case belongs to the pre-write
+read, which is the only one holding the state to judge it.
 
 ---
 
@@ -2482,25 +2707,35 @@ the phone with no way to decrypt anything.*
    Keep the browser off this Mac where you can:
 
    ```
-   wrangler login --device --use-keyring   # device-code grant: authorise in a
-                                           #   browser on ANOTHER device. Token
-                                           #   lands in the macOS keychain
+   wrangler login --device --browser=false --use-keyring
+                                           # device-code grant, and NO browser
+                                           #   opened here: Wrangler prints a URL
+                                           #   and a user code to approve on
+                                           #   ANOTHER device. Token lands in the
+                                           #   macOS keychain
    #   ... run exactly the one operation you came to run ...
    wrangler logout                         # invalidates the token at Cloudflare,
                                            #   then deletes it locally
    wrangler whoami                         # confirms (a). It says nothing about (b)
    ```
 
-   `--device` uses the OAuth 2.0 Device Authorization Grant instead of the
-   default `localhost` callback, so the browser that signs in does not have to be
-   this one, and the session that outlives the bracket sits on a device you
-   chose. (`--browser=false` is *not* a substitute: it only prints the link
-   instead of opening it, while the callback still comes back to this machine —
-   `--callback-host` defaults to `localhost` — so the browser you paste it into
-   has to be one that can reach this Mac.) If a Wrangler build rejects the two flags
-   together, drop `--use-keyring` — it governs at-rest storage of a token this
-   bracket deletes anyway, while `--device` is the flag that moves the durable
-   session.
+   **Both flags, and the second one is the one this step is about.** *(From
+   review, verified against Cloudflare's Wrangler command docs before it was
+   written down.)* `--device` uses the OAuth 2.0 Device Authorization Grant
+   instead of the `localhost` callback, so the browser that signs in does not
+   have to be this one — but device mode **still opens the verification URL in
+   this machine's default browser**, which is exactly the session (b) that
+   outlives the bracket. `--browser=false` is what stops that; Cloudflare
+   documents it as the way to "stop Wrangler from opening the browser for you"
+   and copy the verification URL yourself. Neither flag substitutes for the
+   other: without `--device`, `--browser=false` only suppresses the opening while
+   a local callback server still waits on `localhost`, so the browser you paste
+   into must be able to reach this Mac. (The docs make the same split explicit
+   from the other side — `--callback-host` and `--callback-port` are rejected
+   when combined with `--device`, because the device flow has no local callback
+   at all.) If a Wrangler build rejects the trio, drop `--use-keyring`: it governs
+   at-rest storage of a token this bracket deletes anyway, while `--device` moves
+   the durable session and `--browser=false` keeps it off this machine.
 
    **If the browser step happens here regardless** — creating the account in
    step 1 is a dashboard action, and the owner may simply prefer this machine —
