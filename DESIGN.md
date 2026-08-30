@@ -3,6 +3,21 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 4 — reworked after Codex's third review requested changes on
+`93e7556`. Its five findings were about mechanisms that could not be built as
+specified, not about prose: §6.2.1/§6.3.1 (the pairing path promised atomic,
+immediate revocation on a store that offers neither — the snapshot and the
+pairing verifier move to a **Durable Object**, and KV keeps only the webhook
+queue, which is the one state that can tolerate it), §6.3.2/§18/§19 (the
+Tailscale fork was offered to the owner with **no pairing path** — both branches
+are now complete, and what Tailscale costs is stated where the choice is made),
+§14a.1 (the backup gate compared *filesystems*, so two volumes on one dying disk
+passed it — it now resolves the **physical store**), §13 (the full-sync
+predicate was market-driven only, so a Friday success satisfied it all weekend
+and balances crossed their own staleness window by construction), and §4/§19
+(the last place the runbook still told the owner to stop *implementation* on an
+O2 `NO`).
+
 Revision 3 — reworked after Codex's second review requested changes on
 `da53ea7`. Its six findings were all cross-section contradictions: places where
 two sections were individually defensible and jointly impossible. Answered in
@@ -192,8 +207,13 @@ says access to Production "via either a paid plan or a trial" satisfies the
 prerequisite, and Trial users "do not need to complete [full Production
 registration] until you upgrade"; support material says Trial reaches most major
 OAuth institutions, typically 6–24h after approval. Every brokerage in scope is
-an OAuth institution, so this is a **go/no-go for the whole approach** and only
-the owner's dashboard can settle it. Recorded as a gate (§18, O2), not asserted.
+an OAuth institution, so this is a **go/no-go for the Plaid Production-Link
+path** — tasks 07/07a/08 and everything downstream of a real Item — and only the
+owner's dashboard can settle it. It is **not** a gate on the project: the
+foundation (schema, `Store`, `TokenStore`, the Plaid client wrapper, the backup
+gate, Sandbox rehearsal) survives a `NO` intact, because a `NO` changes how
+accounts get linked, not the staleness machine, the snapshot model, the
+manual-asset path or the transport. Recorded as a gate (§18, O2), not asserted.
 
 **F5 — Real-time balance is bundled on Trial, and it is the only way a cash or
 card balance's age can be known at all.** *(From review.)* Plaid's accounts docs
@@ -242,7 +262,8 @@ authenticated, and must not publish the owner's net worth to the internet.
    │    PlaidClient (holds client_id/secret + access_tokens)      │
    │    WebhookDrain (pulls + verifies queued events)             │
    │    SQLite: full history, append-only  →  encrypted backup    │
-   │                        │            (never leaves the Mac)   │
+   │                        │       (leaves this disk by design,  │
+   │                        │        never to a third party §14a) │
    │            Publisher: encrypt (seq, AAD) + PUT               │
    └────────────────────────┼─────────────────────────────────────┘
               write token   │  ciphertext only
@@ -281,7 +302,9 @@ Seams (interfaces the rest of the code depends on, never concrete classes):
   and assert the transport is serving what was just published (§9.3). Swappable
   transport.
 - `WebhookDrain` — fetch queued webhook events from the transport, **verify
-  Plaid's signature locally**, convert to item state changes (§8.4). Advisory
+  Plaid's signature locally**, convert to item state changes (§8.4). **Exists
+  only on the Cloudflare branch** — Plaid needs a public endpoint to deliver to,
+  and the Tailscale branch deliberately has none (§6.3.2). Advisory
   *for the number* — a dropped event can never make the total wrong, because the
   poll floor is what I3 rests on. It is **not** redundant with polling: an
   earlier draft claimed here that "everything it detects, polling eventually
@@ -289,8 +312,12 @@ Seams (interfaces the rest of the code depends on, never concrete classes):
   `PENDING_DISCONNECT`'s `reason` and `disconnect_time` are the counterexample —
   advance warning that no poll can derive.
 - `Notifier` — alert delivery (§11).
-- `BackupStore` — encrypted snapshot of the database + token material, local
-  only (§14a).
+- `BackupStore` — encrypted archive of the database + token material. It goes to
+  **hardware the owner controls but not the Mac's own physical disk** — never to
+  a third party, and never to the disk whose death it exists to survive
+  (§14a.1). *(Rev 3 called it "local only" here and "never leaves the Mac" in the
+  diagram above while §14a.1 required an external or remote destination; review
+  was right that one of the two had to go, and it is these two.)*
 
 The sync core must not import anything UI- or transport-specific.
 
@@ -381,16 +408,16 @@ key.
 
 | Transport | Auth | Free? | Mac asleep? | **What it retains** | Verdict |
 |---|---|---|---|---|---|
-| **Cloudflare Workers + KV** — Mac `PUT`s ciphertext to one key; phone `GET`s it | Two distinct bearer tokens (write / read), checked in the Worker | 100k Worker requests/day; KV 100k reads + 1k writes/day, 1 GB. We need ~1 write and a handful of reads a day | **Yes** | **Current value only**, by design — an overwrite replaces it | **Recommended** |
-| Tailscale — phone reaches the Mac directly over WireGuard | Device identity; **no bearer secret anywhere** | Personal tier, long-standing | **No** — Mac must be awake | Nothing; there is no third party | Best on pure security; loses on availability |
+| **Cloudflare Worker + Durable Object** — Mac `PUT`s ciphertext into one DO; phone `GET`s it (KV keeps only the webhook queue, §6.2.1) | Two distinct bearer tokens (write / read), checked in the Worker | 100k Worker requests/day; DO free tier 100k req + 100k rows written/day, 5 GB. We need ~1 write and a handful of reads a day | **Yes** | **Current value only**, by design — an overwrite replaces it | **Recommended** |
+| Tailscale — phone reaches the Mac directly over WireGuard | Tailnet device identity, **plus** the payload key, which *is* the read credential on this branch (§6.3.2); no bearer token anywhere | Personal tier, long-standing | **No** — Mac must be awake | Nothing; there is no third party | Best on pure security; loses availability **and the webhook accelerator** (§6.3.2) |
 | Private GitHub repo (`…-data`) | Fine-grained read-only PAT | Free private repos are mature | Yes | **Every payload ever published**, permanently, by design | **Rejected** — see above |
 | Public static host (Pages, etc.) | None | Free | Yes | — | **Rejected** — publishes net worth |
 | ntfy / public pubsub free tiers | None or weak | Varies | Yes | — | **Rejected** — no real auth |
 
-**Recommendation: Cloudflare Workers + KV.** It is the only candidate that is
+**Recommendation: Cloudflare Workers.** It is the only candidate that is
 simultaneously available while the Mac sleeps and free of an accumulating
 corpus, and its free limits sit three orders of magnitude above one user's
-traffic. It costs one new free account (owner-only, §19) and a ~30-line Worker —
+traffic. It costs one new free account (owner-only, §19) and a small Worker —
 which, not incidentally, is also the zero-cost webhook receiver §8.4 needs, so
 the second use pays for the setup a second time.
 
@@ -409,9 +436,75 @@ publication overwrites the only stored copy, and the old key decrypts nothing
 that still exists.
 
 Tailscale remains the stronger choice on pure security and stays a documented
-swap behind the `Publisher` seam. Its cost is that opening the app away from
+swap behind the `Publisher` seam. It costs two things: opening the app away from
 home shows a cached copy — which §9 already renders honestly, so it degrades
-rather than breaks. The choice is the owner's (**O5**).
+rather than breaks — and, less obviously, **Plaid webhooks stop being possible
+at all**, because there is no public endpoint to deliver to (§6.3.2). The choice
+is the owner's (**O5**), and it is now a choice between two fully specified
+branches rather than one design and one gesture.
+
+#### 6.2.1 Two stores, because the two states have opposite requirements
+
+*(From review, and it was the sharpest finding of the round: rev 3 put the
+pairing verifier and the snapshot in **KV**, then claimed one request replaced
+them "atomically", that no failure could leave the old token working, and that
+the old phone was locked out "from this instant" — while §8.4.1 of the same
+document correctly said KV has no transactions and takes "up to 60 seconds or
+more" to converge. Both cannot be true. A security claim that the storage layer
+contradicts elsewhere in the same file is not a wording problem; it is a
+mechanism that cannot be built.)*
+
+The two pieces of state this transport holds want opposite things:
+
+| State | Access pattern | What it needs | Store |
+|---|---|---|---|
+| Active pairing verifier + current snapshot | one small unit, replaced together, read by the phone and read back by the Mac | **atomic replace** and **read-your-writes**, or the revocation and integrity claims are fiction | **Durable Object** (SQLite backend) |
+| Webhook queue | many independent keys, written once, expired by TTL, acked by delete | cheap unique writes; **at-least-once is already the contract** | **KV** |
+
+So the pairing and the snapshot move into a single Durable Object, and KV keeps
+the queue it is actually good at. Cloudflare's own description of Durable
+Objects is the property being bought: they are "single-threaded and
+cooperatively multi-tasked", with "durable, transactional, and strongly
+consistent storage", and each object has "a globally-unique name, which allows
+you to send requests to a specific object from anywhere in the world" — one
+instance, serialized requests. `rotate` becomes one transaction inside one
+object: verifier replaced **and** snapshot deleted, or neither.
+
+**The queue stays in KV deliberately, not by omission.** Eventual consistency
+there is already accounted for and already harmless: a webhook is advisory
+(§8.4), a duplicate is a no-op insert on `UNIQUE(body_sha256, jwt_iat)`, a lost
+one costs advance warning and never the number, and `list` lagging ~60s just
+means an event drains a tick later. None of that is true of a revocation.
+
+**Cost, checked rather than assumed** (the zero-spend rule makes this
+load-bearing): the Workers Free plan includes Durable Objects with the **SQLite
+storage backend** — "Only Durable Objects with SQLite storage backend are
+available" on Free — at 100,000 requests/day, 13,000 GB-s/day, 5 million SQLite
+rows read/day, 100,000 rows written/day and 5 GB total storage. This design
+writes on the order of one row a day and reads a handful. One property matters
+more than the headroom: **exceeding a free-tier limit fails the operation with
+an error rather than generating a bill.** There is no overage to accidentally
+incur, which is the only reason a metered-looking service is admissible at all
+under the zero-spend rule.
+
+**The Mac's credential surface does not change, which is the other reason this
+is admissible.** §8.4.3 rejected Cloudflare Queues because its pull consumers
+authenticate with an account-scoped **Cloudflare API token**, and that argument
+would be self-defeating if the Durable Object needed one. It does not: the DO is
+reached through a **Worker binding**, so the Mac still presents exactly one
+bearer token to our own Worker and holds no Cloudflare credential at all. The
+only account-level access anyone needs is the owner's own `wrangler` login at
+deploy time (§19), which is an owner step already.
+
+*(Rejected alternative: keep KV and weaken the claims — "revocation within ~60
+seconds", read-back retried through the propagation window before alerting. It
+is implementable, and it was the cheaper edit. It loses on the two things this
+product is about. A stolen phone would stay readable for a bounded-but-real
+window with no way to shorten it, and the read-back — the Mac's only evidence
+that the transport is serving what it published — would have to treat a genuine
+mismatch and a propagation lag identically, which turns the one alert that means
+"someone is tampering" into an alert that fires for nothing. A tamper alert
+nobody trusts is worse than no tamper alert.)*
 
 #### 6.3 Provisioning the phone's secrets: pairing, not compilation
 
@@ -423,9 +516,14 @@ rebuild-and-reinstall, and bypasses the platform's protected secret storage.
 Instead, **the app ships with no secrets at all** and is provisioned once at
 runtime:
 
-1. On the Mac, `networth pair` mints a fresh payload key, a read-only transport
-   token and a `pairing_id`, and renders them as a QR code in the terminal (with
-   a typed fallback string).
+1. On the Mac, `networth pair` mints a fresh payload key and a `pairing_id`,
+   plus — **on the Cloudflare branch only** — a read-only transport token, and
+   renders them as a QR code in the terminal (with a typed fallback string).
+   *(The payload key is minted on both branches: §6.1 encrypts the payload
+   regardless of transport, so "which transport" never decides whether the phone
+   needs provisioning, only what else is in the QR. Rev 3 missed that and
+   offered the owner a Tailscale fork with no pairing path at all; §6.3.2 now
+   defines it.)*
 2. The phone scans it once, on-screen, on the owner's own desk — the material
    never crosses a network during pairing.
 3. The app stores it via `flutter_secure_storage`, backed by the **Android
@@ -435,14 +533,20 @@ runtime:
 
 The release APK is therefore not a bearer artifact: losing it leaks nothing.
 
-#### 6.3.1 The Worker has to be told — the control path
+#### 6.3.1 The Worker has to be told — the control path (Cloudflare branch)
 
-*(From review. The draft above minted a read token on the Mac and then claimed
+*(From review, twice. Rev 2 minted a read token on the Mac and then claimed
 re-pairing "invalidates the read token", with no mechanism by which the Worker
-could ever learn either fact. As written the Worker knew exactly one read token,
-forever, configured by hand — so rotation was not slow, it was **not
-implementable**. A revocation story that cannot run is worse than none, because
-it gets believed.)*
+could ever learn either fact — rotation was not slow, it was **not
+implementable**. Rev 3 built the routes but put their state in KV, so the words
+"atomically" and "from this instant" described something the store cannot do
+(§6.2.1). Both are the same class of error: a revocation story that cannot run
+is worse than none, because it gets believed.)*
+
+**All of the state below lives in one Durable Object** — the active pairing
+verifier and the current snapshot together, which is what makes "replace the
+pairing and drop the snapshot" a single transaction rather than a hopeful
+sequence of two writes.
 
 A fourth route, authenticated by the credential only the Mac holds:
 
@@ -455,8 +559,8 @@ A fourth route, authenticated by the credential only the Mac holds:
 SHA-256(read_token)`; `GET /snapshot` hashes the presented bearer and compares
 in constant time. Read tokens are 256-bit random strings, so a plain hash is
 sufficient and a slow KDF would buy nothing — there is no guessable password
-here. A leak of the Worker's KV therefore does not yield a working read
-credential, and the Mac keeps the only copy of the token itself (in
+here. A leak of the Worker's stored state therefore does not yield a working
+read credential, and the Mac keeps the only copy of the token itself (in
 `~/agents/secrets/`) until the phone scans it.
 
 **Rotation order, and what each failure leaves behind.** The sequence is chosen
@@ -464,22 +568,53 @@ so that no step can leave the *old* token working:
 
 1. Mint locally; write the `pairing` row as `PENDING`. Nothing has changed
    anywhere else, so a crash here is a no-op.
-2. `POST /pairing/rotate`. One request, so the Worker cannot be left with a new
-   verifier and an old snapshot readable by the old key. **On failure, abort and
-   print why** — the old pairing is still active, the QR is *not* rendered, and
-   the owner re-runs the command. Never render the QR before this returns 2xx:
-   a phone holding material the Worker does not know is indistinguishable to the
+2. `POST /pairing/rotate`. One request into one Durable Object, handled in **one
+   transaction**: the verifier is replaced and the snapshot deleted together, or
+   neither happens. There is no interleaving in which a new verifier coexists
+   with a snapshot the old key can still decrypt. **On failure, abort and print
+   why** — the old pairing is still active, the QR is *not* rendered, and the
+   owner re-runs the command. Never render the QR before this returns 2xx: a
+   phone holding material the Worker does not know is indistinguishable to the
    owner from a broken transport.
 3. On success, mark the new row `ACTIVE` and the old one `revoked_at = now`.
    **From this instant the old phone is locked out** even though the new phone
    has not scanned anything yet. That ordering is deliberate: the case that
    matters is a *stolen* phone, and it must not stay readable while the owner
-   walks to their desk.
+   walks to their desk. This claim is only true because of the store: every
+   `GET /snapshot` is a request to the same single-threaded object, serialized
+   after the transaction that revoked the old verifier — there is no second
+   replica that could still be answering with the old one.
 4. Publish immediately under the new key with the next `seq`. If this fails, the
    pairing is still correct — the phone pairs and shows "no data yet" until the
    publish job retries on the next tick (§13), and `doctor` reports the
    publication as overdue (§11). Degraded, visible, self-healing.
 5. Render the QR.
+
+**Partial failure, enumerated — including the one that has no answer at the
+Worker.** The transaction removes every *server-side* split state, but the Mac
+still has a network in front of it, so:
+
+| Failure | What the Worker holds | What the Mac does |
+|---|---|---|
+| Crash at step 1 | old pairing, old snapshot | nothing happened; the `PENDING` row is inert. Re-run |
+| `rotate` returns non-2xx | old pairing, old snapshot (transaction rolled back) | abort, print the status, **no QR**. Re-run |
+| **`rotate` times out / connection dies — outcome unknown** | either state, and the Mac cannot tell which | mark the row `UNCERTAIN`, **suspend publishing**, alert, and tell the owner to re-run `networth pair` |
+| Crash after 2xx, before the local row is marked `ACTIVE` | new pairing, no snapshot | same as `UNCERTAIN` on the next run — and re-running converges either way |
+| Publish (step 4) fails | new pairing, no snapshot | pairing is correct; publish retries next tick; `doctor` reports it overdue |
+
+The uncertain case is the only interesting one, and it is resolved by
+**re-running rather than by asking**: a second `networth pair` mints fresh
+material and rotates again, which is correct whichever way the first attempt
+resolved. That is why there is no `GET /pairing/status` route — a route whose
+only purpose is to tell the Mac something it can simply overwrite is a route
+that can also be abused.
+
+**Suspending publishing there is deliberate.** If an uncertain rotate did land,
+the Mac's local `ACTIVE` row is stale and it would keep publishing under a key
+no phone can use, while the read-back — which only compares `seq` — reported
+success. That is a green indicator over a broken pipe: this product's cardinal
+sin, arriving through the control path. Refusing to publish makes it loud and
+self-healing instead.
 
 **Deleting the snapshot on rotate is not housekeeping.** The scenario is a
 stolen phone, and it holds the old payload key. Revoking its token stops it
@@ -505,6 +640,62 @@ reaches that route.
 
 **The APK is still secret-free.** Everything above happens between the Mac and
 the Worker, or between the Mac and the phone across a QR code on a desk.
+
+#### 6.3.2 The same control path on the Tailscale branch
+
+*(From review, and it was a fair catch about how an open question was left open:
+**O5** offered the owner Tailscale, §6.1 requires the payload to be encrypted on
+**every** transport, and yet everything above — pairing, rotation, revocation —
+was written as a Worker flow, with the runbook saying to skip the whole step if
+Tailscale won. That is not a fork, it is one designed branch and one gap. Either
+the fork closes or both branches are real; the owner should get to keep the
+choice, so both branches are real.)*
+
+The mechanism, end to end:
+
+- **Transport.** `Publisher` encrypts exactly as in §6.1 and writes the
+  ciphertext to a local object. A small HTTP server bound to the Mac's **tailnet
+  interface** serves `GET /snapshot`. The phone fetches it over WireGuard. There
+  is no third party and nothing is stored off the Mac.
+- **No TLS requirement, and therefore no free-tier question.** The tailnet link
+  is already end-to-end encrypted and the payload is encrypted underneath it.
+  `tailscale serve` can front the port with a tailnet TLS certificate and
+  identity headers if the owner has certificates enabled — a strict improvement,
+  never a dependency, so nothing here rests on which Tailscale features a given
+  plan includes.
+- **Authentication is two layers, neither of them a bearer token.** Tailnet
+  membership decides who can reach the port; **the payload key is the read
+  credential** — a tailnet device that never scanned the QR receives ciphertext
+  it cannot decrypt. This is why the branch has no read token, no verifier and
+  no `SHA-256` comparison: there is nothing to present.
+- **Pairing.** `networth pair` mints the payload key and `pairing_id` as always;
+  the QR carries those plus the Mac's tailnet name instead of a read token.
+- **Rotation and revocation are one local SQLite transaction** — new pairing
+  `ACTIVE`, old `revoked_at`, served object dropped. The atomicity problem of
+  §6.2.1 simply does not exist here: one process, one database, one writer.
+  There is no `UNCERTAIN` state either, because there is no network call whose
+  outcome the Mac can fail to learn. **`networth revoke` is immediate in the
+  literal sense** on this branch.
+- **Lost phone.** `networth revoke`, then — recommended and owner-only — remove
+  the device from the Tailscale admin console, which is the stronger control
+  because it revokes reachability rather than content. As on the Cloudflare
+  branch, the ciphertext already cached *on* the stolen phone is beyond recall;
+  revocation stops the next fetch, never the last one.
+- **`seq` and replay defence are unchanged** (§9.3): same AAD, same monotonic
+  counter, same phone-side refusal.
+- **Read-back still runs**, against the served endpoint rather than the loopback
+  file, so it exercises the serving path that the phone actually uses.
+
+**What this branch gives up, stated where the choice is made.** There is no
+public endpoint, so **Plaid webhooks cannot be delivered at all** — the drain
+(§8.4) does not exist on this branch and task 12a drops with it. **I3 then rests
+entirely on the hourly poll floor**, which is exactly what I3 was worded to
+promise, so no guarantee is broken; what is lost is the *accelerator*:
+`PENDING_DISCONNECT`'s `reason` and `disconnect_time`, i.e. advance warning that
+a connection is scheduled to die, which no poll can derive. Combined with the
+Mac-must-be-awake availability cost, that is the honest price of the branch, and
+it now appears in **O5** so the owner is choosing with it visible rather than
+discovering it afterwards.
 
 #### 6.4 Rotation and expiry monitoring
 
@@ -606,14 +797,20 @@ alert(id, created_at, kind, item_id, account_id, message,
       notified_at, acknowledged_at, resolved_at)
 
 pairing(id, created_at, key_ref, read_token_ref,   -- refs only, never the material
-        state,                                     -- PENDING | ACTIVE | REVOKED (§6.3.1)
+                                                   --   read_token_ref NULL on the Tailscale
+                                                   --   branch: no bearer token exists (§6.3.2)
+        state,                                     -- PENDING | ACTIVE | REVOKED
+                                                   --   | UNCERTAIN (rotate outcome unknown —
+                                                   --   suspends publishing, §6.3.1)
         registered_at,                             -- when the Worker accepted the verifier
         revoked_at)                                -- §6.3.1
 
 publication(                                       -- §6 audit trail
   id, snapshot_id, pairing_id, seq UNIQUE,         -- monotonic, NEVER reset (§6.3.1); replay defence (I6)
   schema_version, published_at, transport, ok, error,
-  readback_ok, readback_seq)                       -- what the transport served straight back (§9.3)
+  readback_state,                                  -- OK | MISMATCH | UNAVAILABLE (§9.3) — a failed
+                                                   --   request is not evidence of a wrong value
+  readback_attempts, readback_seq)                 -- what the transport served straight back
 
 webhook_event(                                     -- §8.4; advisory input, never a dependency
   id,
@@ -869,6 +1066,11 @@ infrastructure the project has anyway. Verification happens **on the Mac**: the
 verification endpoint needs `client_id` + `secret`, and putting those in a
 Worker would scatter the Plaid credential to a second place to save nothing.
 
+**The accelerator exists only on the Cloudflare branch.** Plaid delivers
+webhooks to a public HTTPS endpoint, and the Tailscale branch deliberately has
+none, so everything from here to §8.4.3 is conditional on **O5** (§6.3.2). The
+floor is not conditional, which is the point of describing it as a floor.
+
 That split is what makes the queue between them load-bearing, and the first
 draft specified it in one clause ("appends … to a KV queue") that KV cannot
 honour. Review was right to stop there, so the mechanics are now spelled out.
@@ -891,7 +1093,10 @@ Cloudflare's own docs, checked rather than assumed:
 #### 8.4.2 The queue: one key per event, ack by delete
 
 **One unique KV key per event** removes every problem above by never writing the
-same key twice.
+same key twice. This is the one thing KV is kept for (§6.2.1): write-once keys,
+TTL expiry, an idempotent consumer, and a payload whose loss costs a warning
+rather than the number. The pairing verifier and the snapshot had none of those
+properties, which is why they moved to a Durable Object and this did not.
 
 1. Plaid `POST`s to a long unguessable path on the Worker.
 2. The Worker holds no Plaid credential and does **no** verification. It caps
@@ -1028,6 +1233,12 @@ now defines it in terms a test can assert.
 The payload carries `published_at`, `publish_interval_seconds` (86400) and
 `grace_seconds` (default 21600 — six hours), so the deadline travels *with* the
 data and the phone never hardcodes the Mac's cadence:
+
+*(86400 is the **promise** — "rebuilt at least once a day" (§1) — not the
+schedule. §13 runs the sync on a tighter 20h rule precisely so that one failed
+run does not break the promise; the gap between the two is deliberate margin,
+not two numbers disagreeing. The phone is told the promise, because that is what
+the owner is owed and what a broken pipeline violates.)*
 
 ```
 stale_after = published_at + publish_interval_seconds + grace_seconds
@@ -1170,8 +1381,32 @@ What the Mac *can* observe, it now does. `Publisher` performs a **read-back**
 after every publication: it re-fetches the object it just wrote and asserts the
 returned `seq` matches. A mismatch means the transport is serving something
 other than the current value, and that raises a Mac-side alert (§11), recorded
-in `publication.readback_ok` / `readback_seq`. It costs one extra request per
+in `publication.readback_state` / `readback_seq`. It costs one extra request per
 day.
+
+**The read-back is only meaningful because of §6.2.1.** *(From review: on a KV
+snapshot an immediate post-write read could legitimately return the previous
+value — up to 60 seconds or more — so a "mismatch" would have meant "tampering
+**or** normal propagation", indistinguishably. An integrity alert that fires
+routinely is not an integrity alert.)* Reads and writes go to the same Durable
+Object, serialized, so the read-back observes the write it follows and a
+differing `seq` has exactly one meaning.
+
+That leaves one distinction the schema has to carry, because collapsing it would
+re-introduce the same noise from the other direction:
+
+| Outcome | Meaning | Response |
+|---|---|---|
+| `OK` | the transport serves what was just published | — |
+| `MISMATCH` | it serves something else | **integrity alert** (§11) — this is the tamper/rollback signal |
+| `UNAVAILABLE` | the read-back could not be performed (timeout, 5xx) | retried up to 3 times over ~30s, then recorded and surfaced as **transport health**, not integrity |
+
+A failed *request* is not evidence of a wrong *value*. Filing it as one would
+teach the owner to ignore the row that matters.
+
+On the Tailscale branch the read-back reads back through the served endpoint
+(§6.3.2), which is local and consistent by construction; the three states and
+their meanings are unchanged.
 
 Stated precisely, because a partial defence described as a whole one is its own
 kind of lie: the read-back catches a transport that is *globally* serving stale
@@ -1228,7 +1463,7 @@ net_worth = Σ(asset accounts) − Σ(liability accounts)
 
 | Channel | Used for | Mechanism |
 |---|---|---|
-| macOS notification | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **publication overdue**, **read-back mismatch**, **accounts pending reconciliation**, **drain stalled** | `osascript -e 'display notification'` |
+| macOS notification | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **publication overdue**, **read-back mismatch**, **read-back unavailable**, **pairing uncertain**, **accounts pending reconciliation**, **drain stalled** | `osascript -e 'display notification'` |
 | `alert` table + in-app banner | everything above, persistent | DB row, travels in the payload; cleared on resolve |
 | **Phone-local warning** | **rejected rollback / foreign `pairing_id`** (§9.3) | in-app, persistent until a newer `seq` arrives — **never reaches the Mac** |
 | Agent mailbox | any Mac-side alert unresolved >24h | write to `~/agents/inbox/claude/new/` |
@@ -1248,7 +1483,14 @@ are the ones a naive build would not have:
   the phone it is indistinguishable from being offline (§9.1).
 - **Read-back mismatch** — the transport served back something other than what
   was just published (§9.3). This is the Mac-observable half of transport
-  integrity.
+  integrity, and it is kept **separate from read-back *unavailable*** (the check
+  could not be run at all, after retries): one says the value is wrong, the
+  other says the evidence is missing, and merging them would make the tamper
+  signal fire on ordinary network weather until nobody read it.
+- **Pairing uncertain** — a `rotate` whose outcome the Mac never learned
+  (§6.3.1). Publishing is suspended until the owner re-runs `networth pair`,
+  because the alternative is publishing under a key that may already be revoked
+  while every other indicator stays green.
 - **Drain stalled** — a queued webhook older than an hour is still undrained
   (§8.4.2). Without it a broken drain is invisible until the TTL destroys the
   evidence.
@@ -1310,14 +1552,49 @@ logic.**
 |---|---|
 | webhook drain | every tick (cheap: one prefix `list`, usually empty) — §8.4.2 |
 | health poll | >60 min since the last poll |
-| full sync | no successful full sync since the most recent market close + 1h |
+| full sync | **either** no successful full sync since the most recent market close + 1h, **or** >20h since the last successful full sync — whichever comes first (see below) |
 | quote refresh | any `MANUAL_QTY_LIVE_PRICE` price older than the last close |
 | publish | a snapshot exists newer than the last successful `publication`; every publish is followed by a read-back (§9.3) |
-| backup | >24h since the last verified backup — §14a. Refuses to run if the destination is on the database's own device (§14a.1) |
+| backup | >24h since the last verified backup — §14a. Refuses to run unless the destination resolves to a **physical store disjoint from the database's** (or a remote machine), and refuses if it cannot resolve at all (§14a.1) |
 
 **Due-ness is computed from stored state, never from cron semantics.** A Mac
 asleep for two days simply finds work due on wake and catches up; there is no
 missed-fire concept to handle.
+
+**Why the full sync has two predicates and not one.** *(From review. Rev 3 made
+a sync due only after a new market close, which quietly redefined the product:
+after a successful Friday run the predicate stayed false all weekend, so a Monday
+morning number was built from Friday's balances — and at ~36h the copy would
+have crossed its own staleness window (§9.1, §1) by **construction**, on the one
+promise the brief states outright: rebuilt at least once a day. A schedule that
+cannot satisfy the requirement it exists for is a bug in the schedule, not a
+caveat for the UI.)*
+
+The two clocks in §8.1 are why the two predicates are not redundant:
+
+- **Holdings move on market time.** Institutions post after close, so
+  *market close + 1h* is when new data can actually exist. Nothing else fetches
+  it earlier.
+- **Cash and card balances move on wall-clock time.** Spending does not wait for
+  a market day. `/accounts/balance/get` returns a real-time balance whenever it
+  is called (**F5**), so a weekend call returns genuinely newer data.
+
+`min(market-close rule, 20h)` covers both with one job and one code path, which
+is worth more than a second job here: the sync already fetches holdings and
+balances together, and splitting them would double the state to reason about for
+no additional freshness.
+
+**20 hours, not 24.** A 24h threshold makes "at least once a day" *exactly*
+achievable and therefore fragile — one failed run and the day is missed. At 20h
+a failure has a full backoff cycle (1h/2h/4h/8h) to recover before the 36h stale
+threshold is anywhere near, so the daily guarantee survives a bad afternoon
+rather than depending on nothing going wrong.
+
+The visible consequence is that weekend runs fetch holdings that have not moved.
+That is correct and costs nothing: `source_as_of` does not advance, so Axis B
+keeps ageing the holdings honestly (§8.1) while the balances genuinely refresh,
+and the `FROZEN` escalation counts **market** days, so a weekend of unchanged
+holdings can never be mistaken for a frozen feed.
 
 **Idempotency without mutation.** An earlier draft said a second sync the same
 day "updates that day's snapshot", which contradicted the append-only claim in
@@ -1380,10 +1657,14 @@ failure costs permanent slots opens the moment task 08 runs.
 
 - **Backup:** one encrypted archive of the SQLite database plus the `TokenStore`
   contents, written outside the working tree, keyed from `~/agents/secrets/`.
-- **It never goes to a third party.** Handing a provider a bundle of
-  access-token ciphertext to hold indefinitely is a different risk class from a
-  daily overwritten net-worth blob (§6.2), and it buys convenience only. The
-  destination is hardware the owner controls.
+- **It never goes to a third party, and it must leave this disk.** Those are two
+  different requirements and rev 3 stated only the first in some places (§5 said
+  "never leaves the Mac"; the `BackupStore` seam said "local only") while §14a.1
+  required the second. Handing a provider a bundle of access-token ciphertext to
+  hold indefinitely is a different risk class from a daily overwritten net-worth
+  blob (§6.2) — so, no third party. But an archive on the disk it is meant to
+  survive is not a backup — so, **not this physical store**. The destination is
+  hardware the owner controls, elsewhere.
 
 ### 14a.1 The gate has to survive the failure it exists for
 
@@ -1396,14 +1677,36 @@ survives `rm` is not a backup; it is a copy.)*
 
 Three acceptance criteria, all owner-controlled and all free:
 
-1. **A destination in a separate failure domain.** `backup_destination` must
-   resolve to storage that is not the volume holding `~/networth-data/` — an
-   external disk, a Time Machine target, or another machine over Tailscale. The
-   check is mechanical and runs on every backup, not once at setup: compare the
-   device id of the destination against the database's (`stat -f %d`), or
-   confirm the destination is remote. Same device → **the backup fails loudly**
-   and the gate stays shut. A misconfiguration that silently degrades to a
-   same-disk copy is precisely how people discover they had no backups.
+1. **A destination in a separate failure domain — resolved to the physical
+   store, not the filesystem.** *(From review, and the check as written could
+   certify the exact failure it exists to reject: `stat -f %d` compares mounted
+   filesystems, and on APFS every volume in a container has its own device id
+   while sharing one physical disk. Verified on this Mac: `/` is device
+   `disk3s1s1` with `APFS Physical Store: disk0s2`. A second volume — or a Time
+   Machine volume the owner made on the internal disk — would have passed a
+   `%d` comparison and then died with the database.)*
+
+   `backup_destination` is acceptable **iff** one of these holds:
+
+   - it is **remote** — a different machine (rsync/ssh over Tailscale, or a
+     network mount), i.e. a different computer entirely; or
+   - it resolves to a **physical store disjoint from the database's**, *and*
+     that store is **external media**.
+
+   The resolution is mechanical and runs on **every** backup, not once at setup:
+   `df` the path to its device node, then `diskutil info -plist` that node and
+   read `APFSPhysicalStores` (an array — a Fusion or multi-store container has
+   more than one), falling back to `ParentWholeDisk` for non-APFS; normalise
+   each to its whole-disk identifier and require the two sets to be **disjoint**.
+   External-ness comes from the same call (`Device Location: External` or
+   `Removable Media: Removable`), because a second *internal* store still burns,
+   drowns and gets stolen with the laptop.
+
+   **Anything else fails loudly**, including — deliberately — the case where
+   resolution does not work at all: an unrecognised path, an unmounted
+   destination, a `diskutil` that returns nothing. **Unknown fails closed.** A
+   check that passes when it cannot see is worse than no check, because it
+   reports a green gate.
 2. **A recoverable copy of the backup key that is not only on that disk.**
    `networth-backup.key` decrypts the archive; the two must not share a fate.
    The owner puts it in a password manager or on paper (it is one line), and
@@ -1442,7 +1745,9 @@ which binds both agents.
 - `~/agents/secrets/plaid-items.json` — `{item_id: access_token}`, mode 600.
 - `~/agents/secrets/networth-transport.env` — the transport **write** token, the
   transport **read** token issued to a pairing, and the payload key. Two tokens,
-  not one (§6.2); the phone never receives the write token.
+  not one (§6.2); the phone never receives the write token. **On the Tailscale
+  branch there are no tokens at all** — only the payload key, because tailnet
+  membership replaces the bearer credential (§6.3.2).
 - `~/agents/secrets/networth-backup.key` — the backup archive key (§14a).
 - Quotes key: already present, reused.
 - Android signing keystore + `key.properties`: outside the repo (§17).
@@ -1501,12 +1806,26 @@ with `wrangler`):
 | `POST /hook/<unguessable>` | none (Plaid cannot present ours) | size-capped; writes one unique KV key per event (§8.4.2) |
 | `GET /hook/queue`, `DELETE /hook/queue/:key` | write token | the Mac drains and acks |
 
+**Two bindings, and which state goes where is a correctness decision, not a
+configuration detail** (§6.2.1): the first four routes operate on a **Durable
+Object** with the SQLite backend — one object, `pairing` + `snapshot` — because
+they need atomic replace and read-your-writes; the last three use **KV**,
+because a write-once, TTL-expired, at-least-once queue is what KV is good at.
+Rev 3 put all of it in KV and then claimed transactional behaviour it does not
+have.
+
 It holds **no Plaid credential**, no read token (only a hash of one) and no
 payload key, and performs no verification of Plaid's signature (§8.4) — it is a
 dumb, replaceable relay, which is what keeps the `Publisher` swap to Tailscale
 cheap. It grew from three routes to six in review; every addition is a control
 path that was previously *assumed to exist*, which is why the count went up
 while the trust placed in the Worker went down.
+
+**On the Tailscale branch there is no Worker at all** (§6.3.2). Its place is
+taken by a small HTTP server on the Mac, bound to the tailnet interface, serving
+one route — `GET /snapshot` — with pairing state in the Mac's own SQLite. The
+webhook routes have no counterpart: without a public endpoint Plaid cannot
+deliver, so the drain does not exist and I3 rests on the poll floor alone.
 
 The daemon and the app do not need to share a language: they share a *payload
 schema*, which is the only contract that matters and is versioned explicitly
@@ -1570,9 +1889,9 @@ project; it applies here.
 | O2 | Does the Trial plan actually reach the in-scope brokerages via OAuth? (**F4** — go/no-go) | owner, via dashboard | **the Production-Link path: tasks 07, 07a, 08 and everything downstream of a real Item** (09, 12b, 26) — see below |
 | O3 | How many distinct card-issuer logins? | owner | Item budget sizing |
 | O4 | Real property: purchase price only, or a revision log? (recommend: revision log — nearly free) | owner | task 13 |
-| O5 | Transport: **Cloudflare Workers + KV** (recommended — current value only, works while the Mac sleeps) or **Tailscale** (no third party at all, but the Mac must be awake)? | owner | tasks 20, 24 |
+| O5 | Transport: **Cloudflare Worker** (recommended — current value only, works while the Mac sleeps, **keeps the webhook accelerator**) or **Tailscale** (no third party at all and revocation is a local transaction, but the Mac must be awake **and Plaid webhooks become impossible**, §6.3.2)? Both branches are now fully specified — pairing, rotation, revocation and lost-phone included | owner | tasks 20, 24 (and 12a, which **exists only on the Cloudflare branch**) |
 | O6 | Android only, or iOS too? iOS has no sideloading story, which changes delivery entirely | owner | tasks 21, 24 |
-| O7 | Create a free Cloudflare account? It is the one new account this design adds, and it disappears if O5 picks Tailscale | owner | tasks 20, 12a |
+| O7 | Create a free Cloudflare account? It is the one new account this design adds, and it disappears if O5 picks Tailscale. The Workers Free plan covers everything used here — Worker requests, **SQLite-backed Durable Objects**, and KV — and over-limit operations **fail rather than bill** (§6.2.1) | owner | tasks 20, 12a |
 | O8 | **Where do backups land?** A destination in a separate failure domain is a gate on the first Production Link (§14a.1). External disk / Time Machine volume / another machine over Tailscale — or an explicit decision to link Items without one | owner | tasks 03a, and through it 08 |
 
 *(O1 — phone vs Mac/browser — was answered by the owner: **Flutter phone app**.)*
@@ -1600,8 +1919,12 @@ Agents must never perform these. Everything before and after is automated.
 2. Apply for the **Trial plan** at `dashboard.plaid.com/trial-plan`. Most apply
    automatically; a manual review takes 2–3 business days.
 3. After approval, confirm the plan reads **Trial, 10 Items** and that the
-   in-scope brokerages appear available (**answers O2 — stop and report before
-   implementation proceeds if they do not**).
+   in-scope brokerages appear available. This **answers O2**. If they are *not*
+   available, report it — that blocks the **Production-Link path** (tasks
+   07/07a/08 and anything downstream of a real Item) and nothing else. The
+   foundation continues either way (§18); do not stop it. *(Rev 3 narrowed this
+   in §18 and the task graph but left "stop before implementation proceeds"
+   here, which is the sentence the owner would actually have been reading.)*
 4. Copy `client_id` and the **production** secret into
    `~/agents/secrets/plaid.env`. Never paste them into a chat or a PR.
 5. Register the redirect URI (§16) under *Allowed redirect URIs*.
@@ -1610,9 +1933,13 @@ Agents must never perform these. Everything before and after is automated.
 
 **Step 1a — Say where backups land** (~5 min, once; **before** Step 2, and the
 ordering is the whole point — §14a.1)
-1. Pick storage that will not die with the Mac: an external disk, the Time
-   Machine volume, or another machine over Tailscale. Set `backup_destination`.
-   The backup refuses to run if it resolves to the same device as the database.
+1. Pick storage that will not die with the Mac: an **external** disk, a Time
+   Machine volume **on external media**, or another machine over Tailscale. Set
+   `backup_destination`. On every run the backup resolves that path to its
+   *physical* disk and refuses unless it is a different physical store from the
+   database's — or a different machine entirely. A Time Machine volume created
+   on the internal disk does **not** qualify, and the check now says so instead
+   of passing it (§14a.1).
 2. Copy `~/agents/secrets/networth-backup.key` into a password manager or write
    it down, then run `networth backup attest-key`. It records only the date of
    your confirmation. Without this, the archive and its key die together.
@@ -1632,8 +1959,14 @@ ordering is the whole point — §14a.1)
    records the item.
 4. Link the **highest-value institutions first** — slots are permanent (**F2**).
 
-**Step 3 — Stand up the transport and pair the phone** (~10 min, once; skip
-entirely if **O5** chooses Tailscale)
+**Step 3 — Stand up the transport and pair the phone** (~10 min, once)
+
+*Pairing happens on **both** branches — the payload is encrypted whatever the
+transport (§6.1), so the phone always needs a key. Only the setup around it
+differs. Rev 3 said to skip this whole step on Tailscale, which would have left
+the phone with no way to decrypt anything.*
+
+**Step 3a — if O5 chooses Cloudflare**
 1. Create a free Cloudflare account (**O7**) and run the provided `wrangler`
    deploy. Agents can write the Worker; only the owner creates the account.
 2. Run `networth pair`. It registers the new pairing with the Worker **first**
@@ -1646,6 +1979,27 @@ entirely if **O5** chooses Tailscale)
    snapshot is deleted so the old key has nothing left to decrypt. No rebuild.
 5. **Phone lost or stolen:** run `networth revoke`. Same lockout, no replacement
    phone needed. The Mac keeps publishing; nobody can read.
+6. If `networth pair` ever reports **pairing uncertain** (it lost the connection
+   mid-rotation and cannot know whether it landed), publishing is suspended on
+   purpose: just run it again. Re-running is correct whichever way the previous
+   attempt resolved (§6.3.1).
+
+**Step 3b — if O5 chooses Tailscale** (no account to create; **O7** disappears)
+1. Have the Mac and the phone on the same tailnet — the owner already runs
+   Tailscale, so this is usually already true.
+2. Run `networth pair`. There is no registration round-trip and no read token:
+   the QR carries the payload key, the `pairing_id` and the Mac's tailnet name
+   (§6.3.2). It prints immediately.
+3. Open the app and scan it. Away from the tailnet the app shows its cached copy,
+   labelled with its age (§9) — that is the availability cost of this branch.
+4. Re-run `networth pair` to rotate; **`networth revoke`** for a lost phone. Both
+   are a single local database transaction, so "immediately" is literal here.
+   For a stolen phone, also remove the device in the Tailscale admin console —
+   that revokes reachability, which is stronger than revoking content.
+5. Know what this branch gives up: **Plaid webhooks cannot be delivered at all**,
+   so connection problems surface on the hourly poll instead of on arrival, and
+   `PENDING_DISCONNECT`'s advance warning is lost (§6.3.2). The number stays
+   honest either way; the warning is later.
 
 **Ongoing — when an alert fires:**
 
@@ -1661,9 +2015,16 @@ entirely if **O5** chooses Tailscale)
   (§9.2) — the screen and this page are describing the same threshold. Usually a
   re-link in update mode clears it; if it does not, the account is a candidate
   for the manual path (§12) rather than a permanent lie.
-- **Read-back mismatch / drain stalled** → transport faults, not account faults.
-  Neither changes the number; both mean a signal you rely on is degraded. Check
-  `networth doctor` first.
+- **Read-back mismatch / read-back unavailable / drain stalled** → transport
+  faults, not account faults. None of them changes the number; they mean a
+  signal you rely on is degraded — and *mismatch* is the serious one (the
+  transport served something other than what was published), while *unavailable*
+  usually means the network was down when the check ran. Check `networth doctor`
+  first.
+- **Pairing uncertain** → publishing is deliberately suspended; run
+  `networth pair` again (§19 step 3a.6). This is the one alert where the phone
+  will visibly stop updating, which is intended: the alternative is publishing
+  under a key that may already be revoked.
 
 ---
 
