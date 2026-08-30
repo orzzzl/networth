@@ -32,9 +32,13 @@ This is the rule that matters most, because the credentials involved are
 long-lived and grant read access to real financial accounts.
 
 - Plaid `access_token`s, the Plaid `client_id`/`secret`, the transport
-  credential, the payload encryption key, the Android keystore and the quotes
-  key live in `~/agents/secrets/` — **never** in git, never in a PR, never in a
-  PR comment, never echoed into a log or a test fixture.
+  credentials, the payload encryption key, the backup key, the Android keystore
+  and the quotes key live in `~/agents/secrets/` — **never** in git, never in a
+  PR, never in a PR comment, never echoed into a log or a test fixture.
+- **Nothing secret is ever compiled into the app.** The phone receives its key
+  and read token by runtime pairing and stores them in the platform keystore
+  (`DESIGN.md` §6.3). No `--dart-define` of a credential, no key in a Dart
+  constant — a shipped APK must never be worth stealing.
 - The database stores a *reference* to a secret (a key name), never the secret.
 - Committed code reads secrets from files under `~/agents/secrets/` or from the
   environment. Example files (`*.env.example`) carry key names only, no values.
@@ -75,6 +79,14 @@ The product exists because other aggregators render stale figures as live ones.
 Any code path that produces a total must also produce its `as_of` and its
 staleness annotation. A UI that can display a bare total is a bug, not a
 simplification.
+
+**And a successful API call is not evidence of freshness.** Plaid serves cached
+data on some endpoints, so "the request returned 200" and "the data is current"
+are different facts — keep them in different fields (`fetched_at` vs
+`source_as_of`) and derive every age from the second (`DESIGN.md` §8.1). Where
+no source clock exists the answer is `UNKNOWN`, and `UNKNOWN` is never displayed
+as fresh. Silently promoting a call's success into a freshness claim is the
+original failure mode, one layer down.
 
 ## Workflow
 
