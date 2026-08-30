@@ -2,10 +2,24 @@
 
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
-Revision 2 — reworked after Codex requested changes on `02c9126`. The seven
+
+Revision 3 — reworked after Codex's second review requested changes on
+`da53ea7`. Its six findings were all cross-section contradictions: places where
+two sections were individually defensible and jointly impossible. Answered in
+§8.1/§10 (aggregate age is now a tagged state), §14a (the backup gate must
+survive losing the Mac), §6.3 (the Worker learns about a pairing), §9.1/§9.3/§11
+(what the phone can and cannot cause), §8.4 (the webhook queue's actual
+mechanics), and §9.2/§18 (two statements that disagreed with their consumers).
+One further contradiction was found while fixing the first and is fixed with it:
+a fixed-value asset's purchase-date clock would have dominated the headline age
+forever (§8.1, R3).
+
+Revision 2 — reworked after Codex requested changes on `02c9126`. Its seven
 findings are answered in §1 (I5/I6), §2, §4 (F5/F6), §6, §7, §8.1/§8.4/§8.5, §9,
-§13, §14a and the task graph; each is called out inline where the earlier draft
-was wrong, rather than quietly corrected.
+§13, §14a and the task graph.
+
+In both rounds, each place the earlier draft was wrong is called out inline
+rather than quietly corrected.
 
 ---
 
@@ -28,9 +42,13 @@ its purpose):
 - **I1.** Every account carries both of its clocks — when we last *called*
   (`fetched_at`) and when the institution's data was actually current
   (`source_as_of`) — always reachable in the UI without drilling down.
-- **I2.** No total is rendered without its `as_of` and its staleness
-  annotation. A code path that can emit a bare total is a bug. The `as_of` is
-  the **source** clock (I5), never the call clock.
+- **I2.** No total is rendered without its **age state** and its staleness
+  annotation. A code path that can emit a bare total is a bug. The age is read
+  off the **source** clock (I5), never the call clock — and it is a *tagged*
+  value, not a timestamp: if any contributing account's age is unknown, the
+  total's age is `UNKNOWN` (§8.1 R3). **A total never borrows a date from the
+  inputs that happen to have one.** That would describe the age of part of the
+  number as though it were the age of the number.
 - **I3.** Every Item error state visible to `/item/get` raises an alert within
   one hour, not at the next time someone happens to look. *(Deliberately
   narrowed to what polling can prove — advance-warning events that Item state
@@ -259,10 +277,17 @@ Seams (interfaces the rest of the code depends on, never concrete classes):
   own timestamp, because a stale price is precisely the failure being hunted.
 - `TokenStore` — narrow interface over secret storage (§2 reservation 3).
 - `Store` — repositories over SQLite; append-only observations/snapshots.
-- `Publisher` — serialize + encrypt + upload the snapshot. Swappable transport.
+- `Publisher` — serialize + encrypt + upload the snapshot, then **read it back**
+  and assert the transport is serving what was just published (§9.3). Swappable
+  transport.
 - `WebhookDrain` — fetch queued webhook events from the transport, **verify
-  Plaid's signature locally**, convert to item state changes (§8.4). Advisory:
-  everything it detects, polling eventually detects too.
+  Plaid's signature locally**, convert to item state changes (§8.4). Advisory
+  *for the number* — a dropped event can never make the total wrong, because the
+  poll floor is what I3 rests on. It is **not** redundant with polling: an
+  earlier draft claimed here that "everything it detects, polling eventually
+  detects too", which §8.4 then disproves in the same document.
+  `PENDING_DISCONNECT`'s `reason` and `disconnect_time` are the counterexample —
+  advance warning that no poll can derive.
 - `Notifier` — alert delivery (§11).
 - `BackupStore` — encrypted snapshot of the database + token material, local
   only (§14a).
@@ -408,9 +433,78 @@ runtime:
 4. Rotation, revocation and re-pairing are runtime operations. No rebuild, no
    reinstall, no version bump.
 
-Consequences worth stating: the release APK is no longer secret-bearing, so
-losing it leaks nothing; and a stolen phone is remediated by re-pairing, which
-invalidates the read token it holds.
+The release APK is therefore not a bearer artifact: losing it leaks nothing.
+
+#### 6.3.1 The Worker has to be told — the control path
+
+*(From review. The draft above minted a read token on the Mac and then claimed
+re-pairing "invalidates the read token", with no mechanism by which the Worker
+could ever learn either fact. As written the Worker knew exactly one read token,
+forever, configured by hand — so rotation was not slow, it was **not
+implementable**. A revocation story that cannot run is worse than none, because
+it gets believed.)*
+
+A fourth route, authenticated by the credential only the Mac holds:
+
+| Route | Auth | Body | Effect |
+|---|---|---|---|
+| `POST /pairing/rotate` | **write** token | `{pairing_id, read_token_verifier}` | atomically replaces the active pairing **and deletes the stored snapshot** |
+| `POST /pairing/revoke` | **write** token | — | clears the active pairing and deletes the stored snapshot |
+
+**The Worker stores a verifier, never a token.** `read_token_verifier =
+SHA-256(read_token)`; `GET /snapshot` hashes the presented bearer and compares
+in constant time. Read tokens are 256-bit random strings, so a plain hash is
+sufficient and a slow KDF would buy nothing — there is no guessable password
+here. A leak of the Worker's KV therefore does not yield a working read
+credential, and the Mac keeps the only copy of the token itself (in
+`~/agents/secrets/`) until the phone scans it.
+
+**Rotation order, and what each failure leaves behind.** The sequence is chosen
+so that no step can leave the *old* token working:
+
+1. Mint locally; write the `pairing` row as `PENDING`. Nothing has changed
+   anywhere else, so a crash here is a no-op.
+2. `POST /pairing/rotate`. One request, so the Worker cannot be left with a new
+   verifier and an old snapshot readable by the old key. **On failure, abort and
+   print why** — the old pairing is still active, the QR is *not* rendered, and
+   the owner re-runs the command. Never render the QR before this returns 2xx:
+   a phone holding material the Worker does not know is indistinguishable to the
+   owner from a broken transport.
+3. On success, mark the new row `ACTIVE` and the old one `revoked_at = now`.
+   **From this instant the old phone is locked out** even though the new phone
+   has not scanned anything yet. That ordering is deliberate: the case that
+   matters is a *stolen* phone, and it must not stay readable while the owner
+   walks to their desk.
+4. Publish immediately under the new key with the next `seq`. If this fails, the
+   pairing is still correct — the phone pairs and shows "no data yet" until the
+   publish job retries on the next tick (§13), and `doctor` reports the
+   publication as overdue (§11). Degraded, visible, self-healing.
+5. Render the QR.
+
+**Deleting the snapshot on rotate is not housekeeping.** The scenario is a
+stolen phone, and it holds the old payload key. Revoking its token stops it
+fetching *new* ciphertext; deleting the stored object removes the one thing its
+key could still decrypt if it kept fetching. Both halves are needed, which is
+why they are one route.
+
+`networth revoke` is the same path without minting: it is the lost-phone
+command, and it deliberately does not require a replacement phone to be present.
+The Mac keeps publishing; nobody can read.
+
+**`seq` never resets across pairings** (§7). A fresh pairing does not restart the
+counter, so a payload from an earlier pairing can never present a higher `seq`
+than the current one; `pairing_id` is in the AAD besides, and the phone refuses
+foreign pairings outright (§9.3). The phone resets its own `last_seq` only when
+*it* scans a new QR.
+
+The write token is a Worker secret set by `wrangler` and held on the Mac;
+rotating it is an owner operation (§19), not something the system does to
+itself. There is no route that can change it, by design — a Worker that can
+re-key its own write credential is a Worker that can be re-keyed by whoever
+reaches that route.
+
+**The APK is still secret-free.** Everything above happens between the Mac and
+the Worker, or between the Mac and the phone across a QR code on a desk.
 
 #### 6.4 Rotation and expiry monitoring
 
@@ -496,9 +590,15 @@ snapshot(
   taken_at,
   total_net_worth_minor, total_assets_minor, total_liabilities_minor,
   account_count, stale_account_count, unknown_freshness_account_count,
+  static_account_count,                -- MANUAL_STATIC; outside the age basis (§8.1 R3)
   reauth_account_count, unreconciled_account_count,
   is_complete,                         -- FALSE if anything was carried forward or unreconciled
-  oldest_contributing_source_as_of)    -- true age of the weakest input (I2/I5)
+  -- the total's age, as a TAGGED value, never a bare timestamp (I2, §8.1 R3):
+  age_state,                           -- KNOWN | UNKNOWN | STATIC_ONLY
+  as_of,                               -- the total's age; NOT NULL iff age_state = KNOWN
+  oldest_known_source_as_of,           -- diagnostic floor; NULL if nothing is known.
+                                       --   NEVER rendered as the total's age
+  CHECK ((age_state = 'KNOWN') = (as_of IS NOT NULL)))
 
 sync_run(id, started_at, finished_at, trigger, ok, error_summary)
 
@@ -506,18 +606,27 @@ alert(id, created_at, kind, item_id, account_id, message,
       notified_at, acknowledged_at, resolved_at)
 
 pairing(id, created_at, key_ref, read_token_ref,   -- refs only, never the material
-        revoked_at)                                -- §6.3
+        state,                                     -- PENDING | ACTIVE | REVOKED (§6.3.1)
+        registered_at,                             -- when the Worker accepted the verifier
+        revoked_at)                                -- §6.3.1
 
 publication(                                       -- §6 audit trail
-  id, snapshot_id, pairing_id, seq UNIQUE,         -- monotonic; the replay defence (I6)
-  schema_version, published_at, transport, ok, error)
+  id, snapshot_id, pairing_id, seq UNIQUE,         -- monotonic, NEVER reset (§6.3.1); replay defence (I6)
+  schema_version, published_at, transport, ok, error,
+  readback_ok, readback_seq)                       -- what the transport served straight back (§9.3)
 
 webhook_event(                                     -- §8.4; advisory input, never a dependency
-  id, received_at, drained_at,
+  id,
+  queue_key,                                       -- the transport-side key; the ack target
+  received_at,                                     -- the WORKER's clock at receipt — what `iat`
+                                                   --   is checked against, never the drain time
+  drained_at, processed_at,
   verified,                                        -- Plaid JWT checked ON THE MAC
+  body_sha256, jwt_iat,                            -- UNIQUE(body_sha256, jwt_iat) — at-least-once
+                                                   --   delivery means duplicates are normal
   webhook_type, webhook_code, plaid_item_id,
   reason, disconnect_time,                         -- PENDING_DISCONNECT carries both
-  raw_ref, processed_at)
+  raw_ref)
 ```
 
 Modelling choices worth defending:
@@ -529,6 +638,17 @@ storage, and no amount of careful UI work downstream can recover a distinction
 the schema threw away. `source_clock` records *which* evidence was used, so a
 freshness claim can always be traced to the field that justified it — and
 `UNKNOWN` is a first-class value, not a `NULL` to be quietly coalesced.
+
+**The total's age is a tagged value, not a timestamp column.** *(From review.)*
+The previous schema had a single scalar, `oldest_contributing_source_as_of`, and
+that column could not be filled honestly: with one `UNKNOWN` contributor there
+is no timestamp to put in it, and putting the oldest *known* one there describes
+part of the number as though it described the number. So the age is
+`(age_state, as_of)` with a `CHECK` binding them, `oldest_known_source_as_of` is
+kept beside it as a diagnostic that is explicitly not the answer, and the
+impossible row — `age_state = 'UNKNOWN'` carrying a date — cannot be written at
+all. Enforcing it in the schema rather than in the writer matters because the
+lie this project exists to prevent *is* a stale timestamp presented confidently.
 
 **`lineage_id` outlives Items.** Plaid documents that a re-linked Item can return
 different `account_id`s for the same real account. Keying history on
@@ -596,8 +716,51 @@ is named per product below, never assumed from a 200.
 **Rule R2 — no evidence means `UNKNOWN`, and `UNKNOWN` is not fresh.** It is
 displayed as "can't verify how old this is", never as a healthy value.
 
-**Rule R3 — the headline's age is the oldest *source* clock** among contributing
-accounts (`oldest_contributing_source_as_of`), never the run time.
+**Rule R3 — the headline's age is a tagged state over the oldest *source* clock,
+never the run time.** *(Rewritten in review; the one-line version it replaces was
+wrong in two independent ways.)*
+
+The **age basis** is the set of accounts contributing to the total *whose clocks
+are expected to advance* — `SYNCED_HOLDINGS`, `SYNCED_BALANCE`,
+`MANUAL_QTY_LIVE_PRICE`. Then:
+
+| Age basis | `age_state` | `as_of` |
+|---|---|---|
+| every member has a source clock | `KNOWN` | the **oldest** of them |
+| **any** member is `UNKNOWN` | **`UNKNOWN`** | none — there is no honest date |
+| empty (only fixed-value assets) | `STATIC_ONLY` | none |
+
+`oldest_known_source_as_of` is recorded alongside as a diagnostic and is never
+presented as the total's age.
+
+**Why `UNKNOWN` has to poison the whole total.** An account in
+`balance_mode: cached` contributes a real number with no knowable age (R2). If
+the headline then showed the oldest *known* clock, it would state a date that is
+true of some of the money and unknown for the rest — which is exactly the
+commercial-aggregator move that started this project, performed with more
+arithmetic. `unknown_freshness_account_count` keeps the badge from going green,
+but a count next to a confident date does not stop the date being read. So the
+date goes away: **"can't date this total — N of M accounts can't be dated"**,
+with the per-account breakdown one tap down. A number the owner has to inspect
+is a better outcome than a number he wrongly trusts.
+
+**Why fixed-value assets are outside the basis** *(a contradiction found while
+fixing the above, not raised in review — recording it because the fix was one
+line away from being wrong in a way that would have looked like working
+software).* Real property is `MANUAL_STATIC` with `source_as_of = valued_as_of`,
+i.e. the purchase date. Under the old rule the oldest contributing clock was
+**always the house**, so the headline would have read "as of 3 years ago" every
+day forever — a permanently alarming, permanently useless signal, and precisely
+the way to train the owner to ignore the one indicator that matters. Excluding
+policy-static accounts is not hiding them: they are counted in
+`static_account_count`, the total is annotated *"includes N fixed manual
+valuations"*, and each still shows its own `valued_as_of` beside it (§12). The
+distinction is that a fixed value is not *stale* — it is doing exactly what it
+was configured to do.
+
+`STATIC_ONLY` is a real state, not a theoretical one: before the first Item is
+linked, the only assets in the database are manual, and the app must be able to
+say so rather than compute an age over an empty set.
 
 | Account kind | Call | `source_as_of` comes from | Fresh while |
 |---|---|---|---|
@@ -702,20 +865,115 @@ what polling can actually prove.
 
 **The accelerator — a webhook drain, zero marginal cost.** §6 already stands up
 a Cloudflare Worker for the transport, so the receiver is one extra route on
-infrastructure the project has anyway:
+infrastructure the project has anyway. Verification happens **on the Mac**: the
+verification endpoint needs `client_id` + `secret`, and putting those in a
+Worker would scatter the Plaid credential to a second place to save nothing.
+
+That split is what makes the queue between them load-bearing, and the first
+draft specified it in one clause ("appends … to a KV queue") that KV cannot
+honour. Review was right to stop there, so the mechanics are now spelled out.
+
+#### 8.4.1 Why "append to a KV queue" was not implementable
+
+Cloudflare's own docs, checked rather than assumed:
+
+- **KV has no append and no transaction.** "Due to the eventually consistent
+  nature of KV, concurrent writes to the same key can end up overwriting one
+  another," and "the last write will take precedence." A queue held in one key
+  silently drops an event whenever two arrive together — and institution
+  migrations are exactly when several arrive together.
+- **KV rate-limits one write per second per key.** "Workers KV has a maximum of
+  1 write to the same key per second. Writes made to the same key within 1
+  second will cause rate limiting (`429`) errors."
+- **KV is eventually consistent**: "changes may take up to 60 seconds or more to
+  be visible in other global network locations."
+
+#### 8.4.2 The queue: one key per event, ack by delete
+
+**One unique KV key per event** removes every problem above by never writing the
+same key twice.
 
 1. Plaid `POST`s to a long unguessable path on the Worker.
-2. The Worker does **no verification** — it holds no Plaid credential and never
-   should. It caps body size, drops anything oversized, and appends the raw body
-   plus the `Plaid-Verification` header to a KV queue.
-3. The Mac drains the queue every tick and **verifies there**: `ES256` JWT via
-   `/webhook_verification_key/get`, `request_body_sha256` matched against the
-   body, and `iat` within five minutes. Unverified events are discarded and
-   counted, never acted on.
+2. The Worker holds no Plaid credential and does **no** verification. It caps
+   body size, drops anything oversized, and writes exactly one key:
+   `hook:<received_at_ms>:<crypto.randomUUID()>`, with `expirationTtl` of 7 days.
+   Key collision is impossible, so no event can overwrite another.
+3. The value is a JSON envelope: `{received_at, verification_header,
+   body_b64}`. **The raw request bytes are base64'd, never re-serialized.**
+   Plaid's `request_body_sha256` "is sensitive to the whitespace in the webhook
+   body and uses a tab-spacing of 2" — a Worker that parsed the JSON and wrote it
+   back would break every signature it touched, and the failure would look like
+   an attack rather than a bug. The `Plaid-Verification` JWT goes in the value
+   for the same reason it cannot go in KV metadata: metadata is capped at 1024
+   bytes and the JWT can exceed it.
+4. `received_at` is the **Worker's** clock at receipt, and it is the whole reason
+   the envelope exists — see §8.4.3.
+5. The Mac drains every tick **through the Worker, never against the KV API
+   directly** — `GET /hook/queue` returns the pending envelopes, and
+   `DELETE /hook/queue/:key` acks one (§16), both authorised by the same write
+   token the Mac already holds. It verifies, inserts, and **deletes last**, so a
+   crash mid-drain re-delivers rather than loses. Going through our own Worker is
+   not indirection for its own sake: reaching KV directly requires a Cloudflare
+   **API token**, which is account-scoped, and putting one on the Mac would throw
+   away the exact property that decides §8.4.3 against Cloudflare Queues.
+6. Delivery is therefore at-least-once and duplicates are *normal*, not
+   exceptional: `UNIQUE(body_sha256, jwt_iat)` on `webhook_event` makes a
+   re-delivery a no-op insert. An idempotent consumer is cheaper than an
+   exactly-once queue and is the only thing that can be relied on anyway.
 
-Verification on the Mac rather than in the Worker is the point: the verification
-endpoint needs `client_id` + `secret`, and putting those in a Worker would
-scatter the Plaid credential to a second place to save nothing.
+Verification, on the Mac: `ES256` JWT against `/webhook_verification_key/get`,
+`request_body_sha256` compared to the base64-decoded body with a constant-time
+comparison, and the freshness check below. Unverified events are counted and
+discarded, never acted on.
+
+**Lifecycle, stated so nothing accumulates or disappears quietly.** Undrained
+keys expire after 7 days (bounded storage, and §8.4's floor covers a lost
+event). The drain is single-consumer by construction — one launchd loop, one
+instance — so there is no consumer contention to reason about. If any key's
+`received_at` is more than an hour old at drain time the drain itself is broken:
+that raises an alert (§11) rather than being noticed a week later when the TTL
+eats the evidence. KV `list` being eventually consistent (up to ~60s) is
+harmless here precisely because of the next subsection.
+
+#### 8.4.3 The five-minute rule, checked against the right clock
+
+Plaid: "Use the issued at time denoted by the `iat` field to verify that the
+webhook is not more than 5 minutes old." The Mac drains every five minutes. Two
+five-minute windows in series means a genuine webhook can arrive at the drain
+already "expired" — the drain would then reject real events, and only sometimes,
+which is the worst kind of bug to find in production.
+
+**So `iat` is compared against `received_at` — the Worker's receipt time —
+never against the drain time.** The Worker is the process that actually received
+the request, so its clock is the one the rule is about; the drain delay is an
+artefact of our architecture and must not consume Plaid's window.
+
+That this stays sound is worth showing rather than asserting, since the receive
+route is unauthenticated by necessity (Plaid cannot present our credential):
+
+- **A forged event** fails JWT verification — the signing key is Plaid's.
+- **A replayed genuine event** gets a *fresh* `received_at` from the Worker and
+  carries its *original* `iat`, so it fails the five-minute check exactly as
+  Plaid intends. The receipt-time fix does not weaken replay protection.
+- **A replay inside five minutes** passes, and is inert: it collides on
+  `UNIQUE(body_sha256, jwt_iat)`.
+- **`received_at` itself cannot be forged** by the sender; it is written by the
+  Worker. Values in the future, or older than the retention window, are
+  discarded as corrupt.
+- **Flooding the route** costs storage, not correctness: bodies are size-capped,
+  keys expire, and unverified events never reach the state machine. If the free
+  tier were ever exhausted the drain stops and the poll floor carries on — the
+  number stays honest, which is the property that has to hold.
+
+**Cloudflare Queues was the alternative and is the documented upgrade.** It is
+now on the Workers Free plan (10,000 operations/day, far above a handful of
+webhooks) and offers real at-least-once delivery with acks and a dead-letter
+queue. It is not chosen today for one reason: HTTP pull consumers authenticate
+with a **Cloudflare API token**, which would put an account-scoped credential on
+the Mac. The KV path keeps the Mac's entire transport credential surface at one
+bearer token that our own Worker checks — the same argument that kept Plaid's
+credentials out of the Worker (§8.4). If webhook volume or ordering ever
+justifies it, Queues is a swap behind `WebhookDrain`, not a redesign.
 
 **What we accept when the drain is off or a webhook is lost:** advance warning.
 A migration or revocation is then detected after the fact, on the next poll,
@@ -786,18 +1044,35 @@ The phone evaluates, in order:
    as current.
 2. **`device_now <= stale_after` → `COPY_FRESH`.**
 3. **Otherwise → `COPY_STALE`**, with a *reason*, because two very different
-   faults land here and they have different fixes:
-   - `last_fetch_at` is recent **and** the fetch succeeded **and** it returned
-     `seq` equal to the cached one → *"reached the source; the Mac has not
-     published since <time>."* The phone is fine; the Mac or its sync is not.
-   - the last fetch failed, or has not succeeded recently → *"couldn't check
-     since <time>"*, plus the error class (offline, credential rejected,
-     transport error). The Mac may be perfectly healthy.
+   faults land here and they have different fixes. The reason is
+   `MAC_NOT_PUBLISHING` **iff all three hold**, and `CANNOT_CHECK` otherwise:
 
-The phone therefore persists `last_fetch_at`, **`last_fetch_success_at`**,
-`last_fetch_error` and `last_seq` — not merely an attempt timestamp. "We tried"
-and "we succeeded and there was nothing new" are different facts and the UI
-needs both to name the right culprit.
+   ```
+   last_fetch_success_at >= stale_after          -- we reached the source AFTER the
+                                                 --   copy was already due, not merely
+                                                 --   "recently"
+   last_fetch_attempt_at == last_fetch_success_at -- and nothing has failed since
+   last_fetch_seq        == last_seq              -- and it had nothing newer than we hold
+   ```
+
+   - `MAC_NOT_PUBLISHING` → *"reached the source; the Mac has not published
+     since <time>."* The phone and the network are fine; the Mac or its sync is
+     not.
+   - `CANNOT_CHECK` → *"couldn't check since <last_fetch_success_at>"*, plus the
+     error class (offline, credential rejected, transport error, never fetched).
+     The Mac may be perfectly healthy and unreachable.
+
+   *(Rewritten in review. The draft said "`last_fetch_at` is recent", which is
+   not a condition — "recent" was undefined, and `last_fetch_at` conflated an
+   attempt with a success. A state whose predicate cannot be written down cannot
+   be tested, and this state exists specifically to assign blame correctly.)*
+
+The phone therefore persists `last_fetch_attempt_at`,
+**`last_fetch_success_at`**, `last_fetch_error`, `last_fetch_seq` (the `seq` the
+last *successful* fetch returned) and `last_seq` (the `seq` of the payload
+actually held) — not merely an attempt timestamp. "We tried", "we succeeded and
+there was nothing new" and "we hold this version" are three different facts, and
+the predicate above needs all three to name the right culprit.
 
 **Offline** is not a special case: fetches fail, the cached payload keeps aging,
 and it crosses `stale_after` on schedule with the reason "couldn't check". The
@@ -813,8 +1088,32 @@ as a demand to re-link, which the earlier matrix did:
 - **`OK`** — no Item error, and every contributing account fresh on Axis B.
 - **`WAITING`** — data behind expectation (Axis B `STALE`/`UNKNOWN`) and/or an
   Item `DEGRADED`. Informational. **Never asks the owner to do anything.**
-- **`ACTION_NEEDED`** — an Item is `NEEDS_REAUTH` or `REVOKED`, or unreconciled
-  accounts exist (§8.5). Only this state invites a re-link.
+- **`ACTION_NEEDED`** — an Item is `NEEDS_REAUTH` or `REVOKED`, unreconciled
+  accounts exist (§8.5), **or an account's data is `FROZEN`** (below). Only this
+  state invites a re-link.
+
+**Axis-B staleness escalates.** *(From review, which caught this section saying
+Axis B never asks for action while §11 and the runbook told the owner to
+re-link.)* The two are not both wrong — they were describing different points on
+the same timeline, and the timeline was missing:
+
+| Axis B condition | Display | Why |
+|---|---|---|
+| behind its expectation window | `WAITING` | Institutions post late constantly. Asking the owner to fix Friday-afternoon holdings would burn the alert on noise. |
+| Item `HEALTHY`, source clock not advanced for **5 consecutive market days** → `FROZEN` | **`ACTION_NEEDED`** | This is no longer "late". It is the failure the project was built to catch, and a re-link in update mode usually clears it. |
+
+`FROZEN` is a named Axis-B state, carried in the payload with the account it
+belongs to, so the phone renders the specific claim — *"this account has
+answered for 5 market days without its data moving"* — rather than a generic
+re-link prompt. **The five-day threshold is defined once** (§11) and both the
+screen and the alert read it from the same place; the contradiction existed
+because they each had their own answer.
+
+**`UNKNOWN` stays in `WAITING` and never escalates**, because under
+`balance_mode: cached` it is permanent and there is nothing to act on: no
+re-link makes an endpoint start reporting a clock it does not have. Its copy is
+written as a standing caveat — *"this account's age can't be verified"* — not as
+a wait, since nothing is going to arrive.
 
 | | **Connection `OK`** | **Connection `WAITING`** | **Connection `ACTION_NEEDED`** |
 |---|---|---|---|
@@ -849,12 +1148,37 @@ to a comfortable old number that verifies perfectly.
   keeping the newer cached snapshot. `seq == last_seq` is not an error — it is
   the normal "nothing new yet" signal that §9.1 uses to blame the Mac rather than
   the network.
-- A rejected rollback is **surfaced, not swallowed**: it is a transport-integrity
-  warning in the UI and an alert on the Mac's next publish. A silent rejection
-  would hide the one event that indicates someone is tampering with the
-  transport.
-- `pairing_id` mismatch is likewise refused: after a re-pair (§6.3) the phone
+- A rejected rollback is **surfaced, not swallowed** — but **on the phone**, and
+  only there: a persistent transport-integrity warning that survives restarts
+  until the phone sees a `seq` greater than `last_seq`, plus a local log of the
+  rejection. A silent rejection would hide the one event that indicates someone
+  is tampering with the transport.
+- `pairing_id` mismatch is likewise refused: after a re-pair (§6.3.1) the phone
   ignores payloads addressed to the old pairing.
+
+**The Mac is not told, and that is a decision.** *(From review, which caught the
+draft promising a macOS alert for an event only the phone can observe.)* §5 makes
+the phone read-only — no Plaid token, no write credential, "cannot mutate
+anything" — and that asymmetry is the entire reason a lost phone is a
+non-event. A phone→Mac diagnostics channel would trade it away: an authenticated
+write route reachable from the device most likely to be lost, existing to carry
+a rare signal, and itself a thing to threat-model and abuse. The claim is
+therefore withdrawn rather than the channel built. **The warning lives where the
+evidence is.**
+
+What the Mac *can* observe, it now does. `Publisher` performs a **read-back**
+after every publication: it re-fetches the object it just wrote and asserts the
+returned `seq` matches. A mismatch means the transport is serving something
+other than the current value, and that raises a Mac-side alert (§11), recorded
+in `publication.readback_ok` / `readback_seq`. It costs one extra request per
+day.
+
+Stated precisely, because a partial defence described as a whole one is its own
+kind of lie: the read-back catches a transport that is *globally* serving stale
+or wrong content. It cannot catch an edge serving only the phone an older
+object — different edge, different cache. That case is caught by the phone,
+warned about on the phone, and reaches the owner when he looks at the phone,
+which is where he was already looking at the number.
 
 ---
 
@@ -868,17 +1192,24 @@ net_worth = Σ(asset accounts) − Σ(liability accounts)
    `is_carried_forward`, and the snapshot is marked `is_complete = FALSE`.
    Rejected alternative: excluding stale accounts, which makes the total silently
    *drop* — a different lie, and a scarier one.
-2. The snapshot records `oldest_contributing_source_as_of`; the headline's honest
-   age is **the oldest source clock among its inputs** (R3), not the run time and
-   not the last successful call. A run that succeeded everywhere against data
-   that is all a week old is a week-old number, and says so.
+2. The headline's age is the **tagged state** of R3 — `(age_state, as_of)` over
+   the age basis — not the run time and not the last successful call. A run that
+   succeeded everywhere against data that is all a week old is a week-old
+   number, and says so; a run in which even one contributor cannot be dated
+   produces a total that **has no date**, and says that instead.
 3. The presentation contract (**I2**) is enforced in the query layer and in the
-   payload schema, so no UI can bypass it: every total ships with `as_of`,
-   `stale_account_count`, `unknown_freshness_account_count`,
+   payload schema, so no UI can bypass it: every total ships with `age_state`,
+   `as_of` (present only when `age_state = KNOWN`), `stale_account_count`,
+   `unknown_freshness_account_count`, `static_account_count`,
    `reauth_account_count`, `unreconciled_account_count` and `is_complete`.
    Accounts with `UNKNOWN` freshness are counted **separately** from stale ones —
    "we know this is old" and "we cannot tell how old this is" are different
    admissions and merging them would launder the second into the first.
+3b. **The type makes the undated total unrepresentable.** `as_of` is not a
+   nullable timestamp that callers are trusted to check; the total is a sum type
+   (`Dated(as_of) | Undated(reason)`), so rendering code cannot reach a date
+   that does not exist and cannot forget to ask. This is the one contract worth
+   spending a type on: it is the exact line commercial aggregators cross.
 3a. **Accounts pending reconciliation (§8.5) contribute nothing** and are counted
    in `unreconciled_account_count`, which forces `is_complete = FALSE`. This is
    the one place the total is knowingly understated, and it is loud about it —
@@ -897,25 +1228,39 @@ net_worth = Σ(asset accounts) − Σ(liability accounts)
 
 | Channel | Used for | Mechanism |
 |---|---|---|
-| macOS notification | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **publication overdue**, **accounts pending reconciliation**, **rejected rollback** | `osascript -e 'display notification'` |
-| `alert` table + in-app banner | everything, persistent | DB row, travels in the payload; cleared on resolve |
-| Agent mailbox | any of the above unresolved >24h | write to `~/agents/inbox/claude/new/` |
+| macOS notification | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **publication overdue**, **read-back mismatch**, **accounts pending reconciliation**, **drain stalled** | `osascript -e 'display notification'` |
+| `alert` table + in-app banner | everything above, persistent | DB row, travels in the payload; cleared on resolve |
+| **Phone-local warning** | **rejected rollback / foreign `pairing_id`** (§9.3) | in-app, persistent until a newer `seq` arrives — **never reaches the Mac** |
+| Agent mailbox | any Mac-side alert unresolved >24h | write to `~/agents/inbox/claude/new/` |
 
-Four of those deserve a note, because they are the alerts a naive build would
-not have:
+The split in that table is the point. Five alerts deserve a note, because they
+are the ones a naive build would not have:
 
-- **Frozen data** — an account whose `source_as_of` has not advanced across five
-  consecutive market days *while its Item is `HEALTHY`*. This is Axis A green,
-  Axis B dead: the original failure, caught by the only check that can see it.
-  It is owner-actionable (usually a re-link fixes it), so it alerts.
+- **Frozen data** — an account whose `source_as_of` has not advanced across
+  **five consecutive market days** *while its Item is `HEALTHY`*. This is Axis A
+  green, Axis B dead: the original failure, caught by the only check that can
+  see it. It is owner-actionable (usually a re-link fixes it), which is why the
+  same condition is `ACTION_NEEDED` on screen (§9.2) — **this paragraph is the
+  single definition of the threshold**; the display state and the alert both
+  derive from it rather than each carrying their own number.
 - **Publication overdue** — the last successful `publication` is older than the
   publish interval plus grace. The Mac is the only place this is visible; from
   the phone it is indistinguishable from being offline (§9.1).
+- **Read-back mismatch** — the transport served back something other than what
+  was just published (§9.3). This is the Mac-observable half of transport
+  integrity.
+- **Drain stalled** — a queued webhook older than an hour is still undrained
+  (§8.4.2). Without it a broken drain is invisible until the TTL destroys the
+  evidence.
 - **Pending reconciliation** — accounts are sitting at `NEW` and contributing
   nothing (§8.5), so the total is knowingly understated until the owner confirms
   a mapping.
-- **Rejected rollback** — the phone refused an older payload (§9.3). Rare, and
-  the one alert that may mean something adversarial.
+
+**Rejected rollback is deliberately not in the macOS row.** An earlier draft put
+it there, promising the Mac an alert about an event only the phone can see, over
+a channel the architecture does not have and should not grow (§9.3). It is a
+phone-local warning, and the Mac's read-back covers the part the Mac can
+actually observe.
 
 The mailbox hop reuses infrastructure that already exists: the ticker wakes a
 session on new mail, which can escalate and record it. It costs nothing to build.
@@ -963,12 +1308,12 @@ logic.**
 
 | Job | Due when |
 |---|---|
-| webhook drain | every tick (cheap; a single conditional `GET`) — §8.4 |
+| webhook drain | every tick (cheap: one prefix `list`, usually empty) — §8.4.2 |
 | health poll | >60 min since the last poll |
 | full sync | no successful full sync since the most recent market close + 1h |
 | quote refresh | any `MANUAL_QTY_LIVE_PRICE` price older than the last close |
-| publish | a snapshot exists newer than the last successful `publication` |
-| backup | >24h since the last verified backup — §14a |
+| publish | a snapshot exists newer than the last successful `publication`; every publish is followed by a read-back (§9.3) |
+| backup | >24h since the last verified backup — §14a. Refuses to run if the destination is on the database's own device (§14a.1) |
 
 **Due-ness is computed from stored state, never from cron semantics.** A Mac
 asleep for two days simply finds work due on wake and catches up; there is no
@@ -1035,17 +1380,55 @@ failure costs permanent slots opens the moment task 08 runs.
 
 - **Backup:** one encrypted archive of the SQLite database plus the `TokenStore`
   contents, written outside the working tree, keyed from `~/agents/secrets/`.
-- **It never leaves the Mac.** Handing a third party a bundle of access-token
-  ciphertext to hold indefinitely is a different risk class from a daily
-  overwritten net-worth blob (§6.2), and it buys convenience only. Offsite is the
-  owner's own disk or Time Machine, on the owner's terms.
-- **A backup that has never been restored is a rumour.** `scripts/restore-drill.sh`
-  restores into a temp directory, checks row counts and schema version, and
-  verifies the `TokenStore` yields the same **token fingerprints** (salted
-  hashes — never the tokens, never in a log). It records
-  `last_verified_restore_at`, runs weekly, and `doctor` reports its age.
-- **Gate:** the drill must pass before task 08 links the first Production Item.
-  This is a hard dependency in the task graph, not a recommendation.
+- **It never goes to a third party.** Handing a provider a bundle of
+  access-token ciphertext to hold indefinitely is a different risk class from a
+  daily overwritten net-worth blob (§6.2), and it buys convenience only. The
+  destination is hardware the owner controls.
+
+### 14a.1 The gate has to survive the failure it exists for
+
+*(From review, and the finding was exact: the draft above let the database, the
+archive and `networth-backup.key` all sit on one disk, then called a restore
+into a temp directory "verified". That drill proves the archive parses. It
+proves nothing about the scenario the section is named after — the Mac dies —
+because in that scenario all three copies died together. A backup that only
+survives `rm` is not a backup; it is a copy.)*
+
+Three acceptance criteria, all owner-controlled and all free:
+
+1. **A destination in a separate failure domain.** `backup_destination` must
+   resolve to storage that is not the volume holding `~/networth-data/` — an
+   external disk, a Time Machine target, or another machine over Tailscale. The
+   check is mechanical and runs on every backup, not once at setup: compare the
+   device id of the destination against the database's (`stat -f %d`), or
+   confirm the destination is remote. Same device → **the backup fails loudly**
+   and the gate stays shut. A misconfiguration that silently degrades to a
+   same-disk copy is precisely how people discover they had no backups.
+2. **A recoverable copy of the backup key that is not only on that disk.**
+   `networth-backup.key` decrypts the archive; the two must not share a fate.
+   The owner puts it in a password manager or on paper (it is one line), and
+   confirms with `networth backup attest-key`, which records
+   `key_escrow_confirmed_at` and *nothing else*. This is an **attestation, not a
+   proof** — no agent can verify a password manager, and pretending otherwise
+   would be its own dishonesty. `doctor` shows it, with its date, as the
+   owner's own claim.
+3. **The drill restores from the destination.** `scripts/restore-drill.sh` pulls
+   the archive **back from `backup_destination`** — over the same path a real
+   recovery would use, which is the part that actually gets tested — decrypts it
+   with the key resolved from `~/agents/secrets/`, restores into a temp
+   directory, checks row counts and schema version, and verifies the
+   `TokenStore` yields the same **token fingerprints** (salted hashes — never
+   the tokens, never in a log). It records `last_verified_restore_at`, runs
+   weekly, and `doctor` reports its age.
+
+**Gate:** all three must hold before task 08 links the first Production Item. A
+hard dependency in the task graph, not a recommendation.
+
+**If the owner has no second device**, the gate cannot be met and the honest
+consequence is not a workaround — it is a decision: linking Production Items
+while a single disk failure can strand permanent Item slots (**F2** + **F6**).
+That is the owner's call to make explicitly (**O8**), not ours to route around
+by weakening the check.
 
 ---
 
@@ -1106,12 +1489,24 @@ types them into Plaid Link, which returns only a short-lived `public_token`.
 | TypeScript / Node | Official SDK too | Adds a toolchain for no daemon-side gain; shares nothing with a Flutter UI | Second |
 | Dart end-to-end | One language across both halves | **No server-side Plaid SDK** — would mean hand-rolling a financial API client and its error taxonomy, on the side of the system that holds the credentials | Rejected |
 
-**Transport side: one Cloudflare Worker** (~30 lines of JavaScript, deployed
-with `wrangler`) exposing three routes — `PUT /snapshot` (write token),
-`GET /snapshot` (read token), `POST /hook/<unguessable>` (no auth, size-capped,
-appends to the KV queue). It holds **no Plaid credential** and performs no
-verification (§8.4); it is a dumb, replaceable relay, which is what keeps the
-`Publisher` swap to Tailscale cheap.
+**Transport side: one Cloudflare Worker** (~120 lines of JavaScript, deployed
+with `wrangler`):
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `PUT /snapshot` | write token | publish ciphertext |
+| `GET /snapshot` | read token (verifier-checked, §6.3.1) **or** write token | the phone reads; the Mac reads back (§9.3) |
+| `POST /pairing/rotate` | write token | install a new pairing verifier + drop the stored snapshot |
+| `POST /pairing/revoke` | write token | lock out the current pairing + drop the stored snapshot |
+| `POST /hook/<unguessable>` | none (Plaid cannot present ours) | size-capped; writes one unique KV key per event (§8.4.2) |
+| `GET /hook/queue`, `DELETE /hook/queue/:key` | write token | the Mac drains and acks |
+
+It holds **no Plaid credential**, no read token (only a hash of one) and no
+payload key, and performs no verification of Plaid's signature (§8.4) — it is a
+dumb, replaceable relay, which is what keeps the `Publisher` swap to Tailscale
+cheap. It grew from three routes to six in review; every addition is a control
+path that was previously *assumed to exist*, which is why the count went up
+while the trust placed in the Worker went down.
 
 The daemon and the app do not need to share a language: they share a *payload
 schema*, which is the only contract that matters and is versioned explicitly
@@ -1172,14 +1567,27 @@ project; it applies here.
 
 | # | Question | Owner of the answer | Blocks |
 |---|---|---|---|
-| O2 | Does the Trial plan actually reach the in-scope brokerages via OAuth? (**F4** — go/no-go) | owner, via dashboard | all implementation |
+| O2 | Does the Trial plan actually reach the in-scope brokerages via OAuth? (**F4** — go/no-go) | owner, via dashboard | **the Production-Link path: tasks 07, 07a, 08 and everything downstream of a real Item** (09, 12b, 26) — see below |
 | O3 | How many distinct card-issuer logins? | owner | Item budget sizing |
 | O4 | Real property: purchase price only, or a revision log? (recommend: revision log — nearly free) | owner | task 13 |
 | O5 | Transport: **Cloudflare Workers + KV** (recommended — current value only, works while the Mac sleeps) or **Tailscale** (no third party at all, but the Mac must be awake)? | owner | tasks 20, 24 |
 | O6 | Android only, or iOS too? iOS has no sideloading story, which changes delivery entirely | owner | tasks 21, 24 |
 | O7 | Create a free Cloudflare account? It is the one new account this design adds, and it disappears if O5 picks Tailscale | owner | tasks 20, 12a |
+| O8 | **Where do backups land?** A destination in a separate failure domain is a gate on the first Production Link (§14a.1). External disk / Time Machine volume / another machine over Tailscale — or an explicit decision to link Items without one | owner | tasks 03a, and through it 08 |
 
 *(O1 — phone vs Mac/browser — was answered by the owner: **Flutter phone app**.)*
+
+**O2 blocks the Plaid path, not the project.** *(Narrowed in review, which
+caught this table saying "all implementation" while the task graph and the
+recommended plan both started six tasks before O2 could possibly be answered.
+Two answers in one merged document is worse than either answer.)* The
+foundation — schema, `Store`, `TokenStore`, the Plaid client wrapper, the
+backup gate, Sandbox rehearsal — touches no Production Item and no institution,
+and survives a `NO` intact: a `NO` changes *how accounts get linked*, not the
+staleness machine, the snapshot model, the manual-asset path or the transport.
+That is the actual reason it is safe to start, and it is why the graph and this
+table now agree. Note that Sandbox work still needs the dashboard **account**
+(task 00), which is a different dependency from O2's answer.
 
 ---
 
@@ -1200,6 +1608,21 @@ Agents must never perform these. Everything before and after is automated.
 6. Optional: request access for the equity-comp brokerage — expect up to six
    weeks, and do not wait for it (§12 is the primary path).
 
+**Step 1a — Say where backups land** (~5 min, once; **before** Step 2, and the
+ordering is the whole point — §14a.1)
+1. Pick storage that will not die with the Mac: an external disk, the Time
+   Machine volume, or another machine over Tailscale. Set `backup_destination`.
+   The backup refuses to run if it resolves to the same device as the database.
+2. Copy `~/agents/secrets/networth-backup.key` into a password manager or write
+   it down, then run `networth backup attest-key`. It records only the date of
+   your confirmation. Without this, the archive and its key die together.
+3. Run `scripts/restore-drill.sh` and see it pass. It pulls the archive back
+   **from the destination**, so this is the first moment a real recovery has
+   actually been exercised.
+4. **Do not proceed to Step 2 until it passes.** After the first Production Link,
+   losing the tokens does not cost a re-link — it strands permanent Item slots
+   (**F2**, **F6**).
+
 **Step 2 — Link each institution** (~1 min each, once per institution)
 1. Run `scripts/link.sh` (built by agents, run by the owner).
 2. It opens Link in the browser. **Enter credentials and MFA there** — that page
@@ -1213,11 +1636,16 @@ Agents must never perform these. Everything before and after is automated.
 entirely if **O5** chooses Tailscale)
 1. Create a free Cloudflare account (**O7**) and run the provided `wrangler`
    deploy. Agents can write the Worker; only the owner creates the account.
-2. Run `networth pair`. It prints a QR code.
+2. Run `networth pair`. It registers the new pairing with the Worker **first**
+   and prints the QR code only once that succeeds (§6.3.1) — so a QR on screen
+   always means a phone that will work.
 3. Open the app and scan it. That is the whole provisioning step — nothing
    secret was ever compiled into the APK (§6.3).
-4. Re-run `networth pair` any time to rotate; the old key stops decrypting
-   anything that still exists, and no rebuild is needed.
+4. Re-run `networth pair` any time to rotate: the previous phone stops reading
+   **immediately**, before the new one has scanned anything, and the stored
+   snapshot is deleted so the old key has nothing left to decrypt. No rebuild.
+5. **Phone lost or stolen:** run `networth revoke`. Same lockout, no replacement
+   phone needed. The Mac keeps publishing; nobody can read.
 
 **Ongoing — when an alert fires:**
 
@@ -1228,9 +1656,14 @@ entirely if **O5** chooses Tailscale)
   check the proposed old→new account mapping and confirm it. Until that
   confirmation the new accounts contribute nothing and the total is openly
   marked incomplete (§8.5).
-- **Frozen data** → an institution is answering but not updating. Usually a
+- **Frozen data** → an institution is answering but has not updated for five
+  market days (§11), which is also when the app promotes it to `ACTION_NEEDED`
+  (§9.2) — the screen and this page are describing the same threshold. Usually a
   re-link in update mode clears it; if it does not, the account is a candidate
   for the manual path (§12) rather than a permanent lie.
+- **Read-back mismatch / drain stalled** → transport faults, not account faults.
+  Neither changes the number; both mean a signal you rely on is degraded. Check
+  `networth doctor` first.
 
 ---
 
