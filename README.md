@@ -4,7 +4,11 @@ A personal net-worth aggregator that refuses to lie about how old its number is.
 
 One figure — assets minus debts — rebuilt at least once a day from linked
 brokerage, retirement and credit-card accounts, plus a small number of
-manually-held assets.
+manually-valued assets.
+
+A Mac does the syncing on a resident schedule and keeps every credential; a
+Flutter phone app is a read-only display of an encrypted snapshot. Single user,
+zero marginal cost.
 
 ## Why this exists
 
@@ -34,7 +38,9 @@ architecture and [`tasks/README.md`](tasks/README.md) for the task breakdown.
   for. If a capability costs money, the capability is dropped.
 - **No 24/7 server.** A resident launchd loop on one Mac, which must keep
   working on battery.
-- **Secrets never enter this repository.** Long-lived credentials live in
-  `~/agents/secrets/`.
+- **Secrets and real figures never enter this repository.** It is public and
+  holds code and schema only; long-lived credentials live in
+  `~/agents/secrets/`, and account data lives in a local database outside the
+  working tree.
 
 See [`AGENTS.md`](AGENTS.md) for the working agreement.

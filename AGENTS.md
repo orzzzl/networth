@@ -11,19 +11,42 @@ committed here.
 
 ## Hard rules (do not violate)
 
-### 1. Secrets never enter this repository
+### 0. This repository is PUBLIC
+
+Everything here is world-readable, and **anything committed once stays in the
+history even after it is deleted** — on a public repo that is unrecoverable.
+Visibility was never the control that protects this project; the separation
+between code and data is. So: the repo holds *code and schema only*.
+
+- Field names, table shapes and state machines are **not** sensitive. Balances,
+  holdings, account identifiers and the owner's institutions **are**.
+- **No institution-specific detail anywhere** — not in the sync engine, not in
+  config, not in tests, docs, UI copy or default values. Everything about which
+  institutions exist comes from the runtime link flow. A hardcoded institution
+  is a bug (`DESIGN.md` §2). `DESIGN.md` deliberately describes account
+  *categories*; keep it that way.
+
+### 1. Secrets and real figures never enter this repository
 
 This is the rule that matters most, because the credentials involved are
 long-lived and grant read access to real financial accounts.
 
-- Plaid `access_token`s, the Plaid `client_id`/`secret`, and the Alpaca key live
-  in `~/agents/secrets/` — **never** in git, never in a PR, never in a PR
-  comment, never echoed into a log or a test fixture.
+- Plaid `access_token`s, the Plaid `client_id`/`secret`, the transport
+  credential, the payload encryption key, the Android keystore and the quotes
+  key live in `~/agents/secrets/` — **never** in git, never in a PR, never in a
+  PR comment, never echoed into a log or a test fixture.
 - The database stores a *reference* to a secret (a key name), never the secret.
 - Committed code reads secrets from files under `~/agents/secrets/` or from the
   environment. Example files (`*.env.example`) carry key names only, no values.
-- Before every commit, check the diff for anything credential-shaped. `.gitignore`
-  is a safety net, not permission to be careless.
+- **Never commit real figures.** No real balances, account numbers, institution
+  item ids, or screenshots showing actual holdings — in code, tests, fixtures,
+  docs, or issue/PR text. **All test fixtures are synthetic.** This binds CI
+  too: no test or script may print a real balance.
+- **PR descriptions and commit messages carry no real numbers.** Report a
+  verified sync as "3 accounts reconciled", never as amounts.
+- Before every commit, check the diff for anything credential- or
+  balance-shaped. `.gitignore` is a safety net, not permission to be careless;
+  the ignore rules were written in the first commit for that reason.
 
 ### 2. Zero marginal cost
 
@@ -76,8 +99,17 @@ simplification.
 - **English** for all code, comments, identifiers, docs, and commit messages.
   User-facing strings go through the UI layer's own i18n, never hard-coded.
 - The sync and data layer is **UI-agnostic**. It must not import anything
-  UI-specific; the first consumer is a CLI. Depend on the interfaces described
-  in `DESIGN.md`, not on concrete implementations across layers.
+  UI-specific or transport-specific; the first consumer is a CLI, the second is
+  a published payload. Depend on the interfaces described in `DESIGN.md`, not on
+  concrete implementations across layers.
+- The Mac and the phone share **one contract: the payload schema**, versioned
+  explicitly. Changing it means bumping `schema_version`; an older app must
+  refuse to render a newer payload rather than misread it.
+- **Bump `pubspec.yaml` before every APK handed to the owner** — a feature batch
+  bumps the minor version, the `+N` build number always increments, and the
+  delivered file name carries the new version and overwrites the previous file.
+  Two different APKs sharing a version has already cost one real debugging
+  incident on a sibling project.
 - No new dependencies without an explicit OK written in the task spec.
 - Money is never a float. Store minor units (integer cents) or a decimal type;
   never `float` arithmetic on balances.
