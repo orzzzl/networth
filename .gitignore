@@ -1,0 +1,31 @@
+# Secrets — belt and braces. Nothing credential-shaped may ever be committed.
+*.env
+!*.env.example
+secrets/
+*.pem
+*.key
+plaid-items.json
+access_token*
+
+# Local data — the net-worth database and any exports are private and local-only.
+data/
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Runtime
+logs/
+*.log
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+node_modules/
+
+# macOS
+.DS_Store
