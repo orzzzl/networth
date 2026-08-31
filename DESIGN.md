@@ -3,6 +3,34 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 11 — **not review-driven, and small.** The owner created the Plaid
+account while rev 10 was in flight, which closes the project's last open
+question. Folded into the same review round rather than a round of its own, as
+the owner has asked for twice now.
+
+- **O2 answered: GO.** OAuth on Trial is **confirmed** rather than probable —
+  from the dashboard itself: a `0/10` trial meter, Production credentials issued,
+  and Plaid stating that bank access is automatic on the trial with **no
+  per-institution request**. **F4** is rewritten around the evidence; §18 has no
+  open questions left. Both feared blockers evaporated rather than being worked
+  around, including the one about an individual with no company.
+- **A correction to this document's own runbook, which the owner walked into.**
+  §19 step 1 sent him through "Get production access" — that is the **paid**
+  funnel, ending at a plan picker where every option is billed. The Trial is a
+  separate fourth plan, granted on signup, and is not offered anywhere in that
+  flow. He stopped and asked; nothing was purchased. The step now says what to
+  do (confirm the `0/10` meter) and warns explicitly about the button that looks
+  like the answer. **The most likely way to break the zero-spend rule was never
+  a design decision — it was following a plausible dashboard button.**
+- **F2 gains its citation and its other half:** past ten Items Plaid **stops**
+  rather than silently billing. The budget can be exhausted; the cost rule
+  cannot be broken by accident.
+- **The production secret joins the "no agent ever sees this" list** (§15),
+  alongside the standing rule that no agent asks the owner for a password.
+- **GO is not permission to link.** The ten slots are lifetime, so task 03a's
+  backup gate still stands ahead of 08 — stated in §18 and **F4** because "the
+  go/no-go cleared" is exactly the sentence someone would read as clearance.
+
 Revision 10 — **not review-driven, and mostly a deletion.** The owner answered
 five open questions in one sitting, and one of the answers moved the host. Every
 finding open against rev 7 is **void by removal**, not by fix — the distinction
@@ -274,11 +302,19 @@ product this project needs is included — since rev 9 that is **Investments plu
 account balances**; Liabilities is bundled too and simply goes unused while
 cards are deferred, so bringing them back costs no plan change.
 
-**F2 — `/item/remove` does NOT free a slot.** *(New.)* Plaid's billing docs:
-removing Items created on a Trial plan "will *not* allow you to create more
-Items." The 10 are therefore **10 lifetime Link exchanges**, not 10 concurrent
-connections. A mislinked institution burns a slot permanently. This is the
-binding constraint of the project and drives §8 and §14.
+**F2 — `/item/remove` does NOT free a slot.** Plaid's billing docs, quoted
+rather than paraphrased: removing Items created on a Trial plan "will **not**
+allow you to create more Items." The 10 are therefore **10 lifetime Link
+exchanges**, not 10 concurrent connections. A mislinked institution burns a slot
+permanently. This is the binding constraint of the project and drives §8 and §14
+— in particular it is the whole reason re-authentication must go through Link
+**update mode** (§8.3) rather than the obvious remove-and-relink.
+
+*(Rev 11 adds the other half, which matters for a different reason: past ten
+Items, Plaid **stops** rather than silently billing. That is the failure mode
+this project would want — the zero-spend rule (§4) cannot be violated by
+accident here, only the slot budget can be exhausted. Confirmed on the dashboard,
+which shows a `0/10` trial meter.)*
 
 **F3 — Investments Refresh *is* bundled on Trial.** *(Corrects the brief, which
 had it as a paid add-on.)* It is a paid add-on **off** Trial. It stays unused
@@ -287,18 +323,31 @@ update "at least once per day during market days (up to 2-4 times per day,
 depending on institution)" after close), and depending on it would create a
 silent cost cliff the moment the account leaves Trial.
 
-**F4 — OAuth access on Trial is probable but unconfirmed.** Plaid's OAuth guide
-says access to Production "via either a paid plan or a trial" satisfies the
-prerequisite, and Trial users "do not need to complete [full Production
-registration] until you upgrade"; support material says Trial reaches most major
-OAuth institutions, typically 6–24h after approval. Every brokerage in scope is
-an OAuth institution, so this is a **go/no-go for the Plaid Production-Link
-path** — tasks 07 and 08 and everything downstream of a real Item — and only the
-owner's dashboard can settle it. It is **not** a gate on the project: the
-foundation (schema, `Store`, `TokenStore`, the Plaid client wrapper, the backup
-gate, Sandbox rehearsal) survives a `NO` intact, because a `NO` changes how
-accounts get linked, not the staleness machine, the snapshot model, the
-manual-asset path or the transport. Recorded as a gate (§18, O2), not asserted.
+**F4 — OAuth access on Trial is CONFIRMED.** *(Rev 11. Through rev 10 this read
+"probable but unconfirmed" and was the project's one go/no-go, **O2**. The owner
+created the account on 2026-08-30 and it is settled — from the product surface
+itself, not from an inference.)* The dashboard shows a **`0/10` free-trial
+meter** (Trial active, no lifetime slot consumed), the credential panel now
+issues **Production** `client_id` and `secret`, and Plaid states on the overview
+page: *"Automatic bank access — No action is needed to access banks through
+Plaid's free trial."* Plaid's OAuth guide independently says Production access
+"via either a paid plan or a trial" satisfies the prerequisite.
+
+Both feared blockers evaporated rather than being worked around:
+
+- **"OAuth institutions may be unreachable on the free tier"** — no. Bank access
+  is automatic on Trial and **no per-institution approval request is required.**
+  This independently confirms §18's decision not to file an access request for
+  the equity-comp brokerage: there was nothing to request.
+- **"Plaid may not approve an individual with no company"** — did not arise.
+  Plaid accepted an **Individual** business type, and the Trial needs only
+  account creation plus email verification. No MSA, no security questionnaire,
+  no underwriting review.
+
+**O2 is closed, and this design now has no owner-side unknowns left** (§18).
+Note what that does *not* license: the ten slots are still lifetime, so **no
+institution is linked until the backup is actually running** (§14a; task 03a
+still gates 08). GO removed one gate; it did not remove the reason for the other.
 
 **F5 — Real-time balance is bundled on Trial, and it is the only way a cash
 balance's age can be known at all.** *(From review.)* Plaid's accounts docs
@@ -1887,6 +1936,14 @@ hook and in CI.
 Banking credentials are never seen by any agent or written anywhere: the owner
 types them into Plaid Link, which returns only a short-lived `public_token`.
 
+**And neither is the Plaid production secret.** *(Rev 11, standing rule.)* It is
+the master credential — it can burn all ten lifetime Items (**F2**) — so agents
+write the *command* that installs it and the owner runs that command himself on
+the VPS. **No agent may ask him to paste it into a chat, into a file an agent
+reads, or into a PR.** Same rule, same reason, as the ban on asking him for a
+password (§15.1): the fact that an agent needs a credential to exist somewhere is
+never a reason for the agent to see it.
+
 ---
 
 ## 16. Stack
@@ -1995,15 +2052,20 @@ project; it applies here.
 
 ## 18. Open questions
 
-**One question is open. It was seven.** *(Rev 10: the owner answered O4, O5, O6,
-O7 and O8 in one sitting, and O3 was voided by the credit-card deferral. Answered
-questions are kept, struck through, with the answer in place — so a reader of an
-old review comment can still find what O5 was, and so the reason each branch
-disappeared is on the record rather than inferable only from a diff.)*
+**None are open.** *(Rev 11. Rev 10 got this down to one — O2 — and the owner
+closed it the same day. Answered questions are kept, struck through, with the
+answer in place, so a reader of an old review comment can still find what O5 was
+and why each branch disappeared.)*
+
+**What that means, stated so nobody reads it as more than it is:** every
+*external* unknown is gone — nothing is waiting on Plaid, on a vendor's terms, or
+on a decision only the owner can make. The critical path is now entirely
+internal. It does **not** mean linking may begin: task 03a's backup gate stands
+(§14a), and it is not an open question, it is a dependency.
 
 | # | Question | Owner of the answer | Blocks |
 |---|---|---|---|
-| **O2** | **Does the Trial plan actually reach the in-scope brokerages via OAuth?** (**F4** — go/no-go) | **owner, via dashboard — the account does not exist yet, and creating it is owner-only** | **the Production-Link path: tasks 07, 08 and everything downstream of a real Item** (09, 12b, 26) — see below |
+| ~~O2~~ | ~~Does the Trial plan actually reach the in-scope brokerages via OAuth?~~ **ANSWERED 2026-08-30: GO.** Trial active at `0/10`, Production credentials issued, and Plaid states bank access is **automatic on the trial** with no per-institution request. **F4** carries the evidence. Tasks 07, 08 and the downstream Production-Link work are ungated — but see the runbook correction in §19 step 1, because the obvious path to "production access" is a **paid** funnel that this project must not enter | — | — |
 | ~~O3~~ | ~~How many distinct card-issuer logins?~~ **VOID** — it existed only to size the card share of the Item budget, and cards are deferred (§1, rev 9). Nothing waits on it | — | — |
 | ~~O4~~ | ~~Real property: purchase price only, or a revision log?~~ **ANSWERED: a revision log**, defaulting to purchase price, every revision kept with its date — **and a revision applies from its own date forward, so the curve behind it never deforms** (§12) | — | — |
 | ~~O5~~ | ~~Transport: a third-party relay, or Tailscale?~~ **ANSWERED: Tailscale — and the host moved with it.** The owner has an always-on Vultr VPS (already paid for, already his tailnet exit node), so the daemon runs there instead of on the Mac. Both drawbacks the Tailscale branch carried were *Mac* drawbacks and both are void: the VPS never sleeps, and it has a public IPv4 so the webhook accelerator survives (§8.4). The entire third-party branch is **deleted** (§6.2), not parked | — | — |
@@ -2014,17 +2076,16 @@ disappeared is on the record rather than inferable only from a diff.)*
 *(O1 — phone vs Mac/browser — was answered earlier: **Flutter phone app**, which
 O6 narrows to **Android only**.)*
 
-**O2 blocks the Plaid path, not the project.** *(Narrowed in review, which
-caught this table saying "all implementation" while the task graph and the
-recommended plan both started six tasks before O2 could possibly be answered.
-Two answers in one merged document is worse than either answer.)* The
-foundation — schema, `Store`, `TokenStore`, the Plaid client wrapper, the
-backup gate, Sandbox rehearsal — touches no Production Item and no institution,
-and survives a `NO` intact: a `NO` changes *how accounts get linked*, not the
-staleness machine, the snapshot model, the manual-asset path or the transport.
-That is the actual reason it is safe to start, and it is why the graph and this
-table now agree. Note that Sandbox work still needs the dashboard **account**
-(task 00), which is a different dependency from O2's answer.
+**O2 blocked the Plaid path, not the project — and the record of why is worth
+keeping now that it is answered.** *(Narrowed in review, which caught this table
+saying "all implementation" while the task graph and the recommended plan both
+started six tasks before O2 could possibly be answered.)* The foundation —
+schema, `Store`, `TokenStore`, the Plaid client wrapper, the backup gate,
+Sandbox rehearsal — touches no Production Item and no institution, and would
+have survived a `NO` intact. **It went the other way, so nothing was spent on
+the contingency; but the reasoning is what made it safe to start six tasks
+before the answer existed**, and the same reasoning is why nothing in the graph
+changes now except that a `BLOCKED (O2)` label comes off.
 
 **And one non-question that would otherwise look like one.** The employer-equity
 brokerage can require an explicit access request on the Plaid dashboard, granted
@@ -2041,19 +2102,31 @@ is a path this design does not take.
 
 Agents must never perform these. Everything before and after is automated.
 
-**Step 1 — Create the Plaid account** (~10 min, once)
+**Step 1 — Create the Plaid account** — ✅ **DONE 2026-08-30.** Kept because it
+records a trap, not because there is work left.
+
 1. Sign up at `dashboard.plaid.com/signup`, verify email.
-2. Apply for the **Trial plan** at `dashboard.plaid.com/trial-plan`. Most apply
-   automatically; a manual review takes 2–3 business days.
-3. After approval, confirm the plan reads **Trial, 10 Items** and that the
-   in-scope brokerages appear available. This **answers O2**. If they are *not*
-   available, report it — that blocks the **Production-Link path** (tasks
-   07 and 08, and anything downstream of a real Item) and nothing else. The
-   foundation continues either way (§18); do not stop it. *(Rev 3 narrowed this
-   in §18 and the task graph but left "stop before implementation proceeds"
-   here, which is the sentence the owner would actually have been reading.)*
-4. Copy `client_id` and the **production** secret into
-   `~/agents/secrets/plaid.env`. Never paste them into a chat or a PR.
+2. **Confirm the `0/10` free-trial meter on the dashboard overview.** That is the
+   entire check. The Trial is granted automatically on signup.
+3. **DO NOT follow "Get production access".** *(Rev 11, and this is a correction
+   to a runbook I wrote and the owner actually walked into.)* That flow is the
+   **paid** path: it ends at a plan picker offering only Pay-as-you-go / Growth /
+   Custom — **all billed** — followed by a billing step. **The Trial is a
+   separate fourth plan that is not offered anywhere in that flow**, so
+   "production access" reads like the thing you want and is not. The owner
+   stopped at the plan page and asked before selecting anything; nothing was
+   purchased and no payment method was entered.
+
+   Recorded prominently because the §4 zero-spend rule is the economic basis of
+   the whole project, and the most likely way to break it is not a design
+   decision — it is following a plausible-sounding dashboard button. Trial
+   credentials are **already Production credentials**; there is nothing to
+   upgrade to.
+4. Copy `client_id` and the **production** secret into the service user's
+   `plaid.env` **on the VPS** (§15). **Run that command yourself.** No agent may
+   see the production secret: when the host config is ready, agents produce a
+   command for you to run, never a request for you to paste the secret anywhere
+   an agent can read — not a chat, not a file, not a PR.
 5. Register the redirect URI (§16) under *Allowed redirect URIs*, and the
    webhook URL (§8.4) under the webhook setting.
 6. **Do not request special access for the equity-comp brokerage.** Rev 9 listed

@@ -11,6 +11,14 @@ instruction. Status vocabulary:
 Everything is `BLOCKED` until this design PR merges. Numbers are stable from the
 merge of this PR onward; dependencies are by number.
 
+**Revision 11** adds nothing and unblocks a leg: **O2 = GO** (`DESIGN.md` **F4**),
+so task `00` is **DONE** and `06`, `07`, `08` and the downstream Production-Link
+work lose their O2 label. **`08`'s other gate does not clear with it** — 03a's
+backup drill still stands ahead of it, because the ten Item slots are lifetime
+whatever the plan says. `00`'s row now also carries the two things that outlive
+it: the "Get production access" paid-funnel trap the owner walked into, and the
+rule that **the production secret never reaches an agent**.
+
 **Revision 10 changes this list more than any revision before it, and mostly by
 deleting.** The owner answered five open questions at once, and one of them moved
 the host from the Mac to a VPS he already owns (`DESIGN.md` §5, §6.2). Rows are
@@ -67,7 +75,7 @@ only**) and deferred credit cards, doubling `08`'s reserve from 2 to 4.)*
 
 | # | Task | Deps | Status | Notes |
 |---|---|---|---|---|
-| 00 | Create the Plaid account, get the Trial plan approved, **verify the in-scope brokerages are reachable on Trial (O2)** | — | BLOCKED (owner) | Runbook `DESIGN.md` §19 step 1. **Go/no-go for the Plaid link path** (07/07a/08 and everything downstream of a real Item), not for the foundation — a `NO` changes how accounts get linked, not the schema, the staleness machine, the manual-asset path or the transport (`DESIGN.md` §18). Task 00 also produces the dashboard credentials that Sandbox work needs, which is a *separate* dependency from O2's answer. |
+| 00 | Create the Plaid account, get the Trial plan approved, **verify the in-scope brokerages are reachable on Trial (O2)** | — | **DONE (owner, 2026-08-30)** | **O2 = GO.** Trial active at `0/10`, Production `client_id`/`secret` issued, and Plaid states bank access is **automatic on the trial** — no per-institution request (`DESIGN.md` **F4**). Tasks 07, 08 and the downstream Production-Link work are ungated; 06 has its dashboard credentials. **Two things this task leaves behind, both live:** (1) the runbook trap — "Get production access" is the **paid** funnel and the Trial is a separate plan not offered in it (`DESIGN.md` §19 step 1); the owner walked into it and stopped at the plan picker, so any future doc must not send anyone back there; (2) **the production secret must never reach an agent** — agents write the command, the owner runs it on the VPS (§15). |
 | 00a | **Install the agents' public key on the VPS**, put the Mac on the tailnet, and escrow the backup key | — | BLOCKED (owner) | Runbook `DESIGN.md` §19 steps 1a–1c. **O8 itself is answered** (VPS → Mac over the tailnet), so what is left here is owner-only *access*: only the owner can add a key to `authorized_keys`, and **no agent may ever ask him for a password** (§15.1). Until he confirms, assume no VPS access — and do **not** block foundation work on it (28 is the only task that needs it). Also carries the key escrow that 03a's criterion 2 attests to. |
 | 01 | UI target | — | **ANSWERED** | The owner chose a **Flutter phone app**, narrowed by O6 (rev 9) to **Android only** — one deliverable, one APK, no iOS. Number retained so later references stay valid. Its consequence is Phase 4, not a task of its own. |
 
@@ -81,15 +89,15 @@ only**) and deferred credit cards, doubling `08`'s reserve from 2 to 4.)*
 | 04 | Domain model + `Store` repositories; append-only observations/snapshots | 03 | BLOCKED | The seam everything else reads through. No I/O beyond SQLite. Snapshots append per successful run, idempotent on `sync_run_id`; nothing is edited in place. Queries never assume a fixed set of accounts (§2 reservation 2). |
 | 05 | `PlaidClient` wrapper + **error taxonomy mapping** to our states | 02 | BLOCKED | The one place Plaid errors become `DEGRADED` / `NEEDS_REAUTH` / `REVOKED` (§8.2). Must cover `ITEM_LOGIN_REQUIRED`, `PENDING_EXPIRATION`, `PENDING_DISCONNECT`, `USER_PERMISSION_REVOKED`, `ITEM_NOT_FOUND`. Unit-tested against synthetic fixtures. |
 | 05a | `TokenStore`: narrow interface over secret storage, mode-600 file backend | 02 | BLOCKED | §2 reservation 3. Small, but it must exist before anything reads a token, or file reads will scatter. |
-| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, **00** | BLOCKED | **Must pass before any Production Link.** Sandbox is free and unlimited; Production slots are permanent (F2). Depends on 00 for the **dashboard credentials** — which is a *different* dependency from O2's answer (`DESIGN.md` §18): Sandbox rehearsal is worth doing whatever O2 says, and needs only that the account exists. |
+| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, **00** | **READY on merge** (00 is done) | **Must pass before any Production Link.** Sandbox is free and unlimited; Production slots are permanent (F2). Depends on 00 for the **dashboard credentials** — which is a *different* dependency from O2's answer (`DESIGN.md` §18): Sandbox rehearsal is worth doing whatever O2 says, and needs only that the account exists. |
 
 ## Phase 2 — linking (spends the scarce resource)
 
 | # | Task | Deps | Status | Notes |
 |---|---|---|---|---|
-| 07 | Static OAuth redirect page + free hosting + dashboard registration | 00 | BLOCKED | Holds no data and no secrets. HTTPS required; `localhost` is Sandbox-only. |
+| 07 | Static OAuth redirect page + free hosting + dashboard registration | 00 | **READY on merge** (was BLOCKED on O2) | Holds no data and no secrets. HTTPS required; `localhost` is Sandbox-only. Also registers the **webhook URL** (§8.4) while in the dashboard. |
 | ~~07a~~ | ~~*Spike:* automatic `public_token` handoff~~ | — | **DROPPED (rev 10)** | Not deferred. The browser is on the Mac and the exchanging process is on the VPS (§16), so an automatic handoff means opening a route on the VPS for a step that happens at most ten times in this project's life and takes ten seconds. Copy-paste was always the shipping path; it is now the only one. Number retained so review references stay valid. |
-| 08 | `scripts/link.sh` — owner-run Link, token exchange, `TokenStore` write, item record, **post-Link backup** | 04, 06, 07, **03a** | BLOCKED | The owner runs it **on the VPS over SSH**, because that is where the client secret lives; the browser step happens on the Mac and the `public_token` is pasted back (§16). Agents never run it. Must confirm the exact institution *and login* before exchanging. **Cannot start until the restore drill passes** — this is the task after which data loss costs permanent slots. **New in rev 10, and it is the sharper form of that gate:** the script **runs a backup immediately after a successful exchange and refuses to report the Link complete until it succeeds** (§14a). The daily backup protects the *curve*; the token set changes at exactly one moment — a successful Link — and a Mac that happens to be switched off that week is otherwise all it takes for a new Item's token to exist in only one place. Tie the protection to the event that creates the irreplaceable thing, not to a clock. |
+| 08 | `scripts/link.sh` — owner-run Link, token exchange, `TokenStore` write, item record, **post-Link backup** | 04, 06, 07, **03a** | BLOCKED | The owner runs it **on the VPS over SSH**, because that is where the client secret lives; the browser step happens on the Mac and the `public_token` is pasted back (§16). Agents never run it. Must confirm the exact institution *and login* before exchanging. **Cannot start until the restore drill passes** — this is the task after which data loss costs permanent slots. **O2 clearing does not change this.** The ten slots are lifetime whatever the plan says, so "GO" ungated *how accounts get linked*, not *when*; 03a is a dependency, not an open question, and the owner has been told explicitly that no institution is linked until the backup is running. **New in rev 10, and it is the sharper form of that gate:** the script **runs a backup immediately after a successful exchange and refuses to report the Link complete until it succeeds** (§14a). The daily backup protects the *curve*; the token set changes at exactly one moment — a successful Link — and a Mac that happens to be switched off that week is otherwise all it takes for a new Item's token to exist in only one place. Tie the protection to the event that creates the irreplaceable thing, not to a clock. |
 | 09 | `scripts/relink.sh` — Link **update mode** for an existing item | 08 | BLOCKED | Consumes no slot. The recovery path for `NEEDS_REAUTH`; the naive remove-and-relink must never be implemented (F2). |
 
 ## Phase 3 — sync and the honesty machinery
@@ -134,19 +142,21 @@ the app.
 
 ## Suggested sequencing (not an assignment)
 
-1. **Now, in parallel with the owner's Phase 0:** 02, 03, 04, 05, 05a. None of
-   them touch a credential, a Plaid Item or the VPS, so none are blocked on the
-   go/no-go or on host access — this is the foundation that survives a `NO`
-   intact. **This is the answer to "what can be done while O2 is open?", and it
-   is unchanged by rev 10** — the host move touched the transport and the
-   scheduler, not the schema, the staleness machine or the snapshot model.
+1. **First, and unchanged by either revision:** 02, 03, 04, 05, 05a. None of
+   them touch a credential, a Plaid Item or the VPS. This was the foundation
+   that would have survived an O2 `NO` intact; O2 said **GO**, so nothing was
+   spent on the contingency — but the property that made it safe to start before
+   the answer existed is the same property that makes it the right place to
+   start now. Rev 10's host move touched the transport and the scheduler, not
+   the schema, the staleness machine or the snapshot model.
    **03a can be built alongside them but cannot *pass* until the owner has done
    00a**, because its drill has to reach the Mac over the tailnet. Building it
    early is right; calling it green before 00a would be the rev-2 mistake again.
-2. **Once 00 exists:** 06 (Sandbox needs the dashboard account, not O2's answer)
-   → then, **once O2 says go**, 07 → 08 — and 08 only after 03a's drill passes
-   from the real destination. Rehearse in Sandbox before spending a single
-   Production slot.
+2. **00 is done and O2 said GO**, so this leg is ungated: 06 → 07 → 08, with
+   **08 still gated on 03a's drill passing from the real destination**. That gate
+   is not an open question and does not clear with O2 — the slots are lifetime
+   regardless of plan. Rehearse in Sandbox before spending a single Production
+   slot; Sandbox is free and unlimited, Production mistakes are permanent.
 3. **The core value:** 10 → 11 → 12 → 14 → 15 → 16, with 12b close behind 09.
    Task 11 deserves more review attention than anything else in this list — it
    is where a successful API call is prevented from masquerading as fresh data.
