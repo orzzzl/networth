@@ -3,6 +3,32 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 12 — **not review-driven, and it found a defect in rev 11.** The owner
+installed the Plaid credential on the VPS and it was verified live. Folded into
+the same round again; Codex had still not claimed the review.
+
+- **O2 goes from "read off a dashboard" to "proven end to end."** An
+  authenticated call from the VPS to `/institutions/get` — **Item-free**, so it
+  spent none of the ten slots — returned **200 with 10,033 institutions**. That
+  settles the secret's correctness, Trial Production access being genuinely
+  active, *and* the new host's egress to Plaid, which nothing had tested (**F4**).
+- **The credential's real path is now in the design** (`/etc/networth/plaid.env`,
+  §15) rather than a description of one, and **`PLAID_ENV` is read from the file**
+  — never hardcoded, which is what keeps a Sandbox run from being one edited
+  constant away from a Production one.
+- **`PermitRootLogin no` was wrong as rev 11 wrote it, and this is the finding.**
+  §15.1 stated it as a flat setting. **This is not a fresh host** — it was the
+  owner's Tailscale exit node before this project existed and he administers it
+  as `root`. An unattended deploy task applying that setting could **lock the
+  owner out of infrastructure that is not ours.** The requirement is now the
+  *ordering*: a non-root sudo account must exist and be verified from a second
+  session first, and the change is proposed rather than applied. **Hardening that
+  can strand the owner is not hardening.**
+- **`/etc/networth/` is root-owned today**, so the deploy `chown`s it to the
+  service user, keeps `600`/`700`, and **says that it did** — a step that quietly
+  adjusts permissions on the file holding the master credential is
+  indistinguishable from one that quietly widens them.
+
 Revision 11 — **not review-driven, and small.** The owner created the Plaid
 account while rev 10 was in flight, which closes the project's last open
 question. Folded into the same review round rather than a round of its own, as
@@ -343,6 +369,15 @@ Both feared blockers evaporated rather than being worked around:
   Plaid accepted an **Individual** business type, and the Trial needs only
   account creation plus email verification. No MSA, no security questionnaire,
   no underwriting review.
+
+**Proven end to end, not just read off a dashboard** *(rev 12)*. From the VPS,
+an authenticated call to `/institutions/get` — an **Item-free** endpoint, so it
+consumed none of the ten lifetime slots — returned **HTTP 200 with 10,033
+institutions**. That settles three separate things at once that the dashboard
+could only suggest: the secret is exactly right (a wrong one returns
+`INVALID_API_KEYS`), Trial Production access is genuinely active rather than
+merely displayed, and **the VPS has working egress to Plaid** — which is a
+property of the new host that nothing had tested before.
 
 **O2 is closed, and this design now has no owner-side unknowns left** (§18).
 Note what that does *not* license: the ten slots are still lifetime, so **no
@@ -1855,15 +1890,19 @@ The repository is **public**. Repo visibility was never the real control — the
 separation between code and credentials is. These rules are also in `AGENTS.md`,
 which binds both agents.
 
-**On the VPS**, under the dedicated service user's home, mode 600:
+**On the VPS**, in `/etc/networth/` (directory mode `700`, files mode `600`):
 
-- `plaid.env` — `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`.
-- `plaid-items.json` — `{item_id: access_token}`.
-- `networth-payload.key` — the payload key (§6.1). **One key, no tokens**:
+- **`/etc/networth/plaid.env`** — `PLAID_CLIENT_ID`, `PLAID_SECRET`,
+  `PLAID_ENV`. **Already installed by the owner** (2026-08-30). This is *the*
+  path; code reads it and **no second location is invented**. `PLAID_ENV` is
+  read from the file — the environment is never hardcoded, which is what keeps
+  a Sandbox run from being one edited constant away from a Production one.
+- `/etc/networth/plaid-items.json` — `{item_id: access_token}`.
+- `/etc/networth/networth-payload.key` — the payload key (§6.1). **One key, no tokens**:
   tailnet membership replaces the bearer credential and the payload key *is* the
   read credential (§6.3.1).
-- `networth-backup.key` — the backup archive key (§14a).
-- Quotes key for `QuoteClient` (§12).
+- `/etc/networth/networth-backup.key` — the backup archive key (§14a).
+- `/etc/networth/quotes.env` — the quotes key for `QuoteClient` (§12).
 
 **On the Mac:** `~/agents/secrets/networth-vps.key` — the agents' SSH key to the
 VPS, and the backup archives as they land. Nothing else; the Mac is a backup
@@ -1888,10 +1927,24 @@ recorded, not silently dropped, because a future reader weighing a change to thi
 host needs to know the concentration was a decision. The mitigations are ordinary
 and are part of the deploy task, not aspirations:
 
-- **Key-only SSH; `PasswordAuthentication no`, `PermitRootLogin no`.** Agents use
-  their own dedicated key (`networth-vps.key`); the owner's password is never
-  requested by, shown to, or stored by any agent — a standing rule, not a
-  preference.
+- **Key-only SSH: `PasswordAuthentication no`.** Agents use their own dedicated
+  key (`networth-vps.key`); the owner's password is never requested by, shown to,
+  or stored by any agent — a standing rule, not a preference.
+- **`PermitRootLogin` needs care, and rev 11 stated it as a flat `no` without
+  it.** *(Rev 12, and this is a defect in this document's own hardening step
+  rather than a note about it.)* **This is not a fresh host.** It was the owner's
+  Tailscale exit node before this project existed, he administers it as `root`,
+  and he installed the Plaid credential as `root`. A deploy task that reads
+  "`PermitRootLogin no`" and applies it can **lock the owner out of infrastructure
+  that is not ours** — and it would do so while he is not watching, since these
+  units run unattended.
+
+  So the ordering is the requirement, not the setting: **a non-root account with
+  `sudo` and the owner's key must exist and be verified working from a second
+  session before root login is restricted at all**, and the change is proposed to
+  the owner rather than applied. If he declines, that is his call on his own
+  machine and it is recorded rather than worked around. *Hardening that can strand
+  the owner is not hardening.*
 - **A firewall that opens exactly two things to the public internet:** SSH and
   the webhook route (§8.4). The snapshot server binds the **tailnet interface
   only** and must never be published; a bind-address regression is the one
@@ -1900,6 +1953,13 @@ and are part of the deploy task, not aspirations:
 - **Unattended security upgrades** enabled.
 - **A dedicated unprivileged service user** owning the database and the secrets,
   so the daemon is not root and a bug in the webhook parser is not a root bug.
+  **`/etc/networth/` is currently root-owned**, because the owner created it. The
+  deploy task `chown`s it to the service user and **keeps mode `600`/`700`** —
+  and **reports that it did so**. A permission change to a file holding the master
+  credential is never a silent step: the failure mode of getting it wrong is
+  widening access to the one secret that can burn all ten lifetime Items, and a
+  step that quietly adjusts permissions on secrets is indistinguishable from a
+  step that quietly widens them.
 - **The backup is what makes a lost VPS recoverable rather than terminal**
   (§14a) — without it, losing this host strands every Item slot permanently.
 
@@ -2122,11 +2182,19 @@ records a trap, not because there is work left.
    decision — it is following a plausible-sounding dashboard button. Trial
    credentials are **already Production credentials**; there is nothing to
    upgrade to.
-4. Copy `client_id` and the **production** secret into the service user's
-   `plaid.env` **on the VPS** (§15). **Run that command yourself.** No agent may
-   see the production secret: when the host config is ready, agents produce a
-   command for you to run, never a request for you to paste the secret anywhere
-   an agent can read — not a chat, not a file, not a PR.
+4. **DONE 2026-08-30.** `client_id` and the **production** secret are installed
+   at **`/etc/networth/plaid.env`** (mode `600`, directory `700`), written with a
+   `read -rs` one-liner so the secret never entered shell history, never rendered
+   on screen and **has never been seen by any agent**. Verified live from the VPS
+   against `/institutions/get` — an **Item-free** endpoint, so the check cost
+   none of the ten slots (**F4**).
+
+   The rule that produced that, kept for every future secret: **no agent may see
+   the production secret.** Agents write the *command*; the owner runs it. Never
+   a request to paste it anywhere an agent can read — not a chat, not a file, not
+   a PR. *(The `read -rs` form and the stdin-piped request body are worth reusing
+   verbatim: they keep the secret out of shell history and out of `ps` output,
+   which are the two places a careful person still leaks it.)*
 5. Register the redirect URI (§16) under *Allowed redirect URIs*, and the
    webhook URL (§8.4) under the webhook setting.
 6. **Do not request special access for the equity-comp brokerage.** Rev 9 listed

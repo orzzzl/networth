@@ -11,6 +11,16 @@ instruction. Status vocabulary:
 Everything is `BLOCKED` until this design PR merges. Numbers are stable from the
 merge of this PR onward; dependencies are by number.
 
+**Revision 12** adds nothing and sharpens `28` with three criteria that are about
+**not breaking the owner's machine**: `PermitRootLogin no` must not be applied
+unattended (it is not a fresh host — he administers it as `root`, and this design
+does not get to lock him out of his own exit node); `/etc/networth/` is
+root-owned today, so the `chown` is reported rather than silent; and config is
+read from `/etc/networth/plaid.env` with `PLAID_ENV` never hardcoded. **O2 is
+also now proven end to end** rather than inferred — a live Item-free call from
+the VPS returned 200 with 10,033 institutions, which incidentally is the first
+test of the new host's egress to Plaid.
+
 **Revision 11** adds nothing and unblocks a leg: **O2 = GO** (`DESIGN.md` **F4**),
 so task `00` is **DONE** and `06`, `07`, `08` and the downstream Production-Link
 work lose their O2 label. **`08`'s other gate does not clear with it** — 03a's
@@ -138,7 +148,7 @@ the app.
 | 25 | ~~DB backup/restore~~ | — | **SUPERSEDED by 03a** | Number retained so review references stay valid. Moved into Phase 1 and made a gate on 08: backups scheduled *after* Production linking protect nothing during the window that matters. |
 | 26 | Item budget tracking + surfacing remaining slots | 04, 08 | BLOCKED | Running out is invisible until it isn't (F2). Reads `replaces_item_id` so a replacement's cost is visible. |
 | 27 | Vest-date nudge to re-confirm a manual share count | 13, 15 | BLOCKED | Manual quantities drift silently — the same failure this project exists to prevent, arriving from the manual side. |
-| **28** | **VPS provisioning + hardening** (new in rev 10) | **00a** | BLOCKED (00a) | `DESIGN.md` §15.1, §13, §19 step 3. Numbered after the existing rows rather than inserted, so nothing renumbers. Idempotent provisioning of the owner's existing Vultr host: key-only SSH (`PasswordAuthentication no`, `PermitRootLogin no`), a firewall opening **only** SSH and the webhook port, unattended security upgrades, a **dedicated unprivileged service user** owning the database and the secrets, the Python runtime, and the two systemd units of task 16. **The concentration is accepted, not ignored:** this host is already the owner's Tailscale exit node and now also holds the Plaid master credential, every `access_token` and the payload key — he was told and accepted (§15.1), and the residual is stated in the design rather than mitigated away: **this design does not defend against compromise of the host.** Blocked on 00a only for *access* — the owner installs the agents' public key himself, and **no agent may ever ask him for a password**. Nothing else in the graph depends on 28 except 20, so it must not be allowed to hold up the foundation. |
+| **28** | **VPS provisioning + hardening** (new in rev 10) | **00a** | BLOCKED (00a) | `DESIGN.md` §15.1, §13, §19 step 3. Numbered after the existing rows so nothing renumbers. Idempotent provisioning of the owner's existing Vultr host: key-only SSH (`PasswordAuthentication no`), a firewall opening **only** SSH and the webhook port, unattended security upgrades, a **dedicated unprivileged service user**, the Python runtime, and the two systemd units of task 16. **Three acceptance criteria that are about not breaking the owner's machine, and they matter more than the hardening itself:** (1) **`PermitRootLogin` is not set to `no` unattended.** This is **not a fresh host** — it was his Tailscale exit node before this project and he administers it as `root`, so a task that applies that setting could lock him out of infrastructure that is not ours. A non-root sudo account with his key must exist and be **verified working from a second session** first, and the change is **proposed to him, not applied**; if he declines, that is recorded, not worked around. (2) **`chown` `/etc/networth/` to the service user, keep `700`/`600`, and report it** — it is root-owned today because he created it, and a step that quietly adjusts permissions on the file holding the master credential is indistinguishable from one that quietly widens them. (3) **Read config from `/etc/networth/plaid.env`; invent no second location, and never hardcode `PLAID_ENV`** — it is in the file, which is what keeps a Sandbox run from being one edited constant away from a Production one. **The concentration is accepted, not ignored:** this host is already the owner's exit node and now also holds the Plaid master credential, every `access_token` and the payload key — he was told and accepted (§15.1), and the residual is stated rather than mitigated away: **this design does not defend against compromise of the host.** Blocked on 00a only for *access* — the owner installs the agents' public key himself, and **no agent may ever ask him for a password**. Nothing but 20 depends on 28, so it must not hold up the foundation. |
 
 ## Suggested sequencing (not an assignment)
 
