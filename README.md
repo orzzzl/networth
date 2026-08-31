@@ -2,9 +2,14 @@
 
 A personal net-worth aggregator that refuses to lie about how old its number is.
 
-One figure — assets minus debts — rebuilt at least once a day from linked
-brokerage, retirement and credit-card accounts, plus a small number of
-manually-held assets.
+One figure — total net worth — rebuilt at least once a day from linked brokerage
+and retirement accounts, plus a small number of manually-valued assets. (v0 is
+**assets only**; credit cards are deferred by owner decision, not rejected.)
+
+**There is exactly one deliverable: an Android app.** Behind it, a headless
+daemon on a small always-on server does the syncing and keeps every credential;
+the app is a read-only display of an encrypted snapshot and never talks to Plaid.
+Single user, zero marginal cost.
 
 ## Why this exists
 
@@ -18,8 +23,11 @@ So the product requirement here is not the number. It is the **honesty** of the
 number:
 
 - every account carries a visible `last_successful_sync`;
-- an account with no successful sync in 36h is **stale**, and any total
-  containing it says so;
+- an account carries **two clocks**, and the one that matters is when the
+  institution's data was actually current — not when we last called. A
+  successful API call is never, by itself, evidence of freshness;
+- a total whose age cannot be established honestly is shown **with no date at
+  all**, rather than borrowing one from the inputs that happen to have it;
 - a connection that needs re-authentication raises an alert immediately, not at
   the next time someone happens to look.
 
@@ -32,9 +40,11 @@ architecture and [`tasks/README.md`](tasks/README.md) for the task breakdown.
 
 - **Zero marginal cost.** No metered spend on top of subscriptions already paid
   for. If a capability costs money, the capability is dropped.
-- **No 24/7 server.** A resident launchd loop on one Mac, which must keep
-  working on battery.
-- **Secrets never enter this repository.** Long-lived credentials live in
-  `~/agents/secrets/`.
+- **No new infrastructure and no new accounts.** The daemon runs on hardware the
+  owner already pays for, reachable only over his own tailnet; the design has no
+  third party holding the data and creates no account anywhere.
+- **Secrets and real figures never enter this repository.** It is public and
+  holds code and schema only; long-lived credentials live outside it, and account
+  data lives in a database outside the working tree.
 
 See [`AGENTS.md`](AGENTS.md) for the working agreement.

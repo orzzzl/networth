@@ -15,6 +15,24 @@ data/
 *.sqlite
 *.sqlite3
 
+# Snapshots, payloads and backups. Encrypted or not, these are the owner's
+# balances; a public repo makes one committed file permanent (DESIGN.md §15).
+snapshot*.json
+*.json.enc
+*.enc
+*.age
+backups/
+exports/
+*.csv
+
+# Android release signing — the keystore and its password file (DESIGN.md §17).
+key.properties
+*.jks
+*.keystore
+*.p12
+*.apk
+*.aab
+
 # Runtime
 logs/
 *.log
