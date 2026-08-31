@@ -3,6 +3,76 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 14 — **Codex's seven blockers against rev 13, plus two owner
+corrections that arrived while the review was being written.** The blockers
+cluster at the seams rev 10's host move created, which is the honest summary:
+deleting a subsystem is not the same as re-checking everything that referenced
+it.
+
+- **The Plaid slot is spent by a successful *Link*, not by the exchange** — and
+  every gate in this document was built one step too late. Link hands back a
+  `public_token` only *after* the Item exists, so by the time the owner pastes
+  anything the slot is gone. §14, §19 step 2 and task 08 now model the whole
+  timeline, including the case that has no recovery at all: **Link succeeds and
+  the `public_token` is lost, so the Item exists and its `access_token` never
+  will.** The pre-Link check is now a **real write-and-read-back canary through
+  the actual backup path**, not a reachability ping — because "the host answers"
+  and "a backup would work" are different facts, which is this document's own
+  thesis applied to its own gate.
+- **The backup direction is inverted: the Mac *pulls*.** *(Owner, 2026-08-30.)*
+  macOS runs no `sshd` by default, so a push design would have opened an inbound
+  service on the machine holding the backup copy; and the Mac sleeps, so every
+  push into a sleeping laptop is a failure to retry and alert on. A pull just
+  happens on the next wake. **The VPS now needs no knowledge of the Mac at
+  all** — no address, no credential, no schedule — which means the
+  internet-facing box holding the Plaid master credential gains **zero** new
+  outbound trust relationships. §14a, §5, §13, §16 and §19 are rewritten around
+  it.
+- **Address the Mac by its full tailnet name, never a prefix.** *(Owner,
+  2026-08-30, retracting a "prune the stale duplicates" suggestion that was
+  destructive: the entries are **different physical machines**.)* This tailnet
+  carries **four** MacBook Airs whose names differ only by suffix. The one this
+  project means is **`zelengs-macbook-air-2` / `100.96.163.67`** and nothing may
+  be written that a prefix match could resolve to a different computer (§19
+  step 1b).
+- **The webhook endpoint was specified as a public IPv4 and a nameless reverse
+  proxy — neither a deployable HTTPS endpoint nor attached to any Item.** Plaid
+  wants a domain-form URL with a valid certificate, and Item webhooks are set by
+  `/link/token/create` or `/item/webhook/update`, not by a dashboard field. §8.4
+  picks one complete path (**Tailscale Funnel**, so there is no certificate to
+  buy or renew and **no public port on the VPS at all**), names its fallback,
+  and makes a **live Sandbox webhook delivery** the acceptance test that decides
+  between them.
+- **`networth-serve` was simultaneously the webhook writer and a read-only
+  database process.** Both could not hold. The public receiver is now **its own
+  unit** (`networth-hook.service`), so the isolation §13 asked for as a property
+  is structural, and the snapshot server keeps a genuinely read-only handle.
+  Two writing processes is a real change: §13 states the WAL rules that make it
+  safe instead of repeating "one writer".
+- **The schema had nowhere to put the object `GET /snapshot` serves.** §6.3.1
+  said the envelope is stored; `publication` held only metadata. §7 adds
+  `published_envelope` with a one-active-row index, and rotation drops it in the
+  same transaction that revokes the pairing — the atomicity §6.3.1 claimed now
+  has a table to be atomic over.
+- **The backup was not a coherent snapshot and its key had two homes.** Copying
+  a live WAL database file can miss committed data, and copying `TokenStore`
+  separately can pair an `item` row with the wrong token generation — the
+  unrecoverable direction. §14a now specifies `VACUUM INTO` under a lock shared
+  with token writes, a durability *ordering* (token before the row that
+  references it), and a restore drill that checks **that invariant** rather than
+  row counts. `/etc/networth/` is authoritative for runtime secrets; the escrow
+  copy is described separately; **Sandbox gets its own credential file and its
+  own database**, so a rehearsal cannot reach Production by editing a constant.
+- **The deletion left live instructions for the architecture it removed.** §2
+  still told implementers to build "no backend" and no server-side token
+  storage, while the chosen design is exactly a single-user server holding
+  tokens; the task graph still labelled VPS work "Mac-side". Rewritten, and the
+  current-tense host claims swept again.
+- **One overclaim narrowed:** a successful `/institutions/get` proves the
+  credential, Trial Production access and VPS egress. It does **not** prove any
+  particular institution is reachable, and §4 no longer lets "end to end" imply
+  that it does.
+
 Revision 13 — **not review-driven. A correction the owner had to make to this
 project's own reporting**, which is worth recording as such rather than folding
 in quietly.
@@ -256,12 +326,22 @@ where every call succeeds and the data behind it is months old.
 Built for one person today; the owner may share it later. Both halves are meant
 literally, and the failure mode to avoid is over-building.
 
-**Build now:** no backend, no accounts, no login, no multi-tenancy. The app links
-the owner's own institutions through Plaid Link; results are stored locally.
+**Build now:** **no multi-user backend** — no accounts, no login, no
+multi-tenancy, no tenant boundary anywhere. The owner links his own institutions
+through Plaid Link and the results are stored on one host that is his.
 
-**Do not build now, not even scaffolding:** user registration, authentication, a
-server, server-side token storage, per-user encryption schemes, sharing or
-export-to-another-user. Each costs real work and buys nothing today.
+**Do not build now, not even scaffolding:** user registration, authentication,
+per-user encryption schemes, sharing, or export-to-another-user. Each costs real
+work and buys nothing today.
+
+*(Rewritten in rev 14, and the correction matters more than the wording.
+Through rev 13 this section said "no backend" and "no server-side token
+storage" — written when the design ran entirely on the Mac, and left standing
+when rev 10 moved the daemon to a VPS. Since rev 10 the design **is** a server
+holding tokens, so a reader following §2 literally would have been building
+against §5. What was always meant is the multi-user ceiling below; the daemon is
+a single-user headless service, and "backend" here means the thing a second user
+would need, not "a process on a computer that is not the phone".)*
 
 **Reserve cheaply — only these three.** They are nearly free now and painful to
 retrofit:
@@ -357,11 +437,30 @@ cards are deferred, so bringing them back costs no plan change.
 
 **F2 — `/item/remove` does NOT free a slot.** Plaid's billing docs, quoted
 rather than paraphrased: removing Items created on a Trial plan "will **not**
-allow you to create more Items." The 10 are therefore **10 lifetime Link
-exchanges**, not 10 concurrent connections. A mislinked institution burns a slot
-permanently. This is the binding constraint of the project and drives §8 and §14
-— in particular it is the whole reason re-authentication must go through Link
+allow you to create more Items." The 10 are therefore **10 lifetime Items**, not
+10 concurrent connections. A mislinked institution burns a slot permanently.
+This is the binding constraint of the project and drives §8 and §14 — in
+particular it is the whole reason re-authentication must go through Link
 **update mode** (§8.3) rather than the obvious remove-and-relink.
+
+**F2a — and the slot is spent when Link succeeds, not when we exchange.** *(Rev
+14, from review, and it moved every gate in this document one step earlier.)*
+Through rev 13 this said "10 lifetime Link **exchanges**", which quietly placed
+the irreversible moment at `/item/public_token/exchange` — a call *we* make, and
+therefore one we could gate. That is not where it is. Plaid's Link flow returns
+a `public_token` **only after the user has successfully created the Item**;
+exchange is what obtains that Item's `access_token` afterwards. So the Item —
+the thing the ten counts — exists *before* the owner has pasted anything, and
+nothing after that point can un-spend it. §14a.1, §19 step 2 and task 08 are
+built on this boundary rather than the old one.
+
+*The residual uncertainty is stated rather than resolved,* because the two
+plausible readings differ and only one is safe: **F6**'s quote counts *access
+tokens*, while the Item is created earlier. This design assumes the **earlier**
+event spends the slot, since being wrong that way costs a little caution and
+being wrong the other way costs a permanent slot. No agent may "verify" this by
+running a Production Link to see what the meter does — that experiment costs the
+thing it measures.
 
 *(Rev 11 adds the other half, which matters for a different reason: past ten
 Items, Plaid **stops** rather than silently billing. That is the failure mode
@@ -397,14 +496,25 @@ Both feared blockers evaporated rather than being worked around:
   account creation plus email verification. No MSA, no security questionnaire,
   no underwriting review.
 
-**Proven end to end, not just read off a dashboard** *(rev 12)*. From the VPS,
-an authenticated call to `/institutions/get` — an **Item-free** endpoint, so it
-consumed none of the ten lifetime slots — returned **HTTP 200 with 10,033
-institutions**. That settles three separate things at once that the dashboard
-could only suggest: the secret is exactly right (a wrong one returns
+**Proven live, and here is exactly what that proves** *(rev 12; scope narrowed
+in rev 14)*. From the VPS, an authenticated call to `/institutions/get` — an
+**Item-free** endpoint, so it consumed none of the ten lifetime slots —
+returned **HTTP 200 with 10,033 institutions**. Three things the dashboard could
+only suggest are now facts: the secret is exactly right (a wrong one returns
 `INVALID_API_KEYS`), Trial Production access is genuinely active rather than
-merely displayed, and **the VPS has working egress to Plaid** — which is a
-property of the new host that nothing had tested before.
+merely displayed, and **the VPS has working egress to Plaid** — a property of
+the new host that nothing had tested before.
+
+**It proves nothing about any particular institution.** *(Rev 14, from review.)*
+Rev 12 called this "end to end", and next to an O2 whose question was
+*"do the in-scope brokerages work on Trial?"* that phrasing implies a check that
+was never run. A directory listing is not a link attempt. What actually retires
+the institution-specific half of O2 is Plaid's own statement that bank access is
+automatic on Trial with no per-institution request (**F4**) — a general claim
+about the plan, not evidence about the owner's banks — plus the Sandbox
+rehearsal in task 06. The first genuine per-institution evidence arrives with
+the first Production Link, and by **F2a** that evidence costs a lifetime slot to
+obtain, which is precisely why it is not treated as a check to run early.
 
 **O2 is closed, and this design now has no owner-side unknowns left** (§18).
 Note what that does *not* license: the ten slots are still lifetime, so **no
@@ -453,32 +563,52 @@ live in different places, so the data has to *travel*, and the host that syncs
 is a machine with no screen.
 
 ```
-   ┌──── the VPS (Ubuntu, always on, public IPv4, on the tailnet) ────┐
-   │  systemd timer (§13)                                            │
-   │    SyncEngine → StalenessMachine → Snapshotter                  │
+   ┌──── the VPS (Ubuntu, always on, on the tailnet) ──────────────────┐
+   │  networth-sync.timer  (§13)                                      │
+   │    SyncEngine → StalenessMachine → Snapshotter → Publisher       │
    │    PlaidClient (holds client_id/secret + access_tokens)          │
-   │    WebhookReceiver: public HTTPS endpoint, JWT verified HERE     │
-   │    SQLite: full history, append-only                            │
-   │    Snapshot server: GET /snapshot, bound to the TAILNET only    │
-   └───────┬──────────────────────────────────────────┬───────────────┘
-           │ tailnet (WireGuard)                      │  rsync when the
-           │ + payload encrypted anyway (§6.1)        │  Mac is awake —
-   ┌───────▼──────────────────────────────────────┐   │  OPPORTUNISTIC,
-   │  Flutter app: fetch → decrypt → cache →      │   │  not guaranteed
-   │  display, secrets from one-time pairing      │   │  (§14a — the
-   │  shows BOTH staleness dimensions (§9)        │   │  tokens, not
-   │  AND is the only place alerts appear (§11)   │   │  the curve)
-   └──────────────────────────────────────────────┘   ▼
-                                                     the Mac: backup target
-                                                     + Link runs in its browser
+   │    BackupBuilder: writes the encrypted archive to a local dir    │
+   │  networth-serve.service   GET /snapshot — TAILNET only, DB r/o   │
+   │  networth-hook.service    POST /hook/… — public via Funnel       │
+   │  SQLite (WAL): full history, append-only                        │
+   └───────┬────────────────────────────────────────────▲─────────────┘
+           │ tailnet (WireGuard)                        │ the Mac PULLS,
+           │ + payload encrypted anyway (§6.1)          │ whenever it is
+   ┌───────▼──────────────────────────────────────┐     │ awake (§14a):
+   │  Flutter app: fetch → decrypt → cache →      │     │ OPPORTUNISTIC,
+   │  display, secrets from one-time pairing      │     │ never daily.
+   │  shows BOTH staleness dimensions (§9)        │     │ The VPS knows
+   │  AND is the only place alerts appear (§11)   │     │ nothing of it
+   └──────────────────────────────────────────────┘     │
+                        zelengs-macbook-air-2 / 100.96.163.67 ──┘
+                        holds the pulled archives + runs Link in its browser
 ```
+
+**The arrow into the Mac points the other way from every revision before 14, and
+that is a deliberate inversion** *(owner, 2026-08-30)*. A VPS→Mac push would
+need `sshd` running on the laptop that holds the backup copy — macOS does not
+run one by default, so the design would have been asking the owner to open an
+inbound service on the machine whose whole job is to be the second copy. And the
+Mac sleeps, so most pushes would fail and need retry and alert machinery. **A
+pull needs none of that:** it happens on the next wake, and the VPS gains no
+address, no credential and no schedule pointing at anything. The internet-facing
+box holding the Plaid master credential ends up with **zero** new outbound trust
+relationships, which is a security simplification and not just a plumbing
+preference.
+
+**The Mac is named in full, everywhere, on purpose** — `zelengs-macbook-air-2`
+(`100.96.163.67`). This tailnet has four MacBook Airs whose names differ only by
+suffix and they are four different computers; a bare "the Mac" or a prefix match
+selects the wrong one silently (§19 step 1b).
 
 The VPS keeps every credential and the full history. The phone is a
 **read-only display of an authenticated, encrypted snapshot** — it never holds a
 Plaid token, never calls Plaid, and cannot mutate anything. That asymmetry is
-what makes the phone safe to lose. The Mac is no longer a component: it is where
-the owner runs Plaid Link once per institution (§19) and where the backup lands
-(§14a). Nothing runs there on a schedule.
+what makes the phone safe to lose. The Mac is where the owner runs Plaid Link
+once per institution (§19) and where the backup archives land (§14a) — and,
+since rev 14, it is also what *initiates* the transfer, so one small scheduled
+job does run there. It is still not a component of the number: nothing on the
+Mac contributes to, computes, or serves the total.
 
 **What moving the host bought, and what it cost.** *(Rev 10. The VPS was not on
 the table until the owner mentioned he already had one, and it collapses most of
@@ -487,7 +617,7 @@ this document's hardest section.)*
 | Was a problem | Now |
 |---|---|
 | The Mac sleeps, so a daily guarantee needed a third-party transport that serves while it is asleep | The VPS is always awake. The phone fetches straight from it |
-| Plaid webhooks need a public endpoint the Mac does not have | The VPS has a public IPv4. Plaid POSTs directly, and the JWT is verified on the machine that already holds the Plaid secret |
+| Plaid webhooks need a public endpoint the Mac does not have | The VPS can have one. Plaid POSTs directly and the JWT is verified on the machine that already holds the Plaid secret — over Funnel rather than the public IPv4 rev 10 assumed, so it costs no certificate and no open port (§8.4a) |
 | A third party stored the payload — bounded retention, provider restores, a control plane, two credential tiers, a whole rollback-detection apparatus | **No third party at all.** The daemon serves its own SQLite over the tailnet |
 | **New:** co-location risk | The VPS is also the owner's VPN exit node, and now also holds the Plaid master credential. **The owner was told and accepted it** (§15) |
 
@@ -507,16 +637,26 @@ Seams (interfaces the rest of the code depends on, never concrete classes):
   their audit states along with the third party they existed to police. The seam
   survives so a future transport is a swap rather than a rewrite.)*
 - `WebhookReceiver` — the public endpoint Plaid POSTs to; **verifies Plaid's JWT
-  locally** and converts events to item state changes (§8.4). Advisory *for the
-  number* — a dropped event can never make the total wrong, because the poll
-  floor is what I3 rests on. It is **not** redundant with polling:
-  `PENDING_DISCONNECT`'s `reason` and `disconnect_time` are advance warning no
-  poll can derive.
+  locally** and converts events to item state changes (§8.4). It runs in **its
+  own process** (`networth-hook.service`), which is the one structural
+  consequence of it being the only route on this host an unauthenticated
+  stranger can reach. Advisory *for the number* — a dropped event can never make
+  the total wrong, because the poll floor is what I3 rests on. It is **not**
+  redundant with polling: `PENDING_DISCONNECT`'s `reason` and `disconnect_time`
+  are advance warning no poll can derive.
 - `Notifier` — alert delivery. On a headless host that means **into the payload**
   and nowhere else (§11).
-- `BackupStore` — encrypted archive of the database + token material, pushed to
-  **the Mac over the tailnet** (§14a): a different machine, a different provider,
-  a different physical failure domain.
+- `BackupBuilder` — produces the encrypted archive of a **consistent** database
+  snapshot plus the token material, into a local directory on the VPS (§14a).
+  It has no network side and no destination: *building* the archive and *moving*
+  it are now different jobs on different machines, and the seam is where that
+  split lands. **`BackupStore` — the push-side seam — is deleted**, not renamed;
+  the code that would have used it does not exist on this host any more.
+- `BackupPuller` — the Mac-side counterpart (`zelengs-macbook-air-2`): fetches
+  the archive over the tailnet, verifies it decrypts and that its token
+  fingerprints match its `item` rows, then reports the verified pull back to the
+  VPS. It is the only piece of this system that runs off the VPS and is not the
+  phone.
 
 The sync core must not import anything UI- or transport-specific.
 
@@ -678,8 +818,11 @@ option carried through rev 9 was a *Mac* drawback:
 
 - "the Mac must be awake" — the VPS is always awake;
 - "Plaid webhooks become impossible, because there is no public endpoint" — the
-  VPS has a public IPv4, so §8.4 gets its accelerator back, verified on the
-  machine that already holds the Plaid secret.
+  VPS can publish one, so §8.4 gets its accelerator back, verified on the machine
+  that already holds the Plaid secret. *(Rev 14: the endpoint is Funnel, not the
+  public IPv4 — "has a routable address" was never the same thing as "has a
+  domain-form HTTPS URL with a valid certificate", and rev 10 spent that
+  difference without noticing, §8.4a.)*
 
 With the third party gone, so is everything that existed to police it: the write
 token and read token pair, the publish/read-back cycle, the pre-write compare and
@@ -743,10 +886,36 @@ survives the host move, because none of it was about pairing.** It was about
 doing a transaction across a network. On one host it is a local transaction.)*
 
 - **Serving.** `Publisher` encrypts exactly as in §6.1 and stores the envelope in
-  the daemon's own SQLite. A small HTTP server bound to the VPS's **tailnet
-  interface** serves `GET /snapshot` — the current envelope for the `ACTIVE`
-  pairing, or `404` when there is none. The phone fetches it over WireGuard.
-  Nothing leaves the host except that one response, to that one tailnet.
+  the daemon's own SQLite — concretely in `published_envelope` (§7), which holds
+  the nonce, the ciphertext‖tag and the four AAD fields **exactly as they will be
+  served**, under an index that permits at most one active row. A small HTTP
+  server (`networth-serve`) bound to the VPS's **tailnet interface** serves
+  `GET /snapshot`: the active envelope, provided its pairing is `ACTIVE`, or
+  `404`. It holds the database **read-only** and reassembles the JSON envelope of
+  §6.1 from those columns; it never re-encrypts and never re-serializes the
+  plaintext, so the bytes the phone authenticates are the bytes the publisher
+  sealed. The phone fetches it over WireGuard. Nothing leaves the host except
+  that one response, to that one tailnet.
+
+  *(Rev 14, from review: through rev 13 this bullet and §7 disagreed about
+  whether the envelope existed anywhere. The section said "stores the envelope";
+  the schema's `publication` table held only metadata — `snapshot_id`, pairing,
+  `seq`, schema version, time, outcome — with no nonce, no ciphertext and no
+  pointer to a store. Since task 03 builds §7 verbatim, task 19 would have had
+  to invent its own storage contract to have anything to serve. A section that
+  says "we store X" over a schema with no X is a specification that cannot be
+  implemented as written, which is why the table is now the normative part and
+  this prose points at it.)*
+
+- **Publishing deletes the previous envelope before inserting the new one, in
+  that order, in one transaction.** *(Stated because the obvious implementation
+  fails on the second publication and only on the second: inserting a new
+  `is_active = 1` row while the old one is still active violates the partial
+  unique index, so a mechanism added for safety would break every publish after
+  the first.)* Only one envelope is ever stored — the previous ciphertext is not
+  kept, which also means the host holds exactly one day's payload at rest rather
+  than an accumulating pile of them under one key. The `publication` rows remain;
+  they are the audit trail, and they carry no ciphertext.
 - **No TLS requirement, and therefore no certificate to expire.** The tailnet
   link is already end-to-end encrypted and the payload is encrypted underneath
   it. `tailscale serve` can front the port with a tailnet certificate and
@@ -758,10 +927,13 @@ doing a transaction across a network. On one host it is a local transaction.)*
   it cannot decrypt. So there is no read token, no stored verifier and no hash
   comparison anywhere: there is nothing to present and nothing to leak.
 - **Rotation and revocation are one SQLite transaction** — new pairing `ACTIVE`,
-  old `revoked_at`, stored envelope dropped. One process, one database, one
-  writer. **`networth revoke` is immediate in the literal sense**, and there is
-  no `UNCERTAIN` state to design around because there is no network call whose
-  outcome the daemon can fail to learn.
+  old `revoked_at`, and the row in `published_envelope` **deleted**, all inside
+  one `BEGIN IMMEDIATE`. **`networth revoke` is immediate in the literal sense**,
+  and there is no `UNCERTAIN` state to design around because there is no network
+  call whose outcome the daemon can fail to learn. The serving process holds the
+  database read-only, so it cannot observe a half-applied rotation: it either
+  reads the old envelope or gets a `404`, never a new pairing pointing at an old
+  ciphertext.
 - **Lost phone.** `networth revoke`, then — recommended, owner-only — remove the
   device in the Tailscale admin console, which is the stronger control because it
   revokes *reachability* rather than content. The ciphertext already cached **on**
@@ -918,6 +1090,25 @@ publication(                                       -- §6.4 evidence: did the ph
                                                    --   something other than what was uploaded.
                                                    --   The daemon now serves its own rows (§6.4)
 
+published_envelope(                                -- §6.3.1: the object GET /snapshot hands out.
+                                                   --   Rev 14 adds it: §6.3.1 said the envelope
+                                                   --   was stored and this schema had nowhere to
+                                                   --   put it, so the serving contract could not
+                                                   --   be built from §7 as task 03 requires
+  publication_id PRIMARY KEY REFERENCES publication(id) ON DELETE CASCADE,
+  pairing_id REFERENCES pairing(id),
+  schema_version, seq, published_at,               -- the AAD inputs, stored exactly as served:
+                                                   --   the header is reproduced, never recomputed
+  nonce BLOB NOT NULL,                             -- 96-bit, fresh per publication (§6.1)
+  ciphertext BLOB NOT NULL,                        -- ciphertext ‖ GCM tag, opaque here
+  is_active)                                       -- 1 = the row /snapshot serves; NULL otherwise
+
+CREATE UNIQUE INDEX one_active_envelope            -- at most one servable envelope, enforced by
+  ON published_envelope(is_active)                 --   the database rather than by the writer:
+  WHERE is_active = 1;                             --   "which one is current?" must not have two
+                                                   --   answers, and a partial unique index makes
+                                                   --   the second one unwritable
+
 webhook_event(                                     -- §8.4; advisory input, never a dependency
   id,
   received_at,                                     -- this host's clock when the HTTPS request
@@ -933,6 +1124,23 @@ webhook_event(                                     -- §8.4; advisory input, nev
   webhook_type, webhook_code, plaid_item_id,
   reason, disconnect_time,                         -- PENDING_DISCONNECT carries both
   raw_ref)
+
+backup_archive(                                    -- §14a. Two clocks again, and for the same
+                                                   --   reason as everywhere else: "an archive
+                                                   --   was built" and "a second machine holds a
+                                                   --   readable copy" are different facts, and
+                                                   --   only the second one is a backup
+  id, built_at,                                    -- when the VPS produced it
+  archive_sha256, byte_size,
+  db_row_counts_json, item_count,                  -- what the drill re-checks against
+  token_fingerprint_set_sha256,                    -- salted fingerprints only, NEVER tokens
+  pulled_verified_at,                              -- NULL until zelengs-macbook-air-2 has pulled
+                                                   --   it AND proved it decrypts and reconciles.
+                                                   --   Written by the Mac over SSH; the VPS never
+                                                   --   reaches out to learn it (§14a)
+  pulled_by,                                       -- the full tailnet name that claimed the pull:
+                                                   --   four Airs differ only by suffix (§19 1b)
+  verify_error)                                    -- why a pull failed verification, if it did
 ```
 
 Modelling choices worth defending:
@@ -994,6 +1202,29 @@ that rotation is a local transaction and *feels* like a fresh start. It is not: 
 phone that still holds an old payload must never be handed a lower `seq` than it
 has seen, or **I6** rejects the genuine new one. The counter belongs to the
 daemon, not to a pairing.
+
+**The envelope is stored, not rebuilt.** *(Rev 14.)* `published_envelope` keeps
+the nonce, the ciphertext‖tag **and** the four header fields as literal columns,
+so serving is a read rather than a re-derivation. The alternative — store the
+ciphertext and recompute the header from `publication` at request time — looks
+equivalent and is not: the header fields are the AAD, so any drift between how
+they were encoded at seal time and how they are rendered at serve time (a
+different `seq` formatting, a re-normalised timestamp) makes the tag fail and the
+phone report a corrupt payload for a payload that is fine. **Two ends must
+compute the same bytes; the cheapest way to guarantee that is for only one end to
+compute them at all.** `is_active` is a partial unique index rather than a
+`current_publication_id` pointer on some other table because the invariant is
+"at most one", and an index enforces it against every writer including a future
+one that has not read this paragraph.
+
+**`backup_archive.pulled_verified_at` is the only field allowed to answer "is
+there a second copy?"** — `built_at` may not, and the distinction is the same one
+as `fetched_at` vs `source_as_of` (**I5**) in a different domain. An archive
+sitting on the VPS is not a backup of the VPS. Nothing infers the pull from the
+schedule; the row stays `NULL` until `zelengs-macbook-air-2` has fetched that
+exact archive, decrypted it, and reconciled its token fingerprints — and if that
+never happens, the age of the last non-`NULL` row grows visibly, which is
+precisely what should happen.
 
 ---
 
@@ -1180,6 +1411,86 @@ Plaid POSTs to a public HTTPS endpoint on the VPS; the receiver **verifies the
 JWT inline and writes the event straight to the local database** in the same
 request. That is the whole mechanism.
 
+#### 8.4a The endpoint has to actually exist, and Items have to be told about it
+
+*(Rev 14, from review. Rev 10 wrote "the VPS has a public IPv4" as though that
+were an HTTPS endpoint, and then leaned on a "rate-limiting reverse proxy" that
+no section, task or runbook step ever specified. Neither half survived contact
+with what Plaid requires: a **domain-form** webhook URL with a **valid
+certificate**, and Item webhooks that are set through the API rather than a
+dashboard field.)*
+
+**The URL: Tailscale Funnel, and the reason is that it removes work rather than
+adding it.** `tailscale funnel` publishes one path on this node at
+`https://tokyo-exit.<tailnet>.ts.net/hook/<random>` — a real domain, with a
+certificate Tailscale provisions and renews.
+
+*Two properties of Funnel are load-bearing here and **neither has been verified
+on this tailnet**: that the personal tier permits it (it needs the node
+attribute enabled in the ACL policy), and that Plaid accepts a `.ts.net` URL.
+They are written as the plan, not as facts, and task 28/20 settle them — the
+same discipline §19 step 1b had to learn the hard way. If either fails, the
+fallback below is the answer, not a redesign.*
+
+What Funnel buys, listed because each item was otherwise an unowned task:
+
+- **No domain to buy** — a registration is a recurring bill, and §4 does not
+  permit one.
+- **No certificate lifecycle at all.** No ACME client, no renewal timer, no
+  expiry alert, and no 90-day clock that eventually fires on a project nobody is
+  actively watching.
+- **No reverse proxy, and no *new* public port.** The firewall keeps exactly
+  **one** public opening — SSH, which was already open — instead of the two rev
+  13 specified. Ingress arrives through `tailscaled`'s existing outbound
+  connection, so `POST /hook/<random>` is reachable from Plaid while the port
+  serving it is not reachable from a port scan.
+- Rate limiting therefore lives **in the receiver process**, not in a proxy: a
+  fixed body-size cap enforced before parsing and a token bucket per source. Say
+  it here because the deleted proxy was doing this job on paper.
+
+**The fallback, named so the choice is falsifiable:** if Plaid rejects a
+`.ts.net` URL, or Funnel is unavailable on the owner's tailnet, the endpoint
+becomes `nginx` on the VPS's public IPv4 with a Let's Encrypt certificate over a
+free wildcard-DNS name (`<ip-with-dashes>.sslip.io`), which costs a second public
+port, an ACME renewal timer and an expiry check. That is strictly more
+operational surface, which is why it is second.
+
+**Neither option is asserted to work: task 20 proves it with a live Sandbox
+webhook.** The acceptance criterion is a real `SANDBOX_PRODUCT_TRANSITION` (or a
+`/sandbox/item/fire_webhook` call) arriving at the route, verifying, and landing
+a `webhook_event` row. Until that has happened, the endpoint is a plan.
+
+**And the second acceptance criterion is what Funnel must *not* expose.** Funnel
+publishes a port, so pointing it at the wrong process would put `GET /snapshot`
+on the public internet — the same "silently publishes a private endpoint" mistake
+§13 and §15.1 already guard against at the bind address, arriving through a new
+door that those guards do not watch. Funnel targets `networth-hook`'s port only,
+and the test asserts that **`https://…ts.net/snapshot` returns nothing** while
+the tailnet address still serves it.
+
+**Wiring an Item to the URL — the part rev 13 had wrong twice.** The dashboard
+webhook field is not the mechanism for Item-based products; Item webhooks are set
+by the **`webhook` field of `/link/token/create`**, and changed afterwards with
+**`/item/webhook/update`**. So:
+
+1. The webhook URL is **configuration** (`/etc/networth/networth.env`). When it
+   is set, `link.sh` includes it in every `/link/token/create`, and every Item
+   created from then on is wired from birth.
+2. When it is unset — which is the state during Phase 2, because task 08 links
+   institutions long before task 20 exists — Items are created **without** a
+   webhook, deliberately and visibly. `doctor` reports **"N Items with no webhook
+   registered"**, so the gap is a number on a screen rather than an assumption.
+3. **Task 20 backfills.** Landing the endpoint is not complete until every
+   existing Item has been through `/item/webhook/update` and the count above
+   reads zero. That is an acceptance criterion of task 20, not a follow-up.
+
+**Linking is deliberately *not* gated on the endpoint**, and this is a choice
+rather than an oversight: the webhook is an accelerator over a poll floor that
+carries **I3** on its own (below). Gating task 08 on task 20 would put the whole
+read layer, payload and pairing chain ahead of the first Link, in exchange for
+advance warning on Items that do not exist yet. The backfill is what makes
+deferring it safe.
+
 It is worth being explicit about what disappeared, because it was a third of
 this section and every part of it was a workaround for a host that could not be
 reached from the internet: a receive route at a third party, a queue to hold
@@ -1216,10 +1527,13 @@ route (Plaid cannot present our credential):
   `UNIQUE(body_sha256, jwt_iat)`. Plaid retries, so this is ordinary traffic,
   not an attack signature.
 - **Flooding the route** costs CPU and disk, not correctness: the body is
-  size-capped and rejected before parsing, the route is rate-limited at the
-  reverse proxy, and an unverified event never reaches the state machine. If the
-  route is knocked over entirely the poll floor carries on — **the number stays
-  honest**, which is the property that has to hold.
+  size-capped and rejected before parsing, the route is rate-limited **in the
+  receiver process** (§8.4a — there is no proxy to do it), and an unverified
+  event never reaches the state machine. If the route is knocked over entirely
+  the poll floor carries on — **the number stays honest**, which is the property
+  that has to hold. And since rev 14 the receiver is its own unit, so "knocked
+  over" costs the accelerator and nothing else: the phone's route is in a
+  different process (§13).
 - **The path is unguessable and it is not a secret.** `POST /hook/<random>` keeps
   ordinary internet scanning out of the logs; it is a nuisance filter, and the
   JWT is the actual control. Nothing anywhere may treat knowledge of the path as
@@ -1634,7 +1948,10 @@ needs neither.
   rules out.)*
 - **Employer equity fallback** — `MANUAL_QTY_LIVE_PRICE`: value =
   `share_count × quote(symbol)`, reusing the working quotes integration from the
-  sibling project (key already in `~/agents/secrets/`). The *price* obeys normal
+  sibling project. *(The key exists in `~/agents/secrets/` on the Mac, where that
+  project runs; this daemon reads its own copy from
+  `/etc/networth/quotes.env` — §15. The owner installs it there, the same way as
+  every other runtime secret.)* The *price* obeys normal
   freshness rules — a quote older than the last market close is stale and says
   so. The *quantity* does not expire, but vesting changes it, so the UI shows
   "N shares, set on <date>" and task 27 adds a periodic nudge to re-confirm.
@@ -1654,15 +1971,43 @@ sibling project, and **entirely Mac-specific**. A VPS has no battery and never
 sleeps. Recorded here only so nobody reintroduces a workaround for a problem
 this host does not have.)*
 
-Two units, `networth-sync.service` (the periodic worker, started by
-`networth-sync.timer`) and `networth-serve.service` (the always-on snapshot
-server and webhook receiver, `Restart=always`). Both run as a **dedicated
-unprivileged user** that owns the database and nothing else (§15), and both are
-**enabled at boot** — "the VPS is always awake" is a claim about the *host*, and
-it buys nothing if a reboot leaves the daemon stopped.
+**Three units**, all running as a **dedicated unprivileged user** that owns the
+database and nothing else (§15), all **enabled at boot** — "the VPS is always
+awake" is a claim about the *host*, and it buys nothing if a reboot leaves the
+daemon stopped:
 
-**Three ordering and isolation details that a straightforward implementation gets
-wrong, all of them consequences of rev 10's host move rather than of systemd:**
+| Unit | What it is | Database handle |
+|---|---|---|
+| `networth-sync.service` (+ `.timer`) | the periodic worker: sync, snapshot, publish, build the backup archive | read-write |
+| `networth-serve.service` | `GET /snapshot`, bound to the **tailnet interface only**, `Restart=always` | **read-only** |
+| `networth-hook.service` | `POST /hook/<random>`, public via Funnel (§8.4a), `Restart=always` | read-write, one table |
+
+**Why three and not two** *(rev 14, from review, and rev 13 was not merely untidy
+here — it was impossible)*. §8.4 had the receiver verifying and writing events
+inline; §13 and task 16 had the same `networth-serve` process opening SQLite
+read-only. Both cannot be true of one process. Two ways out existed and only one
+of them is worth having: withdrawing the read-only guarantee would have made the
+phone's route a writer for no reason, whereas splitting makes the isolation §13
+already demanded as a *property* — "no request to `/hook` can terminate the
+process the phone depends on" — hold **structurally**, since the process the
+phone depends on is now a different process. The public input and the private
+output no longer share a fate, an address space, or a database handle.
+
+**Two writing processes is a real change, so the WAL rules are stated rather than
+assumed.** WAL allows concurrent readers with a writer and serialises writers on
+a single write lock — it does not permit two simultaneous writes, it makes the
+second one wait. Concretely: every connection sets `busy_timeout` (5s) and
+`journal_mode=WAL`; the receiver's write is a **single-row insert in its own
+short transaction** and never opens a transaction across a network read; the sync
+worker's long work happens outside its write transactions. `SQLITE_BUSY` on the
+receiver is logged and returns a 5xx, which is correct behaviour — Plaid retries,
+and a dropped webhook is advisory by construction (§8.4). Rev 13's flat claim of
+"one writer" is retired; it stopped being true the moment the receiver wrote
+anything.
+
+**Three further ordering and isolation details that a straightforward
+implementation gets wrong, all of them consequences of rev 10's host move rather
+than of systemd:**
 
 1. **The tailnet interface does not exist at boot time.** `networth-serve` binds
    the tailnet address (§6.3.1), which `tailscaled` has not yet brought up when
@@ -1672,19 +2017,29 @@ wrong, all of them consequences of rev 10's host move rather than of systemd:**
    configuration mistake in this design that silently converts a private endpoint
    into a public one, and "the address was not ready yet" is exactly the
    plausible-looking reason someone would add it.
-2. **The webhook receiver must not be able to take the snapshot server down with
-   it.** Both live in `networth-serve` today, which means an unhandled exception
-   in a parser reachable from the public internet stops the route the *phone*
-   uses. Since the whole alerting design now rests on the phone being able to
-   fetch (§11), that is a public input with a path to silencing the owner's only
-   channel. The receiver runs in its own worker with a catch-all boundary, and
-   the acceptance criterion is stated as a property: **no request to `/hook` can
-   terminate the process.** Splitting them into two units is the alternative and
-   is a reasonable implementation choice; what is not optional is that one cannot
-   kill the other.
-3. **The sync worker and the serving process share one SQLite file.** WAL mode,
-   one writer, and the serving process opens the database **read-only** — it has
-   no reason to write and every reason not to be able to.
+2. **The webhook receiver cannot take the snapshot server down with it, and
+   since rev 14 that is arithmetic rather than discipline.** They are separate
+   units, so an unhandled exception in a parser reachable from the public
+   internet kills `networth-hook` and `Restart=always` brings it back, while the
+   route the *phone* uses never noticed. This matters because the whole alerting
+   design rests on the phone being able to fetch (§11): a public input with a
+   path to silencing the owner's only channel is not something to defend with a
+   catch-all `except`. The catch-all stays anyway — the property is still
+   **no request to `/hook` may terminate the receiver** — but it is now a second
+   line rather than the only one.
+3. **All three processes share one SQLite file**, `networth-serve` opening it
+   **read-only** — it has no reason to write and every reason not to be able to.
+   The read-only handle is also what keeps the serving process from ever
+   observing a half-applied rotation (§6.3.1).
+
+   **"Read-only" here means the open mode, not filesystem permissions, and the
+   difference is a deployment trap worth naming.** A WAL reader needs to write
+   the `-shm` index, so a well-meant hardening step that gives `networth-serve`
+   its own unix user with no write access to the database directory does not
+   produce a safer service — it produces one that cannot read at all, and the
+   failure arrives as an unhelpful `SQLITE_CANTOPEN` at the moment the phone
+   asks. All three units therefore run as the **same** service user, and the
+   read-only guarantee is enforced by opening `file:…?mode=ro`.
 
 The timer fires every 5 minutes and the worker asks the database what is due:
 
@@ -1694,10 +2049,28 @@ The timer fires every 5 minutes and the worker asks the database what is due:
 | full sync | **either** no successful full sync since the most recent market close + 1h, **or** >20h since the last successful full sync — whichever comes first (see below) |
 | quote refresh | any `MANUAL_QTY_LIVE_PRICE` price older than the last close |
 | publish | a snapshot exists newer than the last successful `publication` (§6.4) |
-| backup | >24h since the last verified backup **and the Mac is reachable** — §14a. **This is a due-ness predicate, not a promise.** The Mac sleeps, so the backup is opportunistic by construction; an unreachable destination means the job did not run, and it is recorded as not having run |
+| build archive | >24h since the last archive was **built** — §14a. This job is entirely local: it snapshots the database, packs the token material and encrypts, into a directory on this host. It has no destination and cannot fail for a reason involving another machine |
 
 *(No webhook-drain row: events are verified and stored by the receiver as they
 arrive, §8.4. And no pre-write compare or read-back around the publish, §9.3.)*
+
+**There is no "backup" row in that table any more, and its absence is the
+inverted direction showing up in the schedule.** *(Rev 14, owner.)* Through rev
+13 the VPS was supposed to notice the Mac was awake and push — a job whose
+due-ness predicate had to include another machine's liveness, and which therefore
+spent most of its life failing for a reason that was not a failure. Now the VPS
+only *builds*; **`zelengs-macbook-air-2` decides when to pull** (§14a). The
+scheduler on the always-on host is no longer modelling the sleep schedule of a
+laptop it cannot see.
+
+**The pull side runs on the Mac, and the one thing it must not be is a
+`StartInterval` LaunchAgent.** A sibling project on this same machine established
+the hard way that launchd defers `StartInterval` timers while on battery — and
+the owner's standing requirement there was that things work **on battery**, with
+no prompt to plug in and no battery guard. A backup that only runs on AC power,
+on a laptop, is a backup that quietly does not run. So the puller is a
+`KeepAlive` LaunchAgent running its own sleep loop, and its acceptance criterion
+is that a pull is observed **on battery** (§14a).
 
 **Due-ness is computed from stored state, never from timer semantics** —
 `Persistent=true` on the timer plus a stored-state predicate, so a host that was
@@ -1782,7 +2155,11 @@ Spending rules:
 
 1. **Rehearse every Link flow in Sandbox first.** Sandbox is unlimited and free;
    Production mistakes are permanent.
-2. Confirm the exact institution *and login* before each Production exchange.
+2. Confirm the exact institution *and login* **before Link completes** — not
+   before the exchange. **F2a**: the Item is created inside Link, so by the time
+   a `public_token` is in the owner's hands the slot is already spent and the
+   confirmation prompt rev 13 put in front of the paste was asking a question
+   whose answer could no longer change anything.
 3. Never spend a slot on an account whose balance could be typed in once a
    month. A small, rarely-moving account is a manual entry, not an Item.
 4. Re-auth via update mode costs nothing (§8). Only `REVOKED` can require a new
@@ -1806,10 +2183,39 @@ Two things in this system cannot be regenerated, and they fail differently:
 - **The history.** Snapshots are the one asset that is impossible to backfill.
   A year of curve cannot be reconstructed from anywhere.
 
-**O8 is answered: the backup goes from the VPS to the Mac, over the tailnet**
-*(owner, 2026-08-30; he reserved the right to veto and has not)*. A scheduled
-`rsync` over SSH to a machine he physically owns, in a different country from
-the VPS, on a different provider, on different hardware.
+**O8 is answered: the archive travels from the VPS to
+`zelengs-macbook-air-2` (`100.96.163.67`) over the tailnet — and the Mac is what
+initiates it** *(owner, 2026-08-30)*. A scheduled pull over SSH from a machine he
+physically owns, in a different country from the VPS, on a different provider, on
+different hardware.
+
+**Rev 14 inverted the direction, and the reasons are concrete rather than
+stylistic:**
+
+- **macOS does not run `sshd` by default.** A push design requires enabling an
+  inbound service on the owner's laptop for the sole purpose of receiving
+  backups — new attack surface on the machine that holds the second copy, in
+  exchange for nothing.
+- **The Mac sleeps.** Every push into a sleeping laptop is a failure that has to
+  be retried, alerted on, and distinguished from a real failure. A pull simply
+  happens on the next wake; there is nothing to fail in between, so there is
+  nothing to model.
+- **The VPS gains no way to *initiate* anything toward the Mac** — no address to
+  dial, no private key, no schedule, no `known_hosts` entry. The internet-facing
+  machine holding the Plaid master credential ends up with **zero new outbound
+  trust relationships**. That is the part worth keeping even if the other two
+  ever stop applying.
+
+  *Stated that precisely rather than as "the VPS knows nothing about the Mac",
+  which is the tidier sentence and is false: the VPS holds the Mac's **public**
+  keys in `authorized_keys`, and it learns which machine pulled from what that
+  machine tells it (`pulled_by`). Neither is a capability — a public key does not
+  let the holder connect anywhere, and a self-reported name is not an address.
+  The claim worth making is about direction, and it survives; the broader one
+  does not.*
+- It is also the direction that was actually proven to work: SSH from
+  `zelengs-macbook-air-2` to the VPS over the tailnet IP, key-based, with the
+  peer observing source `100.96.163.67`.
 
 **It is framed around the tokens, not the curve, and that reframing came from a
 question the owner asked** — could the history simply be back-filled instead, and
@@ -1833,14 +2239,76 @@ that history is not the thing at risk:
 Which is why this is deliberately **a small scheduled job, not a subsystem**: the
 payload is one SQLite file and one token file. It is measured in megabytes.
 
-- **Backup:** one encrypted archive of the SQLite database plus the `TokenStore`
-  contents, written outside the working tree, keyed from `~/agents/secrets/`.
+- **The archive** is one encrypted bundle of the SQLite database plus the
+  `TokenStore` contents, written to a local directory on the VPS, outside the
+  working tree, and encrypted with **`/etc/networth/networth-backup.key`** —
+  which is where every runtime secret on this host lives (§15). *(Rev 14 fixes a
+  path that had drifted: rev 13 said in two places that the archive was keyed
+  from `~/agents/secrets/`, which is a directory **on the Mac**. Code on the VPS
+  cannot read it, and the escrow copy the owner keeps is a different thing from
+  the runtime key — §14a.1 criterion 2 covers that separately.)*
 - **It never goes to a third party, and it must leave this host.** Two different
   requirements, and earlier revisions stated only the first in some places while
   §14a.1 required the second. Handing a provider a bundle of access-token
   ciphertext to hold indefinitely is its own risk class — so, no third party. But
   an archive on the disk it is meant to survive is not a backup — so, **not this
-  host**. The Mac satisfies both.
+  host**. `zelengs-macbook-air-2` satisfies both.
+
+**The archive has to be a *coherent* snapshot, and "copy two files" is not one.**
+*(Rev 14, from review — two distinct defects, and the second is the dangerous
+one.)*
+
+1. **The database is in WAL mode.** Copying `networth.db` while the sync worker
+   writes can capture a file whose committed data is still in the `-wal`, so the
+   copy is missing transactions that the source considers durable. The archive
+   is therefore produced with **`VACUUM INTO`** (equivalently the SQLite online
+   backup API), which yields a single consistent file without blocking readers.
+   Copying the three WAL files by hand and hoping they are mutually consistent is
+   the thing this replaces.
+2. **The database and `TokenStore` must be captured under one boundary**, or an
+   archive can pair an `item` row with a token file from a different generation.
+   Both directions of that mismatch are not equally bad, and the design leans on
+   the asymmetry: a token with no `item` row is an orphan — harmless, and
+   recoverable by re-reading the Item from Plaid. **An `item` row whose
+   `access_token` is missing is unrecoverable and strands a lifetime slot.** So
+   two rules:
+   - **Ordering:** `TokenStore` writes the token, `fsync`s, *then* the `item`
+     row is committed. The unrecoverable direction is never the one a crash can
+     produce.
+   - **A shared lock:** token writes and archive builds both take an exclusive
+     `flock` on `/etc/networth/.tokenstore.lock`. The builder holds it across
+     `VACUUM INTO` **and** the token-file copy, so no Link can land between the
+     two halves. It is held for well under a second and blocks nothing but
+     another token write.
+
+**The archive is published atomically on both sides**, and the build side is the
+one that is easy to forget. On the VPS the builder writes to a temporary name in
+the archive directory and `rename`s it into place, because a puller that arrives
+mid-build would otherwise fetch a truncated file that decrypts to nothing. On the
+Mac the fetch goes to a temporary name in the destination directory, is
+`fsync`ed, is verified (below), and only then `rename`d over the previous one. A
+half-written archive is never the newest archive at either end, and a rename
+during a transfer is harmless: the reader's open descriptor keeps referring to
+the file it started reading.
+
+**Running the ordinary timeline through the pull, because that is where the last
+four review rounds found their defects:**
+
+- **The Mac pulls, verifies, and then fails to write the result back** (the lid
+  closes, the tailnet drops). `pulled_verified_at` stays `NULL` although a good
+  copy exists — an under-report, which is the correct direction for this
+  particular fact to fail, since the alternative is claiming a backup nobody
+  confirmed. It self-corrects, but only because of the next bullet.
+- **The next wake finds nothing to transfer.** A puller that skips when it
+  already holds the newest archive would never retry that write-back, and
+  `doctor` would under-report forever. So the rule is not "record after a
+  transfer" but: **whenever the Mac holds a verified archive whose row has a
+  `NULL` `pulled_verified_at`, it records it** — transfer or no transfer.
+- **The canary and the real archive must not be confused for one another.**
+  `link.sh`'s probe (§14a.1) is built to a distinct path, is deleted after it
+  decrypts, and **never writes a `backup_archive` row.** A rehearsal that leaves
+  behind a record indistinguishable from a real backup would be this project's
+  own failure mode, self-inflicted.
 
 ### 14a.1 The gate has to survive the failure it exists for
 
@@ -1864,59 +2332,133 @@ Three acceptance criteria, all owner-controlled and all free:
    anyway.)*
 
    What survives is the part that was never about disks: the check runs on
-   **every** backup, not once at setup, and **failure to verify fails closed**.
-   Concretely — the destination host answers over the tailnet, the transfer
-   completes, and the archive is readable back. An unreachable Mac means the
-   backup **did not happen** and `doctor` says so; it must never be recorded as
-   a success because the schedule ran. *(A check that passes when it cannot see
-   is worse than no check: it reports a green gate.)*
+   **every** pull, not once at setup, and **failure to verify fails closed**. The
+   pull is recorded as successful only when `zelengs-macbook-air-2` has the
+   archive on its own disk, has **decrypted** it, and has confirmed every `item`
+   row in it resolves to a token in the same archive. Anything short of that
+   leaves `backup_archive.pulled_verified_at` `NULL`. *(A check that passes when
+   it cannot see is worse than no check: it reports a green gate.)*
 
    **The backup is opportunistic, and this document must never imply otherwise.**
    *(Rev 13, at the owner's explicit instruction after a status report claimed
-   something that was not true.)* The Mac **sleeps**. So the backup runs when the
-   Mac happens to be awake — there is no daily guarantee here and no revision may
-   quietly introduce one. That is sufficient for the purpose, because the purpose
-   is that **the `access_token` set is not single-copy**, not that it is
-   continuously mirrored.
+   something that was not true. Rev 14 changes the direction and not this rule.)*
+   `zelengs-macbook-air-2` **sleeps**. So the pull runs when it happens to be
+   awake — there is no daily guarantee here and no revision may quietly introduce
+   one. That is sufficient for the purpose, because the purpose is that **the
+   `access_token` set is not single-copy**, not that it is continuously mirrored.
+
+   *What the inversion does change is that "the destination was unreachable" has
+   stopped being an event anyone has to handle. A sleeping laptop is no longer a
+   failed job on the VPS; it is simply a pull that has not happened yet. The
+   error class the old design spent alerts on was an artefact of pointing the
+   arrow the wrong way.*
 
    **And the project's own rule applies to its own backup.** This design exists
    because a product rendered a number without saying how old it was. A backup
    subsystem that assumes it ran is the same failure in a different domain — so
-   `doctor` and the app both surface **when the last successful backup actually
-   happened**, as a fact read from a record of a completed transfer, never
-   inferred from the schedule having fired. If that number is old, the owner sees
-   that it is old. **An unreachable Mac means the backup did not happen**, and it
-   is recorded as not having happened.
+   `doctor` and the app both surface **`last_successful_backup`: when a verified
+   copy last actually landed**, read from `backup_archive.pulled_verified_at`,
+   never inferred from the schedule having fired and never from an archive merely
+   having been built. **`built_at` is not a backup date** (§7). If that number is
+   old, the owner sees that it is old, and its ageing is the *only* signal that
+   the Mac has stopped pulling — which is correct, because on this direction the
+   VPS has no way to notice and should not pretend to.
+
+   **How the Mac's verdict reaches the VPS, without the VPS reaching out.** After
+   a verified pull, the Mac writes the fact back over the same SSH connection it
+   already opened (`networth backup record-pull`), stamping
+   `pulled_verified_at` and `pulled_by` with its **full** tailnet name. The
+   direction of trust is unchanged — the Mac initiates everything — and the VPS
+   still holds no address for it. `pulled_by` records the full name because four
+   Airs on this tailnet differ only by suffix (§19 step 1b), and "some Mac
+   fetched it" is not the fact worth storing.
 
    **But "daily" is the wrong criterion, and running the ordinary timeline
-   through this schedule is what exposes it.** Suppose the Mac has been off for
-   two weeks and the VPS dies. Two weeks of *curve* are lost — regrettable. Two
-   weeks of *token set* are lost only if an Item was linked in those two weeks —
-   and if one was, the loss is a **permanent slot**, which is the thing this
-   whole section exists to prevent. The token set changes at exactly one moment:
-   **a successful Link.** So the binding rule is not a daily schedule at all:
+   through this schedule is what exposes it.** Suppose `zelengs-macbook-air-2`
+   has been closed for two weeks and the VPS dies. Two weeks of *curve* are
+   lost — regrettable. Two weeks of *token set* are lost only if an Item was
+   linked in those two weeks — and if one was, the loss is a **permanent slot**,
+   which is the thing this whole section exists to prevent. The token set changes
+   at exactly one moment: **a successful Link.** So the binding rule is not a
+   daily schedule at all:
 
-   > **`scripts/link.sh` runs a backup immediately after a successful token
-   > exchange, and refuses to report the Link as complete until it succeeds.**
+   > **`scripts/link.sh` runs on `zelengs-macbook-air-2`. It proves the whole
+   > backup path works *before* it mints a link token, and it pulls a fresh
+   > verified archive immediately after the exchange — refusing to report the
+   > Link as complete until that archive is on the Mac's disk and decrypts.**
 
    The daily job stays, for the history. But the gate that protects the
    irreplaceable thing is tied to the event that creates it, not to a clock —
-   the same reasoning that put this section in Phase 1 instead of Phase 5.
-2. **A recoverable copy of the backup key that is not only on the VPS.**
-   `networth-backup.key` decrypts the archive; the two must not share a fate.
-   The owner puts it in a password manager or on paper (it is one line), and
-   confirms with `networth backup attest-key`, which records
-   `key_escrow_confirmed_at` and *nothing else*. This is an **attestation, not a
-   proof** — no agent can verify a password manager, and pretending otherwise
-   would be its own dishonesty. `doctor` shows it, with its date, as the
-   owner's own claim.
-3. **The drill restores from the destination.** `scripts/restore-drill.sh` pulls
-   the archive **back from the Mac** — over the same path a real recovery would
-   use, which is the part that actually gets tested — decrypts it with the key
-   resolved from `~/agents/secrets/`, restores into a temp directory, checks row
-   counts and schema version, and verifies the `TokenStore` yields the same
-   **token fingerprints** (salted hashes — never the tokens, never in a log). It
-   records `last_verified_restore_at`, runs weekly, and `doctor` reports its age.
+   the same reasoning that put this section in Phase 1 instead of Phase 5. Two
+   details of that sentence are load-bearing and both are rev 14:
+
+   - **The script runs on the Mac, not the VPS.** That follows from the pull
+     direction: the Mac is the only machine that can fetch, so it has to be the
+     one driving the sequence. The `public_token` exchange still happens on the
+     VPS, over SSH, because that is where the client secret lives — the script
+     is a wrapper around a remote step, not a relocation of the credential.
+   - **"Proves the path" means a canary, not a ping.** `link.sh` builds a small
+     probe archive on the VPS, pulls it, decrypts it and deletes it — the entire
+     mechanism, end to end, with the real key and the real transport. Rev 13's
+     check was reachability, which is exactly the substitution this project
+     exists to refuse: *the host answering* is evidence about the network, and
+     what needs proving is that **a backup would work**. A full disk, a wrong key
+     mode, a `chown` that took away the read bit, a destination directory that
+     does not exist — every one of those passes a ping and fails a backup.
+
+   **And the whole timeline has to be stated, because the happy path is not where
+   the slots go.** By **F2a** the Item exists the moment Link succeeds, before
+   the owner has pasted anything. So:
+
+   | Moment | What exists | If everything stops here |
+   |---|---|---|
+   | Before Link opens | nothing | Nothing lost. **This is the only point at which the design can still refuse**, which is why the canary runs here |
+   | Link completed in the browser | the **Item** — the slot is spent | The `public_token` is in the browser and expires in ~30 minutes. Paste it and continue; there is no other route back to this Item |
+   | `public_token` lost or expired | the Item, with no reachable `access_token` | **Unrecoverable. A permanently stranded slot** — the Item counts against the ten and can never be read. Not a hypothetical: closing the tab is enough |
+   | Exchange returned, token not yet durable | the Item and an `access_token` in memory | A crash here loses the token: same stranded slot. The token is `fsync`ed to `TokenStore` **before** anything else happens, and before the `item` row that references it |
+   | Token durable, archive not yet pulled | one copy of the token, on the VPS | Survivable unless the VPS is lost in this window. The window is seconds, and the pull that closes it is the next step rather than tomorrow's job |
+   | Verified archive on the Mac | two copies | The state this section exists to reach |
+
+   The residual is named rather than closed: **the row three lines up has no
+   engineering answer.** Once Link has completed, nothing this project can build
+   makes a lost `public_token` recoverable. What the design does instead is keep
+   that window as short as possible and tell the owner plainly, in the runbook
+   (§19 step 2), that the paste is not a formality — it is the only path from a
+   spent slot to a usable Item.
+2. **A recoverable copy of the backup key that is not only on the VPS.** The
+   runtime key is `/etc/networth/networth-backup.key` and it decrypts the
+   archive, so the two must not share a fate. The owner keeps a second copy in a
+   password manager or on paper (it is one line) and confirms with
+   `networth backup attest-key`, which records `key_escrow_confirmed_at` and
+   *nothing else*. **This third copy is the offline one, and nothing reads it** —
+   distinct from the operational copy on `zelengs-macbook-air-2`, which the
+   puller and the drill do read (§15). It exists for the case where the VPS and
+   the Mac are gone together, which is the only scenario the other two copies do
+   not cover. This is an
+   **attestation, not a proof** — no agent can verify a password manager, and
+   pretending otherwise would be its own dishonesty. `doctor` shows it, with its
+   date, as the owner's own claim.
+3. **The drill restores from the copy that would actually be used.**
+   `scripts/restore-drill.sh` runs on `zelengs-macbook-air-2` against the archive
+   sitting in its own destination directory — the copy a real recovery would
+   reach for, on the machine that would still exist — decrypts it with that
+   machine's own copy of the key (§15), restores into a temp directory, and
+   checks **the invariant, not
+   the volume**:
+
+   - schema version matches, and row counts match what
+     `backup_archive.db_row_counts_json` recorded at build time;
+   - **every `item` row resolves to a token in the same archive**, compared by
+     salted **fingerprint** (never the tokens, never in a log). This is the check
+     rev 13 did not have: matching row counts prove the database arrived, and say
+     nothing about whether it arrived paired with the right token generation —
+     which is the failure mode §14a's lock and ordering exist to prevent, so it
+     is the one the drill has to be able to catch;
+   - the restored `TokenStore` has no `item` row missing a token. Orphan tokens
+     are reported and are **not** a failure (§14a).
+
+   It records `last_verified_restore_at`, runs weekly, and `doctor` reports its
+   age.
 
 **Gate:** all three must hold before task 08 links the first Production Item. A
 hard dependency in the task graph, not a recommendation — the window in which a
@@ -1931,23 +2473,95 @@ The repository is **public**. Repo visibility was never the real control — the
 separation between code and credentials is. These rules are also in `AGENTS.md`,
 which binds both agents.
 
-**On the VPS**, in `/etc/networth/` (directory mode `700`, files mode `600`):
+**Each host has exactly one secrets directory, and neither host's code ever
+reaches for the other's.** Since rev 14 there is code on both machines, so the
+rule has to be stated per host rather than as one location:
+
+| Host | Directory | Read by |
+|---|---|---|
+| the VPS | **`/etc/networth/`** (mode `700`/`600`) | the three daemon units, `link.sh`'s remote half |
+| `zelengs-macbook-air-2` | **`~/agents/secrets/`** | the backup puller, the restore drill, `link.sh`'s local half, the APK build |
+
+*(Rev 13 said runtime secrets live on the sync host and, two paragraphs later,
+that committed code reads them from `~/agents/secrets/` — which is a directory on
+a laptop that VPS code cannot open. Both halves were half-right, and the fix is
+not to pick one: there really are two hosts with two directories. What must never
+happen is a lookup that falls back from one to the other, because that is how a
+path bug turns into "it worked on my machine" for a file holding access tokens.)*
+
+**On the VPS**, in `/etc/networth/`:
 
 - **`/etc/networth/plaid.env`** — `PLAID_CLIENT_ID`, `PLAID_SECRET`,
-  `PLAID_ENV`. **Already installed by the owner** (2026-08-30). This is *the*
-  path; code reads it and **no second location is invented**. `PLAID_ENV` is
-  read from the file — the environment is never hardcoded, which is what keeps
-  a Sandbox run from being one edited constant away from a Production one.
-- `/etc/networth/plaid-items.json` — `{item_id: access_token}`.
-- `/etc/networth/networth-payload.key` — the payload key (§6.1). **One key, no tokens**:
-  tailnet membership replaces the bearer credential and the payload key *is* the
-  read credential (§6.3.1).
-- `/etc/networth/networth-backup.key` — the backup archive key (§14a).
+  `PLAID_ENV=production`. **Already installed by the owner** (2026-08-30).
+- **`/etc/networth/plaid-sandbox.env`** — the **Sandbox** `client_id`/`secret`
+  and `PLAID_ENV=sandbox`. *(Rev 14, from review: Plaid issues separate Sandbox
+  and Production credentials, and rev 13 named only the Production file while
+  also forbidding a second location — which left task 06's rehearsal with no
+  legitimate way to authenticate. The rule was always "no **invented** second
+  path", not "one file"; two environments are two credential sets, and mixing
+  them into one file is how a rehearsal reaches Production.)* Same directory,
+  same mode, same owner-installs-it rule — and, like the Production secret, **no
+  agent may see it**: agents write the command, the owner runs it.
+- `/etc/networth/plaid-items.json` — `{item_id: access_token}`, Production.
+  Sandbox Items live in `plaid-items-sandbox.json`, never the same file.
+- `/etc/networth/networth-payload.key` — the payload key (§6.1). **One key, no
+  tokens**: tailnet membership replaces the bearer credential and the payload key
+  *is* the read credential (§6.3.1).
+- `/etc/networth/networth-backup.key` — the backup archive key (§14a), used to
+  **encrypt**.
 - `/etc/networth/quotes.env` — the quotes key for `QuoteClient` (§12).
+- `/etc/networth/networth.env` — non-secret runtime config, listed here because
+  it sits beside the secrets: the webhook URL (§8.4a), `balance_mode` (**F5**),
+  and the archive directory.
 
-**On the Mac:** `~/agents/secrets/networth-vps.key` — the agents' SSH key to the
-VPS, and the backup archives as they land. Nothing else; the Mac is a backup
-target and a Link workstation, not a component (§5).
+**Environment selection fails closed.** `NETWORTH_ENV` (`sandbox` |
+`production`) is required — there is no default — and it selects the credential
+file, the items file **and the database path** together. The process asserts at
+startup that the selected file's `PLAID_ENV` equals `NETWORTH_ENV` and **refuses
+to start** if they disagree. Two consequences worth the paragraph: a Sandbox
+rehearsal physically cannot write into the Production history, so task 06 cannot
+contaminate the curve; and the mismatch that would otherwise be silent — a
+Sandbox credential in a file labelled production — becomes a startup failure
+rather than a run whose data nobody questions.
+
+**On `zelengs-macbook-air-2` (`100.96.163.67`)**, in `~/agents/secrets/`:
+
+- `networth-vps.key` — the agents' general SSH key to the VPS.
+- `networth-backup-ssh.key` — a **separate, forced-command** key used only by the
+  unattended puller (below).
+- `networth-backup.key` — the same archive key, used here to **decrypt**. The
+  Mac needs it: an archive it cannot open is not a verified copy, and §14a.1
+  criterion 3's drill would have nothing to check.
+- the Android release keystore and `key.properties` (§17).
+- the pulled archives themselves, in their own directory outside any repo.
+
+**The archive key exists in three places, and saying so is the point.** The VPS
+encrypts with it, `zelengs-macbook-air-2` decrypts with it, and the owner holds
+an offline escrow copy (§14a.1 criterion 2) that no program reads. The first two
+are operational necessities — a key only on the machine being backed up protects
+nothing, and a copy the destination cannot read makes the destination useless.
+The escrow exists for the case the other two are gone at once.
+
+**The honest consequence, since a design that only lists benefits is not
+describing a security boundary:** `zelengs-macbook-air-2` holds both the archives
+and the key to open them, so compromising that laptop yields the token set —
+without any need to touch the VPS. It does **not** yield a shell on the VPS (the
+puller's key is forced-command), live Plaid API access, the payload key, or the
+ability to publish anything. That is the trade the second copy costs, and it is
+the right one: the alternative is one copy of an irreplaceable credential set.
+
+**Why the puller gets its own SSH key rather than reusing `networth-vps.key`**
+*(the owner asked for the argument, not the conclusion)*. The pull is
+**unattended** and runs on a laptop that leaves the house; `networth-vps.key`
+opens an interactive shell on the machine holding the Plaid master credential.
+Constraining the backup key in `authorized_keys` with
+`restrict,command="networth backup serve-archive"` means a compromise of
+`zelengs-macbook-air-2` yields the archives — which that machine already has on
+disk, so nothing new — but **not a shell on the VPS**, which would additionally
+yield live Plaid API access, the payload key, and the ability to rewrite history.
+The gain is real and the cost is one extra line in `authorized_keys`. The
+interactive key stays for `link.sh` and ordinary administration, where a human is
+present.
 
 **Not in this list, deliberately: anything on the phone.** Since §6.3 the app
 holds the payload key in the Android Keystore, provisioned by pairing — so there
@@ -1986,11 +2600,18 @@ and are part of the deploy task, not aspirations:
   the owner rather than applied. If he declines, that is his call on his own
   machine and it is recorded rather than worked around. *Hardening that can strand
   the owner is not hardening.*
-- **A firewall that opens exactly two things to the public internet:** SSH and
-  the webhook route (§8.4). The snapshot server binds the **tailnet interface
-  only** and must never be published; a bind-address regression is the one
-  configuration mistake here that quietly turns a private endpoint into a public
-  one, so it is an acceptance criterion with a test, not a config comment.
+- **A firewall that opens exactly one thing to the public internet: SSH.**
+  *(Rev 14 removes the second opening.)* The webhook route reaches the internet
+  through Tailscale Funnel (§8.4a), which arrives over `tailscaled`'s existing
+  outbound connection — so there is no inbound port to open for it and no proxy
+  to harden. The snapshot server binds the **tailnet interface only** and must
+  never be published; a bind-address regression is the one configuration mistake
+  here that quietly turns a private endpoint into a public one, so it is an
+  acceptance criterion with a test, not a config comment.
+- **No inbound anything on `zelengs-macbook-air-2`.** Rev 13's push design would
+  have needed `sshd` enabled on the owner's laptop; the pull direction (§14a)
+  means the Mac opens connections and accepts none. Nothing in this design may
+  ask for Remote Login to be turned on.
 - **Unattended security upgrades** enabled.
 - **A dedicated unprivileged service user** owning the database and the secrets,
   so the daemon is not root and a bug in the webhook parser is not a root bug.
@@ -2018,13 +2639,17 @@ Non-negotiable:
    institution item ids, in code, tests, fixtures, docs, or PR text. **All test
    fixtures are synthetic.** No test or script may print a real balance, in CI
    or locally.
-3. **Credentials live only in the two locations named above** — the VPS service
-   user's secrets directory, and `~/agents/secrets/` on the Mac. Never in git, a
-   PR body, a review comment, or a log line. The DB stores `secret_ref` (a key
-   name) resolved through `TokenStore`, never a token. **`TokenStore` is what
-   makes this a one-line change rather than a refactor** (§2 reservation 3): the
-   host moved between rev 9 and rev 10 and the storage path moved with it, which
-   is exactly the churn that reservation was written for.
+3. **Credentials live only in the two locations named above, and the two are not
+   interchangeable** — **`/etc/networth/` on the VPS holds everything the daemon
+   reads**, while `~/agents/secrets/` on `zelengs-macbook-air-2` holds only keys
+   that let the *Mac* start a conversation (SSH, archive decryption, APK
+   signing). No committed code reaches for `~/agents/secrets/` at runtime; it is
+   not a fallback path and not a search location. Never in git, a PR body, a
+   review comment, or a log line. The DB stores `secret_ref` (a key name)
+   resolved through `TokenStore`, never a token. **`TokenStore` is what makes
+   this a one-line change rather than a refactor** (§2 reservation 3): the host
+   moved between rev 9 and rev 10 and the storage path moved with it, which is
+   exactly the churn that reservation was written for.
 4. **PR descriptions and commit messages carry no real numbers.** Report "3
    accounts reconciled", never amounts.
 5. **No institution-specific detail in the repo** (§2 reservation 1) — this
@@ -2061,13 +2686,18 @@ never a reason for the agent to see it.
 **There is no transport component any more** *(rev 10)*. Rev 9 specified a
 Cloudflare Worker here — six routes, two storage bindings, and a rule about which
 route bound which store because atomicity depended on it. It is deleted. What
-takes its place is **two routes in the same Python process that already holds
-everything**:
+takes its place is **two routes on the host that already holds everything, in
+two separate processes** *(rev 14 split them, §13)*:
 
-| Route | Bound to | Auth | Purpose |
-|---|---|---|---|
-| `GET /snapshot` | **tailnet interface only** | tailnet membership; the payload key is the read credential (§6.3.1) | the phone reads the current envelope |
-| `POST /hook/<random>` | public interface | none — Plaid cannot present our credential; the **JWT** is the control (§8.4) | receive, verify inline, store |
+| Route | Process | Bound to | Auth | DB | Purpose |
+|---|---|---|---|---|---|
+| `GET /snapshot` | `networth-serve` | **tailnet interface only** | tailnet membership; the payload key is the read credential (§6.3.1) | **read-only** | the phone reads the current envelope |
+| `POST /hook/<random>` | `networth-hook` | Tailscale Funnel (§8.4a); **no public port on the host** | none — Plaid cannot present our credential; the **JWT** is the control (§8.4) | read-write, `webhook_event` only | receive, verify inline, store |
+
+*(Two processes rather than one because rev 13 asked the same process to write
+webhook events and to hold the database read-only. The split is what makes "a
+public input cannot silence the owner's only channel" structural rather than a
+promise about exception handling — §13.)*
 
 Four routes disappeared with the Worker, and it is worth naming them so a reader
 of an old review comment can see where they went: `PUT /snapshot` (there is no
@@ -2098,18 +2728,29 @@ it holds **no data and no secrets**, existing only to catch the OAuth redirect
 and hand control back to Link, so hosting it publicly is safe.
 
 **The host move splits this step across two machines, and the split is a
-simplification rather than a complication.** Link runs in a **browser on the
-Mac** — that is where the owner is sitting and where his password manager is —
-while the `public_token` must be exchanged where the client secret lives, which
-is now the **VPS**. So:
+simplification rather than a complication.** Link runs in a **browser on
+`zelengs-macbook-air-2`** — that is where the owner is sitting and where his
+password manager is — while the `public_token` must be exchanged where the client
+secret lives, which is the **VPS**. Since rev 14 the *driver* is on the Mac too,
+because the backup is a pull and only the Mac can perform one:
 
-1. `scripts/link.sh` runs on the VPS, over SSH from the Mac. It mints a
-   `link_token` and prints the URL.
-2. The owner opens it in the Mac's browser and completes Link there. **Credentials
-   and MFA go into Plaid's page**; nothing on either machine sees them.
-3. The redirect page displays the `public_token`; the owner pastes it back into
-   the waiting SSH session, which exchanges it immediately and writes the
-   `access_token` through `TokenStore`.
+1. `scripts/link.sh` runs **on `zelengs-macbook-air-2`**. It first runs the
+   backup canary (§14a.1) — build a probe archive on the VPS, pull it, decrypt
+   it, delete it — and **refuses to go further if that fails.**
+2. It then SSHes to the VPS to mint a `link_token` and prints the URL. The
+   `client_id`/`secret` never leave the VPS; the Mac holds an SSH key, not a
+   Plaid credential.
+3. The owner opens the URL in this Mac's browser and completes Link there.
+   **Credentials and MFA go into Plaid's page**; neither machine sees them.
+   **The lifetime slot is spent at the end of this step** (**F2a**), before
+   anything is pasted anywhere.
+4. The redirect page displays the `public_token`; the owner pastes it into the
+   waiting `link.sh` prompt, which pipes it to the VPS **over stdin** — never as
+   an argument, which would put it in `ps` output — where it is exchanged and the
+   `access_token` written durably through `TokenStore` before the `item` row is
+   committed (§14a).
+5. `link.sh` immediately triggers an archive build on the VPS and **pulls it**,
+   verifies it decrypts and reconciles, and only then reports the Link complete.
 
 **Primary path: copy-paste**, and rev 10 makes it *more* clearly the right
 answer rather than less. Rev 9 kept an optional spike (task 07a) for handing the
@@ -2166,13 +2807,13 @@ internal. It does **not** mean linking may begin: task 03a's backup gate stands
 
 | # | Question | Owner of the answer | Blocks |
 |---|---|---|---|
-| ~~O2~~ | ~~Does the Trial plan actually reach the in-scope brokerages via OAuth?~~ **ANSWERED 2026-08-30: GO.** Trial active at `0/10`, Production credentials issued, and Plaid states bank access is **automatic on the trial** with no per-institution request. **F4** carries the evidence. Tasks 07, 08 and the downstream Production-Link work are ungated — but see the runbook correction in §19 step 1, because the obvious path to "production access" is a **paid** funnel that this project must not enter | — | — |
+| ~~O2~~ | ~~Does the Trial plan actually reach the in-scope brokerages via OAuth?~~ **ANSWERED 2026-08-30: GO — on the strength of Plaid's plan-level statement, not an institution-level test.** Trial active at `0/10`, Production credentials issued, and Plaid states bank access is **automatic on the trial** with no per-institution request. The live `/institutions/get` call proves the credential, Trial Production access and VPS egress; it is a directory listing and proves nothing about any specific bank (**F4**, narrowed in rev 14). Per-institution evidence costs a lifetime slot to obtain (**F2a**), which is why it is not a check anyone runs early. Tasks 07, 08 and the downstream Production-Link work are ungated — but see the runbook correction in §19 step 1, because the obvious path to "production access" is a **paid** funnel that this project must not enter | — | — |
 | ~~O3~~ | ~~How many distinct card-issuer logins?~~ **VOID** — it existed only to size the card share of the Item budget, and cards are deferred (§1, rev 9). Nothing waits on it | — | — |
 | ~~O4~~ | ~~Real property: purchase price only, or a revision log?~~ **ANSWERED: a revision log**, defaulting to purchase price, every revision kept with its date — **and a revision applies from its own date forward, so the curve behind it never deforms** (§12) | — | — |
 | ~~O5~~ | ~~Transport: a third-party relay, or Tailscale?~~ **ANSWERED: Tailscale — and the host moved with it.** The owner has an always-on Vultr VPS (already paid for, already his tailnet exit node), so the daemon runs there instead of on the Mac. Both drawbacks the Tailscale branch carried were *Mac* drawbacks and both are void: the VPS never sleeps, and it has a public IPv4 so the webhook accelerator survives (§8.4). The entire third-party branch is **deleted** (§6.2), not parked | — | — |
 | ~~O6~~ | ~~iOS as well as Android?~~ **ANSWERED: Android only.** *Decided* rather than postponed — the iOS branch and its sideloading problem are gone from this design rather than parked. Tasks 21 and 24 are Android-only | — | — |
 | ~~O7~~ | ~~Create a free third-party account for the transport?~~ **VOID** — it existed only on the branch O5 deleted. No new account is created by this design | — | — |
-| ~~O8~~ | ~~Where do backups land?~~ **ANSWERED: VPS → Mac over the tailnet** — a different machine, provider and country. Framed around the **access-token set**, not the curve: history cannot be back-filled, but a lost token cannot be recovered *at all* and strands a lifetime Item slot (§14a) | — | — |
+| ~~O8~~ | ~~Where do backups land?~~ **ANSWERED: on `zelengs-macbook-air-2` (`100.96.163.67`), which *pulls* over the tailnet** — a different machine, provider and country. **Rev 14 inverted the direction** (owner): macOS runs no `sshd`, the Mac sleeps, and a pull leaves the VPS with no address, credential or schedule pointing at anything. Framed around the **access-token set**, not the curve: history cannot be back-filled, but a lost token cannot be recovered *at all* and strands a lifetime Item slot (§14a) | — | — |
 
 *(O1 — phone vs Mac/browser — was answered earlier: **Flutter phone app**, which
 O6 narrows to **Android only**.)*
@@ -2236,8 +2877,13 @@ records a trap, not because there is work left.
    a PR. *(The `read -rs` form and the stdin-piped request body are worth reusing
    verbatim: they keep the secret out of shell history and out of `ps` output,
    which are the two places a careful person still leaks it.)*
-5. Register the redirect URI (§16) under *Allowed redirect URIs*, and the
-   webhook URL (§8.4) under the webhook setting.
+5. Register the redirect URI (§16) under *Allowed redirect URIs*. **That is the
+   only dashboard registration this project needs.** *(Rev 14 removes a second
+   one that did not exist as described: the webhook URL is **not** set in the
+   dashboard for Item-based products — it is the `webhook` field of
+   `/link/token/create`, changed later with `/item/webhook/update`, and §8.4a
+   owns it. Telling the owner to look for a dashboard setting that does not apply
+   would have produced either a wrong setting or a support ticket.)*
 6. **Do not request special access for the equity-comp brokerage.** Rev 9 listed
    this as an optional step; the owner decided against it (§18). The manual path
    (§12) is the plan, it needs no request and no Item, and the request would cost
@@ -2245,70 +2891,136 @@ records a trap, not because there is work left.
 
 **Step 1a — Give the agents a key to the VPS** (~5 min, once; **this is the one
 step everything else on the host waits for**)
-1. An `ed25519` keypair already exists on the Mac:
-   `~/agents/secrets/networth-vps.key` (private, mode 600, never leaves the Mac,
-   never in git, a PR or a log) and `…​.key.pub`.
+1. An `ed25519` keypair already exists on `zelengs-macbook-air-2`:
+   `~/agents/secrets/networth-vps.key` (private, mode 600, never leaves that
+   machine, never in git, a PR or a log) and `…​.key.pub`.
 2. Append the **public** half to `~/.ssh/authorized_keys` on the VPS.
-3. Tell the agents it is done. **No agent will ever ask you for a password**, for
+3. Add a **second, restricted** key for the unattended backup pull (§15):
+   generate `networth-backup-ssh.key` on the same Mac and install its public half
+   with `restrict,command="networth backup serve-archive"`. The unattended job
+   then cannot open a shell on the host holding the Plaid master credential; the
+   interactive key stays for `link.sh` and administration, where you are present.
+4. Tell the agents it is done. **No agent will ever ask you for a password**, for
    this host or any other — that is a standing rule, not a preference for this
    step (§15.1).
 
-**Step 1b — Put the Mac on the tailnet** (~5 min, once) — ⚠️ **NOT DONE. Open
-owner action.**
+**Step 1b — Put the backup machine on the tailnet** (~5 min, once) — ✅ **DONE
+2026-08-30, verified.** Kept because it now records two corrections, both of
+which were mistakes this project made about the owner's own environment.
 
-The phone is already on the tailnet. **This Mac is not, and has no Tailscale
-installed at all.** Until it is, O8's destination does not exist and the backup
-has nowhere to land. Nothing else waits on it — the design PR and the whole
-foundation are unaffected — but task 03a cannot pass, and 03a gates the first
-Production Link (§14a.1).
+Verified from the machine itself, not inferred:
 
-**A trap that already caused one false status report, recorded so it cannot cause
-a second.** `tailscale status` **run from the VPS shows two entries for this
-Mac** — `zelengs-macbook-air` and `zelengs-macbook-air-1` — which are **stale
-registrations from previous installs**. Both are offline. Reading a device list
-and concluding the Mac is on the tailnet is wrong, and one entry's "last seen"
-timestamp was misread as evidence of a fresh join.
+| Check | Result |
+|---|---|
+| Tailnet address of `zelengs-macbook-air-2` | **`100.96.163.67`**, `Connected` |
+| Host key of `207.148.102.122` vs `100.102.245.37` | **identical** — same `tokyo-exit`, not a spoofed peer answering on the tailnet address |
+| `tailscale ping` | ~118 ms, **direct** (`via 207.148.102.122:41641`), not DERP-relayed |
+| SSH Mac → VPS over the tailnet IP | **OK**, and the peer observed source `100.96.163.67` |
 
-*Worth noticing what that is: **a registry that keeps serving an entry after the
-thing it describes is gone**, read as current because it was there. That is this
-project's founding failure mode wearing different clothes, and it caught this
-project's own status reporting. The check is therefore positive and local — this
-machine has a `100.x` address and `tailscale status` **run here** says it is
-online — never the presence of a name in a list somewhere else.*
+The Mac is **not** configured to use the exit node, and that needs no action: the
+exit node routes the owner's browsing traffic and is irrelevant to peer-to-peer
+reachability inside the tailnet. Do not add an exit-node step here.
 
-**Step 1c — Confirm where backups land** (~5 min, once; **before** Step 2, and
+**Correction 1 — the "stale duplicate registrations" were four different
+computers, and the suggestion to prune them was wrong and destructive.** Rev 13
+read two similar names in a device list as leftovers of one machine. The owner
+owns **several MacBook Airs**:
+
+| Device | macOS | Tailnet IP | Seen |
+|---|---|---|---|
+| `zelengs-macbook-air` | 13.4.0 | `100.68.28.38` | ~20d ago |
+| `zelengs-macbook-air-1` | 13.4.0 | `100.83.37.57` | ~1h ago |
+| **`zelengs-macbook-air-2`** | **26.5.1** | **`100.96.163.67`** | **Connected — this one** |
+| `zelengs-macbook-air-3` | — | `100.120.179.15` | ~4m ago |
+
+**Nothing was deleted** — the retraction arrived before any pruning was
+attempted, and all four entries were confirmed still present afterwards. Note
+that the fourth (`-3`) was not in the list rev 13 saw *or* in the owner's own
+correction: the population of near-identical names is not stable, which is
+exactly why no rule may depend on knowing it.
+
+> **The rule this produces, and it binds every config, script, unit file and
+> runbook step: address this machine by its full tailnet name
+> `zelengs-macbook-air-2` or by `100.96.163.67`. Never "the Mac", never
+> "the MacBook Air", never a bare prefix.** `zelengs-macbook-air` is a
+> **different computer** that is still on this tailnet, and a prefix match will
+> select it silently. Because the backup is a pull (§14a), the identity that
+> matters operationally is the one the **VPS observes as the source** —
+> `100.96.163.67` — which is the value to use in any Tailscale ACL or
+> source-address constraint.
+
+**Correction 2 — the discriminating signal.** The giveaway rev 13 missed was
+sitting in the same output: **different macOS versions and different IPs.** Names
+that look like a series are not evidence of anything; the OS version is. A status
+claim about the owner's environment gets verified **on the thing itself**, with a
+signal that can distinguish the possibilities — never from a name that merely
+looks like a duplicate.
+
+*Worth noticing what rev 13's error was underneath: **a registry that keeps
+serving an entry after the thing it describes is gone**, read as current because
+it was there. That is this project's founding failure mode wearing different
+clothes, and it caught this project's own status reporting twice in one day — in
+opposite directions, first believing an absent machine was present, then
+believing three present machines were absent. Both were caught by the owner
+rather than by us.*
+
+**Step 1c — Confirm backups actually work** (~5 min, once; **before** Step 2, and
 the ordering is the whole point — §14a.1)
-1. **O8 is decided: VPS → this Mac, over the tailnet.** Nothing to choose; this
-   step is confirming it works.
-2. Copy `networth-backup.key` into a password manager or write it down, then run
+1. **O8 is decided: `zelengs-macbook-air-2` pulls from the VPS over the
+   tailnet.** Nothing to choose; this step is confirming it works.
+2. Install the puller on this Mac: a **`KeepAlive` LaunchAgent**, not a
+   `StartInterval` one. (launchd defers interval timers on battery — a sibling
+   project on this machine proved it, and a backup that only runs plugged in is
+   a backup that does not run.) Confirm one pull happens **while on battery**.
+3. Copy `networth-backup.key` into a password manager or write it down, then run
    `networth backup attest-key`. It records only the date of your confirmation.
    Without this, the archive and its key die together.
-3. Run `scripts/restore-drill.sh` and see it pass. It pulls the archive back
-   **from the Mac**, so this is the first moment a real recovery has actually
-   been exercised.
-4. **Do not proceed to Step 2 until it passes.** After the first Production Link,
+4. Run `scripts/restore-drill.sh` **on this Mac** and see it pass. It restores
+   from the archive sitting in this machine's own destination directory — the
+   copy a real recovery would reach for — and checks that **every `item` row
+   resolves to a token in the same archive**, not just that the row counts look
+   right.
+5. **Do not proceed to Step 2 until it passes.** After the first Production Link,
    losing the tokens does not cost a re-link — a lost `access_token` cannot be
-   recovered at all and strands permanent Item slots (**F2**, **F6**, §14a).
+   recovered at all and strands permanent Item slots (**F2**, **F2a**, **F6**,
+   §14a).
 
 **Step 2 — Link each institution** (~2 min each, once per institution)
-1. SSH to the VPS and run `scripts/link.sh` (built by agents, run by the owner).
-   It runs **there** because that is where the client secret lives.
-2. It prints a Link URL. Open it **in this Mac's browser**. **Enter credentials
+1. Run `scripts/link.sh` **on this Mac** — `zelengs-macbook-air-2` (built by
+   agents, run by the owner). It runs here because the backup is a pull and only
+   this machine can perform one; it reaches the VPS over SSH for every step that
+   needs the client secret, which never leaves that host.
+2. It runs the **backup canary** first — builds a probe archive on the VPS, pulls
+   it, decrypts it, deletes it — and **refuses to continue if that fails.** This
+   is the last moment anything can be refused (step 4).
+3. It prints a Link URL. Open it **in this Mac's browser**. **Enter credentials
    and MFA there** — that page is Plaid's; neither machine sees them.
-3. Paste the returned `public_token` back into the waiting SSH session. The
-   script exchanges it, writes the `access_token` via `TokenStore` (mode 600),
-   records the item, and **immediately backs up** (§14a).
-4. Link the **highest-value institutions first** — slots are permanent (**F2**).
+   **Confirm the institution *and* the specific login before you finish this
+   step**, because finishing it is what spends the slot.
+4. **Finishing Link is the irreversible moment (F2a).** Plaid creates the Item
+   when Link succeeds and only then hands back a `public_token`. Everything
+   after this is recovery of something that already cost a slot.
+5. The redirect page shows the `public_token`. **Paste it into the waiting
+   `link.sh` prompt promptly — this is not a formality.** It expires in about
+   thirty minutes, and it is the only route from the Item Plaid just created to
+   an `access_token` this project can use. Close the tab without pasting and the
+   slot is spent on an Item that can never be read; there is no recovery for
+   that, from Plaid or from us.
+6. The script exchanges it on the VPS, writes the `access_token` via `TokenStore`
+   (mode 600) **before** recording the item row, then immediately builds and
+   **pulls** a fresh archive and verifies it — reporting the Link complete only
+   once a verified second copy is on this Mac (§14a).
+7. Link the **highest-value institutions first** — slots are permanent (**F2**).
 
-**Before you start step 2, make sure this Mac is awake and on the tailnet**, and
-that is an ordering requirement rather than a convenience. *(Rev 13.)* The
-post-exchange backup is what keeps a brand-new `access_token` from existing in
-exactly one place — but **an exchange cannot be undone.** By the time the backup
-runs, the slot is spent (**F2**), so a failed backup can only shout; it cannot
-roll anything back. `link.sh` therefore **checks the destination is reachable
-before it mints the link token**, and refuses to start rather than failing
-afterwards. The one place this design can convert an irreversible risk into a
-recoverable one is *before* the irreversible step.
+**Before you start step 2, make sure this Mac is awake and on the tailnet.**
+*(Rev 13; sharpened in rev 14, because rev 13 got the boundary wrong.)* Rev 13
+said the exchange was the irreversible step and put the check before it — one
+step too late, since Link creates the Item first (**F2a**). And rev 13's check
+was *reachability*, which proves the network and not the backup: a full disk, an
+unreadable key or a missing destination directory all answer a ping and fail a
+restore. **The one place this design can convert an irreversible risk into a
+recoverable one is before Link opens**, and the only thing worth checking there
+is the mechanism itself, end to end.
 
 **Step 3 — Stand up the daemon on the VPS** (~20 min, once; agents prepare
 everything, the owner runs it)
@@ -2320,16 +3032,41 @@ an account to create, a Worker to deploy, and a login/logout bracket around ever
 device. All of it is gone with the third party it protected.)*
 
 1. **Harden the host** (§15.1), from the provided script: key-only SSH
-   (`PasswordAuthentication no`, `PermitRootLogin no`), a firewall opening
-   **only** SSH and the webhook port, unattended security upgrades, and a
-   dedicated unprivileged service user that owns the database and the secrets.
-2. **Install the two units** (§13): `networth-sync.timer`/`.service` and
-   `networth-serve.service`. Confirm `networth-serve` is listening on the
-   **tailnet address only** — `ss -ltnp` must not show the snapshot port on
-   `0.0.0.0`. This is the one misconfiguration that silently publishes the
-   endpoint, so it is checked by hand once here and by a test forever after.
-3. **Put the secrets in place** under the service user (§15), mode 600.
-4. **Register the webhook URL** in the Plaid dashboard (§8.4) if step 1 did not.
+   (`PasswordAuthentication no`), a firewall opening **only SSH** (the webhook
+   arrives through Funnel, so there is no second port — §8.4a), unattended
+   security upgrades, and a dedicated unprivileged service user that owns the
+   database and the secrets.
+
+   **The script does not touch `PermitRootLogin`, at all.** *(Rev 14. Rev 12
+   identified this defect and fixed it in §15.1, then left this step — the part
+   the owner actually executes — still saying the script applies
+   `PermitRootLogin no`. A correction that lands only in the rationale and not in
+   the procedure has not been made.)* **This is not a fresh host:** it was the
+   owner's Tailscale exit node before this project existed and he administers it
+   as `root`. Restricting root login here can lock him out of infrastructure that
+   is not ours, unattended, while he is not watching.
+
+   So the ordering *is* the requirement, and it is his call to make:
+   1. A non-root account with `sudo` and his key must exist.
+   2. He must **verify it works from a second, separate session** — one that is
+      still open when the first one breaks — before anything changes.
+   3. Only then does the script **print the proposed change** for him to apply
+      himself. If he declines, that is recorded as his decision on his own
+      machine, not worked around. *Hardening that can strand the owner is not
+      hardening.*
+2. **Install the three units** (§13): `networth-sync.timer`/`.service`,
+   `networth-serve.service` and `networth-hook.service`. Confirm `networth-serve`
+   is listening on the **tailnet address only** — `ss -ltnp` must not show the
+   snapshot port on `0.0.0.0`. This is the one misconfiguration that silently
+   publishes the endpoint, so it is checked by hand once here and by a test
+   forever after.
+3. **Put the secrets in place** under the service user (§15), mode 600 — both
+   `plaid.env` and `plaid-sandbox.env`, since a rehearsal needs its own
+   credential and its own database.
+4. **Publish the webhook route with `tailscale funnel`** (§8.4a) and put the
+   resulting `https://…ts.net/hook/<random>` URL in `/etc/networth/networth.env`.
+   Nothing is registered in the Plaid dashboard: Item webhooks travel in the link
+   token, and task 20 backfills the Items that already exist.
 
 **Step 3a — Pair the phone** (~2 min, once, and again whenever you want to
 rotate)

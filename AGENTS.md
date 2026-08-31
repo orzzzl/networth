@@ -31,12 +31,20 @@ between code and data is. So: the repo holds *code and schema only*.
 This is the rule that matters most, because the credentials involved are
 long-lived and grant read access to real financial accounts.
 
-- Plaid `access_token`s, the Plaid `client_id`/`secret`, the payload encryption
-  key, the backup key and the quotes key live in the **service user's secrets
-  directory on the sync host**; the SSH key to that host and the Android keystore
-  live in `~/agents/secrets/` on the Mac (`DESIGN.md` §15). **Never** in git,
-  never in a PR, never in a PR comment, never echoed into a log or a test
-  fixture.
+- **Every runtime secret lives in `/etc/networth/` on the sync host** — Plaid
+  `access_token`s, the Plaid `client_id`/`secret` (Production *and* Sandbox, in
+  separate files), the payload key, the backup key and the quotes key
+  (`DESIGN.md` §15). **Never** in git, never in a PR, never in a PR comment,
+  never echoed into a log or a test fixture.
+- **`~/agents/secrets/` is `zelengs-macbook-air-2`'s directory**, holding what
+  that machine needs: the two SSH keys to the host, its copy of the backup key
+  (the puller and the restore drill decrypt with it), and the Android keystore.
+  **Each host's code reads only its own directory — never the other's, and never
+  as a fallback.** A lookup that falls back from one to the other is how a path
+  bug becomes "it worked on my machine" for a file holding access tokens.
+  *(Rev 13 of `DESIGN.md` managed to say both — runtime secrets on the sync host,
+  and committed code reading `~/agents/secrets/` — which told VPS code to open a
+  file on a laptop.)*
 - **No agent ever asks the owner for a password** — for the sync host or
   anything else. Agents authenticate with their own key, which the owner installs
   himself.
@@ -45,8 +53,12 @@ long-lived and grant read access to real financial accounts.
   (`DESIGN.md` §6.3). No `--dart-define` of a credential, no key in a Dart
   constant — a shipped APK must never be worth stealing.
 - The database stores a *reference* to a secret (a key name), never the secret.
-- Committed code reads secrets from files under `~/agents/secrets/` or from the
-  environment. Example files (`*.env.example`) carry key names only, no values.
+- Daemon code reads secrets from `/etc/networth/` or from the environment, and
+  **`NETWORTH_ENV` is required with no default** — it selects the credential
+  file, the items file and the database path together, and the process refuses to
+  start if the selected file's `PLAID_ENV` disagrees. A Sandbox rehearsal must
+  not be one edited constant away from Production. Example files
+  (`*.env.example`) carry key names only, no values.
 - **Never commit real figures.** No real balances, account numbers, institution
   item ids, or screenshots showing actual holdings — in code, tests, fixtures,
   docs, or issue/PR text. **All test fixtures are synthetic.** This binds CI
@@ -133,6 +145,19 @@ original failure mode, one layer down.
 - All timestamps stored UTC, ISO-8601, with an explicit timezone. Staleness
   math is done in UTC. (`~/tuantuan-stock` shipped a "no notification" bug that
   came down to a timezone lookup failure — do not repeat it.)
+- **Name the owner's machines in full.** `zelengs-macbook-air-2` /
+  `100.96.163.67` — never "the Mac", never a bare hostname prefix, in any
+  config, script, unit file, runbook step or status report. There are **four**
+  MacBook Airs on this tailnet and they are four different computers; a prefix
+  match silently selects the wrong one.
+- **A factual claim about the owner's environment is verified on the thing
+  itself, with a signal that can tell the possibilities apart** — never from a
+  name that looks right or a list read somewhere else. Two claims were asserted
+  from weak signals on 2026-08-30 and both were caught by the owner rather than
+  by us: "the Mac is on the tailnet" (it was not, at the time), then "those
+  three registrations are stale duplicates" (they were three live machines, and
+  acting on it would have removed them). The discriminating signal in both cases
+  was in the same output that was misread.
 - Keep functions small; match surrounding style; no dead code.
 
 ## When in doubt
