@@ -3,6 +3,73 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 17 — **Codex's seven blockers against rev 16. Rev 16 fixed eight
+mechanisms and, in doing so, wrote four new guarantees that its own neighbouring
+sections contradict. Three of the seven were verified here rather than reasoned
+about: on Plaid's documentation, on the live VPS, and in `sqlite3`.**
+
+- **The manual paste is deleted, because Hosted Link cannot produce one (F7,
+  §16, task `08`).** Plaid: *"In Hosted Link, there is no frontend integration
+  required (or possible)"*; the `public_token` arrives only by `SESSION_FINISHED`
+  or `/link/token/get`, and `completion_redirect_uri` carries no token. **There
+  is nothing on the owner's screen to paste.** The deeper error is that a
+  fallback *chosen after the session completes* cannot exist at all — by then the
+  slot is spent. `/link/token/get` is now the sole path, with its failure and
+  retry outcome specified, and the poll moves off the laptop.
+- **The `link_token` was durable on the machine whose loss is the scenario
+  (§14a.1).** Rev 16 made it survive a crash and called that durability. If the
+  VPS disk dies between Link succeeding and the exchange, the Mac's archive holds
+  neither the `access_token` nor the `link_token`, and the Item is stranded
+  **immediately**, not in six hours. It is now stored through `TokenStore` under a
+  `link_flow` row (§7) and **pulled to `zelengs-macbook-air-2` and verified before
+  the URL is printed** — the last moment this design can still refuse.
+- **The "nothing is public" test asserted a property of the owner's host, and it
+  is false there** (§13, task `20`). Measured read-only on the live VPS today:
+  `sshd` listens on `0.0.0.0:22` **and** `[::]:22`, so rev 16's whole-`ss`-table
+  criterion fails before networth is installed. The test now asserts **our
+  process's** binding against the node's Tailscale addresses — plural: this host
+  has a tailnet **IPv6** too — and separately forbids *new* public listeners
+  against a baseline captured at deploy.
+- **`id CHECK (id = 1)` is not a singleton** (§7). `CHECK` constrains values, not
+  multiplicity. Measured in `sqlite3` 3.51.0: two rows with `id = 1` both insert.
+  `id INTEGER PRIMARY KEY CHECK (id = 1)` rejects the second.
+- **The manifest authenticated a token *set*, so the drill's stated check could
+  not fail** (§14a.1). Swap two `access_token`s between two Items and the set —
+  and its hash — are unchanged. The fingerprint now binds the Item identity, the
+  manifest hashes a canonical **mapping**, and swapping is a required negative
+  test. AEAD proves the bundle was not edited; it cannot make an
+  under-specified check prove a mapping.
+- **`build-archive` on the restricted key was an unbounded work trigger** (§15),
+  priced in the design as "one `VACUUM INTO`" — but nothing bounded the number of
+  invocations. `build-archive current` **leaves that key entirely**; `probe` gets
+  single-flight, a 60-second freshness no-op, one fixed path and bounded
+  retention, with a burst test.
+- **Rev 16's `seq` fix inferred unseen state from wall time, which §9.1 refuses
+  to do** (§9.3a). Forward clock jump → publish → correction → restore from a
+  pre-jump archive, and `max(seq+1, now)` is *still* below the phone's high-water
+  mark. Replaced by an **`epoch` the restore itself increments**, with the phone's
+  `last_seq` **scoped to its pairing** — which a restore already forces, since the
+  payload key is deliberately not in the archive. That removes the clock
+  assumption **and takes back the protection rev 16 traded away**: a rolled-back
+  daemon is refused again. The clock was the price of that trade, not
+  recoverability.
+- **Stale instruction, in the step the owner executes:** runbook 1a still said
+  the dispatcher allows "the two verbs" after §15 grew to four. Corrected, and
+  the sweep is the standing one — a fix that lands only in the rationale has not
+  been made.
+- **Then I walked the ordinary Link and pull flows through rev 17's own new
+  machinery, and two of these fixes had holes** (§15, §14a.1). The probe's
+  60-second rate limit would have **broken the pre-Link canary**: two Links
+  back-to-back put two canaries in one window, and the second would have accepted
+  a probe built before it started — proving the transport while skipping the build
+  step that catches a full disk. It now requires a probe newer than itself and
+  waits out the cooldown. And the `link_token` second copy had **no reaper**: the
+  VPS clears its row at exchange, nothing was made responsible for the Mac's
+  copy, so every successful Link would have left a credential on the laptop
+  permanently. `link.sh` and the puller both reap it now, and `doctor` counts what
+  is left. *Same pattern as the seven above, one revision later: a new guarantee
+  that reads correct until the ordinary flow is walked through it.*
+
 Revision 16 — **Codex's eight blockers against revs 14–15. Two of this design's
 own conclusions turn out to have been wrong, and both were checkable for free
 from Plaid's public documentation the whole time.**
@@ -16,7 +83,9 @@ from Plaid's public documentation the whole time.**
   entirely** — not empty — before completion. **This design accepted a permanent
   loss of its scarcest resource on an unchecked assumption, for five revisions,
   because the assumption sounded like prudence.**
-- **Consequences:** the manual paste becomes a fallback; **task `07a` is
+- **Consequences:** the manual paste becomes a fallback *(**SUPERSEDED by rev
+  17**: Hosted Link cannot produce a paste — there is nothing on the owner's
+  screen to copy, so `/link/token/get` is the sole path)*; **task `07a` is
   un-dropped** (rev 10 killed it on a topology argument that never applied to
   this mechanism); **task `07` is deleted** — Hosted Link hosts the OAuth
   redirect, so there is no page and no dashboard registration, and **this project
@@ -43,6 +112,8 @@ from Plaid's public documentation the whole time.**
   refuses — for as long as the gap — and the only workaround was teaching the
   owner to dismiss the integrity warning. **`seq = max(stored_last_seq + 1,
   unix_millis(now))`** fixes it by construction, with no change to the phone.
+  *(**SUPERSEDED by rev 17**: the defect and the goal stand, the formula does
+  not — it assumes a monotone wall clock, which §9.1 refuses to assume.)*
 - **"One writer, no contention to reason about" was never true** (§13):
   `record-pull` arrives unattended on the Mac's own schedule while the 5-minute
   worker runs. `busy_timeout`, `BEGIN IMMEDIATE`, retry and two collision tests.
@@ -100,8 +171,8 @@ it.
 
 - **The Plaid slot is spent by a successful *Link*, not by the exchange** — and
   every gate in this document was built one step too late. Link hands back a
-  `public_token` only *after* the Item exists, so by the time the owner pastes
-  anything the slot is gone. §14, §19 step 2 and task 08 now model the whole
+  `public_token` only *after* the Item exists, so by the time anything can be
+  done with that token the slot is gone. §14, §19 step 2 and task 08 now model the whole
   timeline, including the case that has no recovery at all: **Link succeeds and
   the `public_token` is lost, so the Item exists and its `access_token` never
   will.** The pre-Link check is now a **real write-and-read-back canary through
@@ -542,8 +613,8 @@ the irreversible moment at `/item/public_token/exchange` — a call *we* make, a
 therefore one we could gate. That is not where it is. Plaid's Link flow returns
 a `public_token` **only after the user has successfully created the Item**;
 exchange is what obtains that Item's `access_token` afterwards. So the Item —
-the thing the ten counts — exists *before* the owner has pasted anything, and
-nothing after that point can un-spend it. §14a.1, §19 step 2 and task 08 are
+the thing the ten counts — exists *before* the `public_token` is retrievable at
+all, and nothing after that point can un-spend it. §14a.1, §19 step 2 and task 08 are
 built on this boundary rather than the old one.
 
 *The residual uncertainty is stated rather than resolved,* because the two
@@ -648,19 +719,70 @@ on this account** rather than read from the docs alone.)* Plaid's
 The design's own `link_token` is the key to that call — so the token can be
 fetched **without an inbound route, a webhook, or a human copying anything.**
 
-> **The `link_token` must therefore be durable before the URL is opened, and
-> saying "the VPS still holds it" is not enough.** If it lived only in the memory
-> of the SSH command that minted it, then *the very failure F7 exists to survive*
-> — something goes wrong between Link succeeding and the token being exchanged —
+> **The `link_token` must therefore be durable before the URL is opened, and it
+> must be durable on more than one machine.** If it lived only in the memory of
+> the SSH command that minted it, then *the very failure F7 exists to survive* —
+> something goes wrong between Link succeeding and the token being exchanged —
 > would also destroy the means of recovery, and this fact would be a guarantee
-> that evaporates in exactly the case it is claimed for. So: `link.sh` writes the
-> `link_token` and its `archive_id`-style flow id **durably on the VPS before it
-> prints the URL**, and deletes it after a successful exchange. It is a
-> short-lived credential that can retrieve a `public_token`, so it lives under
+> that evaporates in exactly the case it is claimed for. So it is written through
+> `TokenStore` under a `link_flow` row (§7) **before the URL is printed**, and its
+> `secret_ref` is cleared after a successful exchange. It is a short-lived
+> credential that can retrieve a `public_token`, so it lives under
 > `/etc/networth/` with the other secrets (§15), never in a log, and never as a
 > command-line argument. A flow interrupted at any point is resumable with
-> `link.sh --resume`, which is what makes the six-hour window usable by a person
-> rather than only by an uninterrupted script.
+> `link.sh --resume`, which re-attaches to the flow and reports — the VPS's own
+> job has been working it the whole time (§13) — and that is what makes the
+> six-hour window usable by a person rather than only by an uninterrupted script.
+
+**Rev 16 wrote that paragraph and stopped one machine short, which is the same
+mistake it had just finished correcting elsewhere** *(rev 17, from review)*.
+"Durable on the VPS" survives a **process crash**. It does not survive **loss of
+the VPS** — and §14a exists for precisely that scenario. Walk it: the owner
+completes Hosted Link, the slot is spent, and the VPS disk dies before the
+exchange. The Mac's newest archive predates the Link, so it holds neither an
+`access_token` for this Item nor the `link_token` that could still fetch one.
+`/link/token/get` cannot be called at all. **The Item is stranded immediately —
+not in six hours**, and F7's whole recovery window is unreachable. The same
+sentence that fixed the crash case read as though it had fixed the disaster case.
+
+> **So the recovery record gets a second copy, and it is verified before the URL
+> is printed.** `link.sh` mints the token on the VPS, writes the `link_flow` row
+> and the token, then **pulls the recovery record to `zelengs-macbook-air-2`,
+> `fsync`s it, and reads it back** — `flow_id`, `link_token`,
+> `session_retention_expires_at`. Only then does it print the URL, stamping
+> `second_copy_verified_at`/`second_copy_holder`. If any step fails it **refuses
+> to print the URL**, and refusing costs nothing: by **F2a** no slot is spent
+> until Link completes, so this is the same "last moment the design can still
+> refuse" that the backup canary already occupies (§14a.1).
+
+This is cheap for a reason worth stating rather than assuming: **the `link_token`
+is the half that cannot be re-obtained, and the Plaid credential is the half that
+can.** `/link/token/get` needs `client_id`, `secret` *and* the `link_token` — so
+the copy on the Mac is inert on its own, which is why it may sit next to the
+backup key without widening anything (§15). If the VPS is gone, the owner
+re-reads `client_id`/`secret` from Plaid's dashboard, where they have been all
+along, and the `link_token` is the one input no dashboard can reissue. The
+recovery is therefore an **owner-attended manual procedure inside the six-hour
+window** (§19 step 2a), and it is written down as one rather than automated: the
+Mac must not hold the client secret (§15), and a disaster plus a six-hour clock
+means the owner is present by construction.
+
+The pull uses the **interactive** key `link.sh` already holds, not the restricted
+backup key — so the unattended dispatcher gains no verb that can read a
+credential (§15).
+
+**And the second copy has to be reaped, which the paragraph above did not say and
+therefore did not do.** *(Also found by walking the flow: on the happy path the
+VPS clears the `link_flow` row's `secret_ref` at exchange, and nothing had been
+made responsible for the Mac's copy — so an ordinary successful Link would leave a
+credential on the laptop forever, which is exactly the accumulation §15 exists to
+prevent.)* So: `link.sh` deletes its local recovery record as soon as the flow
+reports `EXCHANGED`, and because `link.sh` may not be running then, **the puller
+also reaps** — on every run it deletes any local record whose flow is no longer
+`OPEN` or whose `session_retention_expires_at` has passed. `doctor` reports the
+count of local recovery records, so "one is still sitting there" is a visible
+fact rather than a thing nobody looks at. A six-hour credential is short-lived, not
+harmless.
 
 Three bounds come with it, and all three are real constraints rather than
 caveats:
@@ -692,8 +814,56 @@ session's `public_token` was not observed, because completing a Production Link
 spends one of the ten lifetime slots — the exact resource this section exists to
 protect, so it is not a thing to spend on a test. The proof belongs in Sandbox
 (task `06a`), and until it passes, F7 is documented-and-partially-measured rather
-than proven end to end. Task `08` therefore keeps the manual paste as a
-**fallback** and does not delete it.
+than proven end to end.
+
+**Rev 16 answered that gap with a manual-paste fallback, and there is no such
+thing to fall back to.** *(Rev 17, from review, and checked on Plaid's
+documentation rather than reasoned about.)* Hosted Link states the boundary
+outright: **"In Hosted Link, there is no frontend integration required (or
+possible)"**, the `public_token` is delivered by `SESSION_FINISHED` or
+`/link/token/get`, and `completion_redirect_uri` — the only thing the browser
+ever returns to — explicitly carries no token; Plaid's own instruction there is
+to *"listen for the `SESSION_FINISHED` webhook or call `/link/token/get`"*. With
+webhooks deleted from v0 (§8.4), **`/link/token/get` is not the primary path, it
+is the only path.** Nothing ever appears on the owner's screen for him to copy,
+so the fallback was not a weak option — it was an instruction that cannot be
+followed, printed at the exact moment the owner is watching a slot burn.
+
+**The deeper error is a shape worth naming, because it is not specific to
+Plaid: a fallback chosen *after* the irreversible step cannot be a fallback.**
+By **F2a** the slot is spent when Link completes. Every path after that point is
+recovery of something already paid for, and recovery has to be a *mechanism that
+already works*, not an alternative selected once the primary one has failed. The
+place this design can still branch is **before** the URL is printed — which is
+where the backup canary and the `link_token` second copy both now sit.
+
+So the paste is **deleted**, and three things move to carry the weight it was
+pretending to carry:
+
+- **`/link/token/get` is the sole path, with its failure behaviour specified**
+  rather than escaped: poll immediately, then on a bounded schedule until either
+  a `public_token` arrives or `session_retention_expires_at` passes. A missing
+  `link_sessions` key is *not* an error (it is the measured pre-completion
+  response above); a transport failure is retried; a `link_token` Plaid rejects
+  is terminal and reported as such. There is no branch that asks the owner for
+  anything, because there is nothing he could supply.
+- **The poll runs on the VPS, not on the laptop.** It is a due-ness job like
+  every other (§13), driven by the `link_flow` row. Rev 16 had `link.sh` polling
+  from the Mac, which put a **six-hour** deadline on a process running on a
+  machine whose lid closes — the window would have depended on the owner not
+  shutting his laptop. `link.sh` now watches and reports; the always-on host is
+  the thing that must not stop.
+- **`06a` stops being a formality and becomes the gate that matters.** With no
+  human path, an automatic retrieval that does not work in Production strands the
+  first Item. `06a` proves the *completed-session* retrieval in Sandbox, where
+  proof is free, and it is a hard dependency of `08` — not a recommendation, and
+  no longer softened by a fallback that was never there.
+
+**What this does not do is invent safety.** If Plaid's retrieval is broken during
+the six hours, the slot is stranded; that residual is real, is unchanged by
+deleting the paste (the paste could not have saved it either), and is what
+`doctor`'s *Items with no reachable token* count exists to surface while the
+window is still open (§14a.1).
 
 **F8 — a missed migration deadline costs an outage, not a slot.** *(Rev 16, from
 review; verified against Plaid's docs.)* `PENDING_DISCONNECT` fires **seven days
@@ -1302,19 +1472,30 @@ backup_archive(                                    -- §14a. Two clocks again, a
                                                    --   four Airs differ only by suffix (§19 1b)
   verify_error)                                    -- why a pull failed verification, if it did
 
--- Rev 16 MOVED db_row_counts_json, item_count and token_fingerprint_set_sha256
+-- Rev 16 MOVED db_row_counts_json, item_count and the token fingerprint digest
 --   OUT of this table and into the manifest sealed inside the archive. They were
 --   the values the restore drill compares against, and keeping them here meant
 --   validating an archive against a row on the machine whose loss is the whole
 --   scenario. See §14a.1: restore evidence goes inside, transfer bookkeeping
---   stays here.
+--   stays here. Rev 17 renames that digest to item_token_binding_sha256, because
+--   what it must seal is a MAPPING and rev 16 sealed a set (§14a.1).
 
 backup_state(                                      -- §14a.1 criteria 2 and 3. A singleton: these
                                                    --   are facts about the backup ARRANGEMENT,
                                                    --   not about any one archive, and rev 15 had
                                                    --   nowhere normative to put them while
                                                    --   §14a.1 required them and task 18 read them
-  id CHECK (id = 1),
+  id INTEGER PRIMARY KEY CHECK (id = 1),           -- rev 17, from review: `id CHECK (id = 1)` is
+                                                   --   NOT a singleton. CHECK constrains the VALUE,
+                                                   --   never the multiplicity, so two rows with
+                                                   --   id = 1 both insert and doctor, attest-key
+                                                   --   and record-drill each get two answers.
+                                                   --   Measured, not reasoned: in sqlite3 3.51.0
+                                                   --   the CHECK-only form accepts both inserts;
+                                                   --   INTEGER PRIMARY KEY rejects the second with
+                                                   --   `UNIQUE constraint failed`. INTEGER PRIMARY
+                                                   --   KEY is the rowid alias, so it is implicitly
+                                                   --   UNIQUE NOT NULL and needs nothing else
   key_escrow_confirmed_at,                         -- criterion 2. The OWNER's attestation that an
                                                    --   offline copy of the backup key exists.
                                                    --   Never a verified fact; doctor must label
@@ -1322,6 +1503,46 @@ backup_state(                                      -- §14a.1 criteria 2 and 3. 
   last_verified_restore_at,                        -- criterion 3. Written by the Mac's drill over
   last_verified_restore_archive_id,                --   SSH, same one-way path as record-pull
   last_verified_restore_error)
+
+-- The migration INSERTs the row, so every reader finds it and no writer has to
+--   decide whether to create it. Every write is
+--   `INSERT INTO backup_state(id, …) VALUES (1, …) ON CONFLICT(id) DO UPDATE SET …`
+--   — an upsert against a constrained id, not an INSERT that hopes to be first.
+
+daemon_state(                                      -- rev 17, §9.3a. The publication epoch, and it
+                                                   --   is deliberately its own singleton rather
+                                                   --   than a column on backup_state: this is not
+                                                   --   a fact about backups, it is the daemon's
+                                                   --   own identity across a restore
+  id INTEGER PRIMARY KEY CHECK (id = 1),           -- same form, same reason, and the second use of
+                                                   --   it is why the fix above had to be right
+  publish_epoch NOT NULL DEFAULT 0,                -- incremented ONCE per restore, by the restore
+                                                   --   procedure, never by a publish (§9.3a)
+  epoch_bumped_at,                                 -- when, and
+  epoch_bumped_reason)                             --   why — a restore is the only legitimate
+                                                   --   reason, and an epoch that moved without one
+                                                   --   is a fact doctor must be able to show
+
+link_flow(                                         -- rev 17, from review: F7's recovery evaporates
+                                                   --   in exactly the failure it exists for unless
+                                                   --   the link_token outlives the VPS (§14a.1)
+  id, flow_id,                                     -- flow_id is minted before the link_token and
+                                                   --   is what --resume takes
+  secret_ref,                                      -- resolved through TokenStore, like every other
+                                                   --   credential here: the DB stores the NAME.
+                                                   --   The link_token itself never lands in a row,
+                                                   --   a log or an argv (§15)
+  minted_at, hosted_url_expires_at,                -- 30 minutes for a hosted link token, measured
+  session_retention_expires_at,                    --   the hard six-hour edge: after it the Item is
+                                                   --   stranded and doctor must say so BEFORE then
+  second_copy_verified_at,                         -- NULL until zelengs-macbook-air-2 holds the
+  second_copy_holder,                              --   recovery record and has read it back. The
+                                                   --   URL is not printed while this is NULL
+  state,                                           -- OPEN | EXCHANGED | EXPIRED | ABANDONED
+  last_poll_at, poll_error,                        -- the VPS-side poller's own two clocks
+  item_id)                                         -- set on exchange; the row is retained after
+                                                   --   EXCHANGED with its secret_ref cleared, so
+                                                   --   "how did this Item get here" stays answerable
 ```
 
 Modelling choices worth defending:
@@ -1976,7 +2197,9 @@ AAD** (§6.1) so it cannot be edited without breaking the tag, and:
 
 **I6, as a rule the app implements.** On every successful fetch, the phone
 compares the fetched `seq` against `last_seq` — the `seq` of the payload it
-currently holds:
+currently holds **under the pairing it currently holds** (rev 17: `last_seq` is
+stored per `pairing_id`, which is what makes a restore recoverable without
+teaching the counter to read a clock — §9.3a):
 
 | Fetched | Phone does |
 |---|---|
@@ -1996,11 +2219,18 @@ gets wrong:
    adding one would trade away the read-only asymmetry that makes a lost phone a
    non-event (§5). The phone warns about what the phone sees; §11 alerts on what
    the host sees; neither stands in for the other.
-3. **It is measured against what *this* phone has seen**, which is the honest
-   limit and is stated rather than hidden: a phone that has never fetched has no
-   `last_seq` to compare against, so its *first* payload is accepted on trust —
-   as it must be, since pairing is the trust anchor. I6 defends a copy, not a
-   first impression.
+3. **It is measured against what *this* phone has seen under *this* pairing**,
+   which is the honest limit and is stated rather than hidden: a phone with no
+   `last_seq` for its current `pairing_id` has nothing to compare against, so its
+   *first* payload under that pairing is accepted on trust — as it must be, since
+   pairing is the trust anchor. I6 defends a copy, not a first impression.
+
+   *(Rev 17 makes the scoping explicit; rev 16 left it implicit and then leaned
+   on it. The cost is one payload of trust per deliberate re-pair, and a re-pair
+   already requires the owner to scan a QR from the daemon that minted it — an
+   attacker who can get that far can serve anything, so nothing new is conceded.
+   The gain is §9.3a: the one operation that legitimately needs a fresh
+   comparison baseline is also the one that cannot happen without the owner.)*
 
 **The realistic trigger is not an attacker.** On this architecture the ways to
 serve the phone an old `seq` are: a database restored from backup (§14a) onto a
@@ -2034,31 +2264,69 @@ would train him to dismiss the exact signal I6 exists to raise, on the one
 occasion it is firing for a real reason. A recovery procedure whose first step is
 "ignore the integrity alarm" is not a recovery procedure.
 
-**The fix is to make `seq` recoverable by construction, not by procedure:**
+**The fix is to make `seq` recoverable by construction, not by procedure.**
+*(Rewritten in rev 17. Rev 16's answer is below, with the counterexample that
+kills it, because a fix that was wrong for a nameable reason is worth keeping
+visible.)*
 
-> **`seq = max(stored_last_seq + 1, unix_millis(now))`**, evaluated at
-> publication. It stays strictly monotonic, it is still never reset across
-> pairings, and it is **still a counter as far as the phone is concerned** — the
-> phone's rule does not change by one line.
+> **`seq = (publish_epoch << 32) | counter`**, where `counter` is the daemon's
+> ordinary per-epoch publication counter and `publish_epoch` (§7, `daemon_state`)
+> is incremented **exactly once per restore, by the restore procedure**, never by
+> a publish. It stays strictly monotonic, it is still never reset across
+> pairings, and it is **still one opaque increasing integer as far as the phone is
+> concerned** — the phone's rule does not change by one line.
 
-Why this closes it: every `seq` the lost daemon ever published was ≤ the
-wall-clock millisecond at which it published. So the restored daemon's *first*
-publication, taken at `now`, is greater than every `seq` the phone can possibly
-be holding — **with no knowledge of the phone's high-water mark, which the daemon
-has no way to learn and must never be given a channel to ask for** (§9.3, point
-2). The weeks-long rejection window becomes zero, and it becomes zero
-automatically rather than by an operator remembering something.
+Why this closes it: every `seq` the lost daemon published carried the epoch that
+was current when the archive was taken. The restored daemon publishes under
+`epoch + 1`, whose smallest value exceeds the largest possible `seq` of the
+previous epoch — **with no knowledge of the phone's high-water mark, which the
+daemon has no way to learn and must never be given a channel to ask for** (§9.3,
+point 2), **and with no reference to any clock.** The bound is arithmetic: 2³²
+publications per epoch is one every five minutes for forty thousand years, and 2³¹
+epochs is one restore per disaster for longer than that.
 
-**What this deliberately gives up, stated because it is a real reduction.** A
-daemon rolled back to an older build *with an older database* now publishes an
-accepted payload rather than a refused one — the second bullet in the list above.
-That is the honest trade, and it is acceptable here for a reason specific to this
-product: **the payload carries its own age** (§8.1 R3, task 19), so old data
-arrives *labelled as old* and the staleness machine ages it in plain sight. The
-number does not become wrong; it becomes visibly stale, which is the failure mode
-this project is built to produce. **I6's actual job is untouched** — a *replayed
-old envelope* still carries its genuinely old `seq` and is still refused, and that
-is the case the cipher cannot see.
+**The one edge an epoch alone does not close — restoring the *same* archive
+twice** — is closed by the pairing scope, not by more counter machinery. A second
+restore from the same archive reads the same stored epoch and bumps it to the same
+value, so its publications collide with the first restore's. But **every restore
+forces a re-pair**: the payload key is deliberately not in the archive (detail 1
+below), so a restored daemon cannot serve the phone until the owner pairs it
+again — and under §9.3 point 3 the phone's `last_seq` is scoped to the pairing, so
+the comparison starts fresh. The epoch removes the clock; the re-pair — which the
+design already required for an unrelated and stronger reason — makes the epoch's
+own failure mode harmless.
+
+**And the authorization is where it belongs.** Bumping the epoch is a step in the
+restore procedure that the owner runs (`networth restore --new-epoch`, recorded in
+`daemon_state.epoch_bumped_at`/`_reason`); nothing in the ordinary publish path
+can move it. `doctor` shows the epoch and when it last moved, because an epoch
+that advanced without a restore is exactly the kind of fact this project refuses
+to leave unreportable.
+
+**What rev 16 proposed, and why it is deleted.** Rev 16 set
+`seq = max(stored_last_seq + 1, unix_millis(now))`, arguing that every `seq` the
+lost daemon published was ≤ the wall-clock millisecond at which it published.
+**That argument assumes a monotone wall clock, which §9.1 rule 1 explicitly
+refuses to assume** — this document has a whole state, `COPY_UNKNOWN`, for the
+case where a clock cannot be trusted, and then quietly trusted one a few sections
+later. The counterexample (from review): archive A is taken; the VPS clock jumps
+far forward and the daemon publishes once; the phone **accepts** that payload —
+I6 sees a greater `seq` and records it — while §9.1 separately labels the copy
+`COPY_UNKNOWN`, because *acceptance and display are different axes*; the clock is
+corrected; the VPS is lost; A is restored. `max(A.seq + 1, now)` is now far below
+the phone's high-water mark, and **I6 rejects every payload again** — the precise
+failure §9.3a was written to eliminate, in the precise scenario it was written
+for. The epoch has no such assumption to violate.
+
+**It also takes back what rev 16 gave away.** Rev 16 recorded, honestly, that its
+fix made a **daemon rolled back to an older build with an older database** publish
+an accepted payload rather than a refused one — because `now` outruns any stored
+counter. Under the epoch that is no longer true: a rollback does not bump the
+epoch and does not re-pair, so its publications carry a *lower* `seq` under the
+*same* pairing and **I6 refuses them again.** The second bullet of the list above
+is protected once more. That reversal is worth stating plainly: rev 16 paid for
+its fix with a real reduction in coverage, and the reduction turns out to have
+been unnecessary — it was the price of the clock, not the price of recoverability.
 
 **Three details the restore procedure owns, since the counter is only half of
 it:**
@@ -2067,18 +2335,34 @@ it:**
    a re-pair. Putting it in would mean the Mac holds both the token set and the
    ability to publish — §15 prices that blast radius explicitly and declines it.
    Re-pairing costs the owner one QR scan, and by definition he is present for a
-   disaster recovery.
+   disaster recovery. *(Rev 17 makes this load-bearing twice over: it is now also
+   what closes the repeated-restore edge above. A future revision that "simplifies
+   recovery" by putting the payload key in the archive would silently remove a
+   correctness property in §9.3a as well as widening §15's blast radius — so it is
+   flagged here, at the place that depends on it, and not only where it is
+   decided.)*
 2. **The restored daemon drops the `published_envelope` it restored** before
    serving anything. It was encrypted under a payload key that no longer exists,
    so serving it produces an undecryptable response rather than an error the
    phone can explain — and `revoke`'s rule already says a served envelope dies
    with its pairing (§6.3.1).
-3. **The drill covers this, or it is not covered.** `restore-drill.sh` asserts
-   that a daemon started against the restored database publishes a `seq` greater
-   than the largest `seq` in that database *and* greater than a stored marker
-   from before the archive was built. A restore path tested only for "the data
-   decrypts" is how this defect survived two revisions of a section that called
-   itself disaster recovery.
+3. **The drill covers this, or it is not covered**, and rev 17 replaces the
+   assertion as well as the mechanism. `restore-drill.sh` asserts that a daemon
+   started against the restored database publishes a `seq` greater than the
+   largest `seq` in that database **and** that its `publish_epoch` is exactly one
+   greater than the restored one. The **required scenario is the counterexample
+   itself**, run end to end rather than reasoned about: take archive A → jump the
+   daemon's clock far forward → publish → let a phone fixture record that `seq`
+   → correct the clock → restore A → bump the epoch → re-pair → **the fixture
+   accepts.** Rev 16's rule fails this test, which is the point of writing the
+   test as a sequence rather than as an invariant. Task 19's existing "clock goes
+   backwards" case does not cover it: that case keeps its database, and this one
+   is about a database that predates the jump.
+
+   Two negatives belong in the same test, because a fix that only makes acceptance
+   happen is half a fix: a **replayed old envelope** from before the restore is
+   still refused (it carries the old `pairing_id`), and a **rollback** — same
+   pairing, older database, no epoch bump — is still refused.
 
 ## 10. Net-worth computation
 
@@ -2363,21 +2647,73 @@ wrong, both consequences of rev 10's host move rather than of systemd:**
    exposed but leaves the phone unable to connect at all. A criterion that admits
    both failure directions tests nothing, and since rev 15 the "nothing is
    public" property is the main security claim this design makes, its test has to
-   carry that weight.)* The criterion is therefore positive and exact:
+   carry that weight.)*
 
-   - the listening socket's local address **equals the node's current Tailscale
-     address**, read at test time from `tailscale status --json` (never
-     hardcoded — it is `100.102.245.37` today and that is not a guarantee);
-   - **no listener on any non-loopback, non-tailnet address**, checked over the
-     full `ss -ltn` table rather than the one socket under test, and covering
-     IPv4 and IPv6 — `0.0.0.0`, the public IPv4, `[::]` and any public IPv6 all
-     **fail**;
-   - **loopback-only also fails.** It is the shape a "safe" fix takes when the
-     tailnet address is not up yet, and it breaks the product silently.
-   - the whole check **repeats after a reboot**, because the retry path in this
-     very bullet only executes on a cold boot, and it is the code most likely to
-     contain the fallback the rule forbids. A check that only ever runs on a warm
-     host never observes the code it is there to police.
+   **Rev 16 then over-corrected into a criterion the owner's host fails on
+   arrival** *(rev 17, from review, and measured read-only on the live VPS
+   rather than argued)*. Rev 16 required that **no** non-loopback, non-tailnet
+   listener appear anywhere in `ss -ltn` — a statement about *the host*, not
+   about *this project* — while §15.1 deliberately keeps public SSH as the one
+   firewall opening. Today, before any networth code exists there:
+
+   ```
+   LISTEN  0.0.0.0:22                      users:(("sshd",...))
+   LISTEN  [::]:22                         users:(("sshd",...))
+   LISTEN  100.102.245.37:44863            users:(("tailscaled",...))
+   LISTEN  [fd7a:115c:a1e0::1d37:f526]:47618  users:(("tailscaled",...))
+   LISTEN  127.0.0.54:53                   users:(("systemd-resolve",...))
+   LISTEN  127.0.0.53%lo:53                users:(("systemd-resolve",...))
+   ```
+
+   So the acceptance test fails at deploy, on the *correct* configuration, which
+   makes it a test that will be edited or skipped rather than fixed. **"networth
+   exposes nothing publicly" and "the shared host has no public listener" are
+   different claims, and only the first one is ours to make** (§15.1 — this is
+   the owner's exit node and it was here first).
+
+   That output corrects two more things rev 16 got wrong, both of which would
+   have failed an implementation that followed it literally:
+
+   - **"the node's Tailscale address" is not one address.** `TailscaleIPs` is an
+     array and this node has both `100.102.245.37` and
+     `fd7a:115c:a1e0::1d37:f526`. A test that reads element `[0]` and a daemon
+     that binds the other are both defensible and disagree.
+   - **loopback is not `127.0.0.1`.** `systemd-resolved` binds `127.0.0.54` and
+     the interface-scoped `127.0.0.53%lo`; a "loopback" predicate written as a
+     string match against `127.0.0.1`, or one that chokes on the `%lo` suffix,
+     misclassifies both. Classify by prefix (`127.0.0.0/8`, `::1`) after
+     stripping the zone, not by equality.
+
+   The criterion therefore splits in two, and the split is the whole fix — a
+   **positive** assertion about our socket, and a **change-detecting** assertion
+   about everything else:
+
+   1. **Our listener, asserted exactly.** Identify the socket by **process**, not
+      by port alone (`ss -ltnp`, run with the privilege needed to read the
+      process column — if it cannot be read, the test **fails** rather than
+      falling back to matching a port number, since "some process holds 8443" is
+      not the fact under test). Its local address must be **one of** the
+      addresses in `TailscaleIPs`, read at test time from
+      `tailscale status --json` and never hardcoded. `0.0.0.0`, the public IPv4,
+      `[::]`, any public IPv6, **and loopback-only** all **fail** — loopback
+      because it is the shape a "safe" fix takes when the tailnet address is not
+      up yet, and it breaks the product silently while looking prudent.
+   2. **Everything else on the host, compared against a declared baseline.** Task
+      `28` captures the set of non-loopback, non-tailnet listeners at the end of
+      provisioning — today exactly `sshd` on `0.0.0.0:22` and `[::]:22`, which is
+      §15.1's one opening — and records it as the host's approved public surface.
+      The test asserts the current set **equals** that baseline. A new public
+      listener therefore fails the test whether networth opened it or not, and
+      the failure names the process; a listener the owner adds deliberately is a
+      one-line baseline update with a reason, which is a decision rather than a
+      silent drift. This keeps rev 16's actual intent — *a publicly reachable
+      thing appearing on this host is an event, not a background condition* —
+      without asserting something false about a machine that is not ours.
+
+   The check **repeats after a reboot**, because the bind-retry path in this very
+   bullet only executes on a cold boot, and it is the code most likely to contain
+   the fallback the rule forbids. A check that only ever runs on a warm host never
+   observes the code it is there to police.
 2. **Both processes share one SQLite file**, `networth-serve` opening it
    **read-only** — it has no reason to write and every reason not to be able to.
 
@@ -2405,6 +2741,18 @@ The timer fires every 5 minutes and the worker asks the database what is due:
 | quote refresh | any `MANUAL_QTY_LIVE_PRICE` price older than the last close |
 | publish | a snapshot exists newer than the last successful `publication` (§6.4) |
 | build archive | >24h since the last archive was **built** — §14a. This job is entirely local: it snapshots the database, packs the token material and encrypts, into a directory on this host. It has no destination and cannot fail for a reason involving another machine |
+| **complete pending Link** | a `link_flow` row is `OPEN` and its `session_retention_expires_at` has not passed (**rev 17**, §7, **F7**). Polls `/link/token/get`; on a `public_token`, exchanges it and writes the `access_token` through `TokenStore` **before** the `item` row (§14a). At expiry the row goes `EXPIRED` and the Item is counted by `doctor` as having no reachable token |
+
+**Why that last row is on the always-on host and not in `link.sh`** *(rev 17,
+from review)*. Retrieval is now the **only** path to a `public_token` — Hosted
+Link has no frontend and v0 has no webhook (**F7**, §8.4) — so the process that
+polls owns a **six-hour** deadline against a permanently scarce resource. Rev 16
+put that process on `zelengs-macbook-air-2`, a laptop whose lid closes; the
+window would have silently depended on the owner not shutting it. Here it is an
+ordinary due-ness job with the same restart and catch-up behaviour as every
+other. `link.sh` still triggers a poll immediately over its interactive SSH so
+the owner is not waiting on the 5-minute tick, and then **watches**: it reports
+the outcome, but it is not the mechanism, and closing it does not stop anything.
 
 *(No webhook-drain row and no receiver at all: v0 polls and does not receive,
 §8.4. And no pre-write compare or read-back around the publish, §9.3.)*
@@ -2512,9 +2860,9 @@ Spending rules:
    Production mistakes are permanent.
 2. Confirm the exact institution *and login* **before Link completes** — not
    before the exchange. **F2a**: the Item is created inside Link, so by the time
-   a `public_token` is in the owner's hands the slot is already spent and the
-   confirmation prompt rev 13 put in front of the paste was asking a question
-   whose answer could no longer change anything.
+   a `public_token` exists at all the slot is already spent, and the confirmation
+   prompt rev 13 put after that point was asking a question whose answer could no
+   longer change anything.
 3. Never spend a slot on an account whose balance could be typed in once a
    month. A small, rarely-moving account is a manual entry, not an Item.
 4. Re-auth via update mode costs nothing (§8). Only `REVOKED` can require a new
@@ -2752,9 +3100,16 @@ Three acceptance criteria, all owner-controlled and all free:
      one driving the sequence. The `public_token` exchange still happens on the
      VPS, over SSH, because that is where the client secret lives — the script
      is a wrapper around a remote step, not a relocation of the credential.
-   - **"Proves the path" means a canary, not a ping.** `link.sh` builds a small
-     probe archive on the VPS, pulls it, decrypts it and deletes it — the entire
-     mechanism, end to end, with the real key and the real transport. Rev 13's
+   - **"Proves the path" means a canary, not a ping.** `link.sh` builds a probe
+     archive on the VPS, pulls it, decrypts it, and deletes **its own local
+     copy** — the entire mechanism, end to end, with the real key and the real
+     transport. *(Rev 17 sharpens two words. It is not a "small" archive: the
+     probe is a real `VACUUM INTO` of the real database, because a canary that
+     copies less than a backup copies stops testing the backup — §15 bounds the
+     **rate** instead. And what is deleted is the copy on the Mac; the probe on
+     the VPS stays at its one fixed path and is overwritten, which is what lets
+     the dispatcher's 60-second freshness window return it instead of
+     rebuilding.)* Rev 13's
      check was reachability, which is exactly the substitution this project
      exists to refuse: *the host answering* is evidence about the network, and
      what needs proving is that **a backup would work**. A full disk, a wrong key
@@ -2763,12 +3118,13 @@ Three acceptance criteria, all owner-controlled and all free:
 
    **And the whole timeline has to be stated, because the happy path is not where
    the slots go.** By **F2a** the Item exists the moment Link succeeds, before
-   the owner has pasted anything. So:
+   any token has been retrieved or exchanged. So:
 
    | Moment | What exists | If everything stops here |
    |---|---|---|
    | Before Link opens | nothing | Nothing lost. **This is the only point at which the design can still refuse**, which is why the canary runs here |
    | Link completed in the browser | the **Item** — the slot is spent | Recoverable. The `public_token` is retrievable from the VPS with `/link/token/get` for **six hours** (**F7**), so closing the tab costs nothing |
+   | **Link completed, then the VPS is lost before the exchange** | the Item, and a `link_token` on **two** machines | **Recoverable, and only because of the second copy** (rev 17). The Mac holds the `link_flow` recovery record; the owner re-reads `client_id`/`secret` from Plaid's dashboard and retrieves the `public_token` inside the six hours (§19 step 2a). Without that copy this row is *immediately* unrecoverable — the archive predates the Link, so it holds neither token |
    | Six hours since the session ended, never exchanged | the Item, with no reachable `access_token` | **Unrecoverable. A permanently stranded slot.** This is the real deadline, and it is the only one |
    | Exchange returned, token not yet durable | the Item and an `access_token` in memory | A crash here loses the token: same stranded slot. The token is `fsync`ed to `TokenStore` **before** anything else happens, and before the `item` row that references it |
    | Token durable, archive not yet pulled | one copy of the token, on the VPS | Survivable unless the VPS is lost in this window. The window is seconds, and the pull that closes it is the next step rather than tomorrow's job |
@@ -2788,15 +3144,20 @@ Three acceptance criteria, all owner-controlled and all free:
 
    **The residual that is actually left**, now that the false one is gone:
 
-   1. **The six-hour retention window is a hard edge.** `link.sh` polls
-      immediately and does not depend on it, but a machine that dies mid-flow and
-      is not attended to for six hours strands the slot. `doctor` therefore
-      reports **Items with no reachable token** as its own count, so the state is
-      visible while it is still inside the window rather than after.
+   1. **The six-hour retention window is a hard edge.** The VPS-side job polls
+      immediately and repeatedly (§13) and does not depend on the laptop staying
+      awake, but a flow that cannot complete for six hours — Plaid unreachable,
+      the host down and unattended — strands the slot. `doctor` therefore reports
+      **Items with no reachable token** as its own count, so the state is visible
+      while it is still inside the window rather than after.
    2. **F7 is not yet proven end to end** (the completed-session field could only
       be read by spending a slot). Task `06a` proves it in Sandbox and is a hard
-      gate on `08`, and until it passes `link.sh` keeps the manual paste as a
-      fallback path rather than deleting it.
+      gate on `08`. **Rev 16 softened that gate with a manual-paste fallback and
+      rev 17 deletes it, because Hosted Link cannot produce one — there is nothing
+      on the owner's screen to copy** (F7). So this residual is now carried where
+      it belongs: `06a` must pass, and if it does not, the answer is that the
+      first Production Link does not happen, not that a human improvises at the
+      moment a slot is burning.
 2. **A recoverable copy of the backup key that is not only on the VPS.** The
    runtime key is `/etc/networth/networth-backup.key` and it decrypts the
    archive, so the two must not share a fate. The owner keeps a second copy in a
@@ -2822,9 +3183,12 @@ Three acceptance criteria, all owner-controlled and all free:
      inside this archive** recorded at build time *(rev 16: this used to compare
      against `backup_archive.db_row_counts_json` — a row on the VPS, i.e. the
      machine whose loss is the entire scenario)*;
-   - **every `item` row resolves to a token in the same archive**, compared by
-     salted **fingerprint** (never the tokens, never in a log). This is the check
-     rev 13 did not have: matching row counts prove the database arrived, and say
+   - **every `item` row resolves to *its own* token in the same archive** — the
+     drill recomputes `item_token_binding_sha256` from the restored database and
+     `TokenStore` and requires it to equal the manifest's, which is a statement
+     about the **mapping** and not merely about the token set (never the tokens,
+     never in a log). This is the check rev 13 did not have and rev 16 stated but
+     did not implement: matching row counts prove the database arrived, and say
      nothing about whether it arrived paired with the right token generation —
      which is the failure mode §14a's lock and ordering exist to prevent, so it
      is the one the drill has to be able to catch;
@@ -2852,7 +3216,7 @@ be.** A bundle cannot contain its own hash; everything else can:
 
 | Fact | Lives | Why it cannot live in the other place |
 |---|---|---|
-| `archive_id`, `schema_version`, `db_row_counts`, `item_count`, `token_fingerprint_set_sha256`, `fingerprint_salt`, `built_at` | **inside**, in the manifest | The drill must validate with nothing but the archive and the key |
+| `archive_id`, `schema_version`, `db_row_counts`, `item_count`, `item_token_binding_sha256`, `built_at` | **inside**, in the manifest | The drill must validate with nothing but the archive and the key |
 | `archive_sha256`, `byte_size` | **outside**, `backup_archive` + the pull's own record | Computed over the sealed bundle; a hash cannot contain itself |
 | `pulled_verified_at`, `pulled_by`, `verify_error` | **outside** only | They are facts about a transfer that happens after the archive is frozen |
 
@@ -2865,9 +3229,7 @@ looks like evidence.
 
 **Fingerprints are derived, not stored with a secret.** The per-archive key is
 `K_fp = HKDF-SHA256(ikm = backup_key, salt = archive_id, info =
-"networth/token-fingerprint/v1")`, and a token's fingerprint is
-`HMAC-SHA256(K_fp, access_token)` truncated to 128 bits. Three consequences, all
-load-bearing:
+"networth/token-fingerprint/v1")`. Three consequences, all load-bearing:
 
 - the salt is `archive_id`, which is already in the manifest, so **nothing extra
   has to be kept anywhere** and two archives never share a fingerprint space;
@@ -2875,6 +3237,48 @@ load-bearing:
   the manifest leaks nothing about the tokens even if the AEAD is stripped;
 - **the fingerprint is not a token and must never be reversible into one** — it
   is truncated, keyed, and never logged (§15).
+
+**What the fingerprint covers is the part rev 16 got wrong, and the bug was that
+the drill's stated check could not fail.** *(Rev 17, from review.)* Rev 16 sealed
+`token_fingerprint_set_sha256` — a hash over the **set** of
+`HMAC-SHA256(K_fp, access_token)` values — while criterion 3 below promised that
+"every `item` row resolves to **its** token". Those are different claims, and the
+gap is exactly the corruption the `flock` and the write ordering exist to prevent:
+**swap two `access_token`s between two Item keys and the set is unchanged, its
+hash is unchanged, and the drill passes** on an archive that would restore both
+Items pointing at each other's institution. A restore from it fails later,
+confusingly, at the first Plaid call — or worse, succeeds against the wrong
+institution and contributes a wrong number to a total.
+
+So the fingerprint **binds the Item identity**, and the manifest seals a
+**mapping** rather than a set:
+
+```
+fp(item)   = HMAC-SHA256(K_fp, LP(item.item_id) ‖ LP(item.secret_ref)
+                              ‖ LP(access_token))            truncated to 128 bits
+manifest.item_token_binding_sha256
+           = SHA256( canonical_json( [ [item_id, secret_ref, hex(fp(item))]
+                                       for item in items sorted by item_id ] ) )
+```
+
+`LP(x)` is a length-prefixed encoding (a `uint32` big-endian length, then the
+UTF-8 bytes), **not** a delimiter. That detail is not decoration: with a
+separator byte, `item_id = "ab", secret_ref = "c"` and `item_id = "a",
+secret_ref = "bc"` hash identically, and re-introducing an ambiguity into the
+function whose whole job is to make two arrangements distinguishable would repeat
+this finding one layer down. Sorting by `item_id` makes the digest canonical, so
+row order in the restored database cannot change the answer.
+
+**The negative test is required, not optional**, and it is the test rev 16 did not
+have: build an archive, **swap two `access_token`s between two Item keys**, and
+the drill must **FAIL**. A coherence check nobody tried to break is an assertion,
+the same way an allow-list nobody tried to escape is (§15).
+
+**The general lesson, since this is the second time it has bitten:** AEAD
+authenticates *the bundle that was built*. It proves nobody edited the archive; it
+cannot make an under-specified check prove something the check never covered.
+"Authenticated" and "sufficient" are different properties, and rev 16 leaned on
+the first while claiming the second.
 
 **Build and publish ordering, because the obvious sequence produces a row that
 describes a file that does not exist — or a file no row describes:**
@@ -3042,20 +3446,76 @@ verbs, with no arguments passed through as a shell string:
 
 | `SSH_ORIGINAL_COMMAND` | Dispatches to | Writes? |
 |---|---|---|
-| `build-archive <current\|probe>` | builds an archive now. `current` is the real one; `probe` is `link.sh`'s canary, built to a **distinct path** and, per §14a, **never writing a `backup_archive` row** | a file; a row for `current` only |
+| `build-probe` (no arguments) | builds `link.sh`'s canary archive, to **one fixed path**, overwritten in place, and per §14a **never writing a `backup_archive` row**. Single-flight; a no-op returning the existing probe if one was built in the last 60 s | one file, one path |
 | `serve-archive <current\|probe>` | streams that archive to stdout | no |
 | `record-pull <archive_id> <verdict> <full-tailnet-name>` | `networth backup record-pull`, arguments **parsed and validated**, `archive_id` matched against an existing row | one row, `backup_archive` only |
 | `record-drill <archive_id> <verdict>` | `networth backup record-drill` — the weekly restore drill runs on the Mac (§14a.1 criterion 3) and its result has to reach the VPS, where `doctor` reads it | `backup_state` only, singleton |
 | anything else, or unset | **exit non-zero, log, do nothing** | no |
 
-**Why `build-archive` is on this key at all**, since it is the one verb that makes
+**Why a build verb is on this key at all**, since it is the one verb that makes
 the VPS do work on request: `link.sh`'s canary must prove **the path the
 unattended puller actually uses** — same key, same dispatcher, same transport —
 or it proves something else and the pre-Link gate is theatre (§14a.1). Running
 the canary over the interactive key would test a route that no backup ever takes.
-The residual is named: a compromised laptop can make the VPS build archives on
-demand. That is a nuisance, bounded by the work of one `VACUUM INTO`, and it buys
-a canary that tests the real thing.
+
+**Rev 16 wrote that paragraph and then priced the residual wrong** *(rev 17, from
+review)*. It said a compromised laptop making the VPS build archives was "a
+nuisance, bounded by the work of one `VACUUM INTO`" — but **nothing bounded the
+number of invocations.** The key can open sessions in a loop, or concurrently;
+`build-archive current` also **inserted a `backup_archive` row per call**, so the
+capability was sustained disk and CPU load plus unbounded bookkeeping growth, on a
+machine that is also the owner's VPN exit node. "The cost of one X" is only a
+bound when something limits you to one X, and that sentence was doing the work of
+a rate limit while being a description.
+
+The verb is therefore narrowed to the minimum the canary actually needs, and then
+bounded:
+
+- **`build-archive current` leaves this key entirely.** Nothing unattended needs
+  it. The daily timer builds the real archive (§13), and `link.sh`'s post-exchange
+  build runs over the **interactive** key, where a human is present. The
+  restricted key can no longer cause a full-history archive or a row to exist.
+  *The cost is named rather than glossed: if the timer stops, the unattended
+  puller can no longer force a fresh build and keeps pulling the newest archive
+  that exists. That is the right behaviour here — `last_successful_backup` ages
+  in plain sight (§14a.1), which is this project's whole answer to a stalled
+  pipeline, and it beats giving an unattended key the power to make the host
+  work.*
+- **`build-probe` takes no arguments**, writes to one fixed path and overwrites
+  it, so retention is one file by construction and there is nothing to grow.
+- **Single-flight**: it takes a non-blocking `flock`; a concurrent request exits
+  non-zero immediately rather than queueing. Concurrency was the part that turned
+  a cost into a multiplier.
+- **A 60-second freshness window**: a request arriving within 60 s of the last
+  probe returns the existing one instead of rebuilding, and the response carries
+  the probe's `built_at` so the caller can tell which it got.
+
+  **That last clause is not bookkeeping — without it this bound would have
+  quietly broken the canary**, and it was found by walking the ordinary Link
+  flow through this rule rather than by reading it. Two institutions linked
+  back-to-back put two canaries inside one 60-second window; the second would
+  receive a probe built *before* it ran and accept it as proof. But the build is
+  the step that catches a full disk, a bad key mode or a missing directory —
+  serving and decrypting an old file proves the transport and nothing else, which
+  is precisely the substitution §14a.1 rejects when it refuses a reachability
+  ping. So: **the canary requires a probe whose `built_at` is later than the
+  moment the canary started**, and if it is handed an older one it **waits out
+  the cooldown and retries** rather than passing. The rate bound is untouched —
+  still at most one build per minute — and the gate stops being satisfiable by a
+  stale artefact. *("Two Links two minutes apart" is the realistic case, and
+  "realistic" is not the standard this document holds a pre-Link gate to.)*
+- **Rejections are counted, not just refused.** Rate-limited and single-flight
+  refusals are logged with the verb and surfaced by `doctor` alongside the
+  disallowed-command count (property 4 below). A throttle that silently absorbs an
+  attack converts a visible signal into an invisible one, which is the wrong
+  trade even when the throttle works.
+
+The probe stays a **real** `VACUUM INTO` of the real database rather than a
+reduced-content stand-in: the bound belongs on the *rate*, not on the *fidelity*,
+because a canary that copies less than a backup copies is no longer testing the
+backup. The residual, priced honestly this time: a compromised laptop can cause at
+most one probe build per minute, to a fixed path, writing no rows — and the
+acceptance test is a **burst**, not a single call.
 
 Four properties that make this a boundary rather than a formality, and the last
 two are where an allow-list of this shape usually goes wrong:
@@ -3078,9 +3538,15 @@ two are where an allow-list of this shape usually goes wrong:
    signal, and one that is dropped on the floor is not.
 
 **The acceptance test is that the negative case is tested**: `ssh -i
-networth-backup-ssh.key … 'bash'`, `… 'networth show'`, and a `record-pull` with a
-mangled `archive_id` must each fail, and a plain `ssh` with no command must fail.
-A forced-command allow-list nobody tried to escape is an assertion, not a control.
+networth-backup-ssh.key … 'bash'`, `… 'networth show'`, **`… 'build-archive
+current'`** (rev 17: the narrowing is only real if the removed verb is *tested*
+absent), and a `record-pull` with a mangled `archive_id` must each fail, and a
+plain `ssh` with no command must fail. **And one positive-shaped test that is
+really a negative**: a **burst** of `build-probe` — say fifty sequential and ten
+concurrent — must produce at most one build per minute, exactly one file, zero
+`backup_archive` rows, and a non-zero refusal count in `doctor`. A forced-command
+allow-list nobody tried to escape is an assertion, not a control; a rate limit
+nobody burst is the same thing.
 
 **Not in this list, deliberately: anything on the phone.** Since §6.3 the app
 holds the payload key in the Android Keystore, provisioned by pairing — so there
@@ -3126,6 +3592,14 @@ and are part of the deploy task, not aspirations:
   server binds the **tailnet interface only** and must never be published; a bind-address regression is the one configuration mistake
   here that quietly turns a private endpoint into a public one, so it is an
   acceptance criterion with a test, not a config comment.
+
+  **That one opening is why the test is a baseline comparison and not an
+  emptiness assertion** *(rev 17, from review)*. `sshd` on this host listens on
+  `0.0.0.0:22` **and** `[::]:22` — verified read-only on the live VPS — so a
+  criterion reading "no public listener anywhere" contradicts this very bullet
+  and fails on the correct configuration. §13 states the two-part form: our
+  process asserted positively against the node's Tailscale addresses, everything
+  else compared against the surface `28` recorded at provisioning.
 - **No inbound anything on `zelengs-macbook-air-2`.** Rev 13's push design would
   have needed `sshd` enabled on the owner's laptop; the pull direction (§14a)
   means the Mac opens connections and accepts none. Nothing in this design may
@@ -3278,19 +3752,26 @@ because the backup is a pull and only the Mac can perform one:
 1. `scripts/link.sh` runs **on `zelengs-macbook-air-2`**. It first runs the
    backup canary (§14a.1) — build a probe archive on the VPS, pull it, decrypt
    it, delete it — and **refuses to go further if that fails.**
-2. It then SSHes to the VPS to mint a **Hosted Link** `link_token` (**F7**) and
-   prints the returned `hosted_link_url`. The `client_id`/`secret` never leave
-   the VPS; the Mac holds an SSH key, not a Plaid credential.
-3. The owner opens the URL in this Mac's browser and completes Link there.
-   **Credentials and MFA go into Plaid's page**; neither machine sees them.
-   **The lifetime slot is spent at the end of this step** (**F2a**), before
-   anything is pasted anywhere.
-4. `link.sh` **polls `/link/token/get` on the VPS** until the session reports
-   completed, then exchanges the returned `public_token` there — the
+2. It then SSHes to the VPS to mint a **Hosted Link** `link_token` (**F7**),
+   which the VPS stores through `TokenStore` under an `OPEN` `link_flow` row
+   (§7). The `client_id`/`secret` never leave the VPS; the Mac holds an SSH key,
+   not a Plaid credential.
+3. **Before printing anything**, `link.sh` pulls the `link_flow` recovery record
+   to this Mac, `fsync`s it and reads it back (§14a.1). If that fails it prints
+   no URL and stops — nothing has been spent yet, so stopping is free.
+4. It prints the `hosted_link_url`. The owner opens it in this Mac's browser and
+   completes Link there. **Credentials and MFA go into Plaid's page**; neither
+   machine sees them. **The lifetime slot is spent at the end of this step**
+   (**F2a**).
+5. **The VPS** polls `/link/token/get` as a due-ness job (§13) until the session
+   reports completed, then exchanges the `public_token` there — the
    `access_token` is written durably through `TokenStore` before the `item` row
-   is committed (§14a). Nothing is copied by hand on the happy path.
-5. `link.sh` immediately triggers an archive build on the VPS and **pulls it**,
-   verifies it decrypts and reconciles, and only then reports the Link complete.
+   is committed (§14a), and the `link_flow` row goes `EXCHANGED` with its
+   `secret_ref` cleared. `link.sh` triggers the first poll immediately so the
+   owner is not waiting on a tick, then **watches**. Nothing is copied by hand,
+   and nothing is copied by hand on any other path either — see below.
+6. `link.sh` triggers an archive build on the VPS and **pulls it**, verifies it
+   decrypts and reconciles, and only then reports the Link complete.
 
 **Rev 16 reverses rev 10's decision to drop task 07a, and the reversal is a
 correction rather than a change of taste.** Rev 9 kept 07a as a spike for handing
@@ -3305,19 +3786,34 @@ by rev 14 — which moved the driver to the Mac — it did not describe the flow
 either. **07a is therefore un-dropped, and it is not a spike:** polling is the
 primary path.
 
-**Copy-paste survives as the fallback, for one reason** — F7's completed-session
-field has not been observed here (it costs a slot to observe in Production; task
-`06a` proves it in Sandbox). If the poll does not produce a token, `link.sh`
-prompts and pipes the paste to the VPS **over stdin** — never as an argument,
-which would put it in `ps` output. The `public_token` is short-lived and useless
-without the client secret, so the paste is not a credential-handling risk; it is
-just a worse path, and after `06a` passes it should be reachable only when Plaid
-misbehaves.
+**Copy-paste does not survive as a fallback, because Hosted Link cannot produce
+one.** *(Rev 17, from review.)* Rev 16 kept a paste for the case where the poll
+yields nothing, and Plaid's documentation rules it out in as many words: **"In
+Hosted Link, there is no frontend integration required (or possible)"**, and
+`completion_redirect_uri` — the only thing the browser returns to — carries no
+token. With webhooks deleted (§8.4), the browser never holds a `public_token` at
+any point, so there is nothing on the owner's screen to copy. The fallback would
+have been an instruction that cannot be followed, printed at the moment a slot is
+already spent.
 
-**Neither path may be *silently* taken.** A run that falls back prints why, and
-`doctor` counts fallbacks — because "the automation quietly stopped working and a
-human has been pasting for months" is precisely the shape of failure this project
-exists to make visible.
+**So there is one path, and its failure behaviour is specified instead of
+escaped** (F7): poll immediately, retry on a bounded schedule until either the
+token arrives or the six-hour retention expires; a missing `link_sessions` key is
+the normal pre-completion response and not an error; a rejected `link_token` is
+terminal and reported. **`06a` is what carries the risk the fallback pretended
+to** — it proves completed-session retrieval in Sandbox, where proof is free, and
+it gates `08`.
+
+**And the one-path rule is only safe because the branch moved earlier.** A
+fallback selected *after* Link completes is not a fallback at all — by **F2a** the
+slot is gone by then. The place this flow can still branch is steps 1 and 3, the
+canary and the `link_token` second copy, both of which run **before** the URL is
+printed and both of which stop the flow rather than degrade it.
+
+**Nothing may be *silently* degraded.** A run that cannot complete says why, the
+`link_flow` row keeps the reason, and `doctor` reports open and expired flows —
+because "the automation quietly stopped working" is precisely the shape of failure
+this project exists to make visible.
 
 Note that Link never runs **in the phone app**. Adding Plaid's Flutter Link SDK
 would require a server-side `/link/token/create` anyway (§6), so it buys nothing
@@ -3475,7 +3971,10 @@ and verified 2026-08-31; item 3 is outstanding.**
    changed this line: it used to force `networth backup serve-archive` directly,
    which made the pull's write-back impossible — `command=` ignores the client's
    command, so `record-pull` could never run. §15 specifies the dispatcher and
-   the two verbs it allows.)* The unattended job then cannot open a shell on the
+   the **four** verbs it allows: `build-probe`, `serve-archive`, `record-pull`,
+   `record-drill`. Rev 17 corrects "two" — a stale count left over from before
+   the dispatcher existed, in the step the owner actually executes — and narrows
+   the first verb: **`build-archive current` is not on this key at all**.)* The unattended job then cannot open a shell on the
    host holding the Plaid master credential; the interactive key stays for
    `link.sh` and administration, where you are present. **Install this one under
    the service user, not `root`** — it has no administrative purpose.
@@ -3580,8 +4079,12 @@ the ordering is the whole point — §14a.1)
    this machine can perform one; it reaches the VPS over SSH for every step that
    needs the client secret, which never leaves that host.
 2. It runs the **backup canary** first — builds a probe archive on the VPS, pulls
-   it, decrypts it, deletes it — and **refuses to continue if that fails.** This
-   is the last moment anything can be refused (step 4).
+   it, decrypts it, deletes its local copy — and **refuses to continue if that
+   fails.**
+2a. It then mints the `link_token` on the VPS and **copies the recovery record to
+   this Mac and reads it back** before it prints anything *(rev 17)*. If that
+   fails, **no URL is printed** and the run stops. Steps 2 and 2a are the last
+   moments anything can be refused (step 4), and both refuse rather than warn.
 3. It prints a **Hosted Link** URL. Open it **in this Mac's browser**. **Enter
    credentials and MFA there** — that page is Plaid's; neither machine sees them.
    **Confirm the institution *and* the specific login before you finish this
@@ -3591,20 +4094,47 @@ the ordering is the whole point — §14a.1)
 4. **Finishing Link is the irreversible moment (F2a).** Plaid creates the Item
    when Link succeeds and only then hands back a `public_token`. Everything
    after this is recovery of something that already cost a slot.
-5. **Nothing to copy.** `link.sh` is polling the VPS for the completed session and
-   collects the `public_token` itself (**F7**). *(Rev 16 deleted a step here that
-   told you to paste the token promptly because losing it stranded the slot
-   forever. **That was wrong** — Plaid keeps the completed session retrievable for
-   six hours, and the retrieval runs from the VPS with no browser involved.)*
-   You have **six hours**, not thirty minutes, and you are not the mechanism.
-   *(If the poll fails, the script falls back to asking you to paste — it will say
-   so explicitly. That path exists only until task `06a` proves the automatic one
-   in Sandbox.)*
-6. The script exchanges the token on the VPS, writes the `access_token` via
-   `TokenStore` (mode 600) **before** recording the item row, then immediately
-   builds and **pulls** a fresh archive and verifies it — reporting the Link
-   complete only once a verified second copy is on this Mac (§14a).
+5. **Nothing to copy — and this time that is the whole design, not a
+   convenience.** The **VPS** polls for the completed session and collects the
+   `public_token` itself (**F7**, §13). You have **six hours**, not thirty
+   minutes, and you are not the mechanism. **You may close the browser, close
+   this laptop, and walk away**; the always-on host is doing the waiting.
+   *(Rev 16 deleted an older step that told you to paste the token promptly
+   because losing it stranded the slot forever — that was wrong, Plaid keeps the
+   session retrievable. **Rev 17 deletes rev 16's replacement too**: it said the
+   script would fall back to asking you to paste if the poll failed. Hosted Link
+   never puts a token in your browser — Plaid: "there is no frontend integration
+   required (or possible)" — so there was never anything on your screen to paste.
+   If retrieval fails, the run says so and the flow is visible in `doctor` as an
+   open `link_flow`; there is nothing for you to do by hand, and no step here
+   will pretend otherwise.)*
+6. The VPS exchanges the token, writes the `access_token` via `TokenStore` (mode
+   600) **before** recording the item row, then `link.sh` builds and **pulls** a
+   fresh archive and verifies it — reporting the Link complete only once a
+   verified second copy is on this Mac (§14a).
 7. Link the **highest-value institutions first** — slots are permanent (**F2**).
+
+**Step 2a — If the VPS dies between Link finishing and the token being
+exchanged** (rare; ~10 min, and there is a **six-hour** clock on it)
+
+*(Rev 17, from review. Before it, this situation was an immediately stranded slot
+that no section admitted to: the Mac's newest archive predates the Link, so it
+holds neither the `access_token` nor the `link_token`.)*
+
+1. You have what matters: step 2a of the Link run put the **`link_flow` recovery
+   record on this Mac**, and the `link_token` in it is the one input that cannot
+   be reissued.
+2. Get `client_id` and the production secret from **Plaid's dashboard** — they
+   have always been retrievable there, which is why the design copies the
+   `link_token` and not the credential.
+3. Call `/link/token/get` with that `link_token` **within six hours of the Link
+   session ending**, take `results.item_add_results[].public_token`, and exchange
+   it on whichever host now holds the credential.
+4. **Never** paste any of this into a chat, a file an agent reads, or a PR
+   (§15) — the standing rule does not relax because it is an emergency.
+5. If the six hours have already passed, the slot is stranded. Record it against
+   the budget (§14) rather than re-linking blindly, because a re-link spends
+   another one.
 
 **Before you start step 2, make sure this Mac is awake and on the tailnet.**
 *(Rev 13; sharpened in rev 14, because rev 13 got the boundary wrong.)* Rev 13
@@ -3649,22 +4179,36 @@ device. All of it is gone with the third party it protected.)*
       machine, not worked around. *Hardening that can strand the owner is not
       hardening.*
 2. **Install the two units** (§13): `networth-sync.timer`/`.service` and
-   `networth-serve.service`. Confirm `networth-serve` is listening on the
-   **tailnet address and nothing else** — in `ss -ltn`, the snapshot port must
-   appear on the address `tailscale status --json` reports for this node, and
-   must **not** appear on `0.0.0.0`, on the public IPv4, on `[::]`, or on
-   loopback-only. *(Rev 16: this step used to say only "must not show it on
-   `0.0.0.0`", which the public IPv4 and the IPv6 wildcard both pass — §13.)*
-   This is the one misconfiguration that silently publishes the endpoint, so it
-   is checked by hand once here and by a test forever after.
+   `networth-serve.service`. Confirm with `ss -ltnp` that the **`networth-serve`
+   process's** socket is bound to one of the addresses in `TailscaleIPs` from
+   `tailscale status --json` — this node has **two**, an IPv4 and an IPv6 — and
+   not to `0.0.0.0`, the public IPv4, `[::]`, any public IPv6, or loopback.
+   *(Rev 16 said "must not show it on `0.0.0.0`", which the public IPv4 and the
+   IPv6 wildcard both pass. Rev 17 fixes the opposite error in the same
+   sentence — see step 4 — and identifies the socket by **process**, because
+   "something is on that port" is not the fact being checked; §13.)* This is the
+   one misconfiguration that silently publishes the endpoint, so it is checked by
+   hand once here and by a test forever after.
 3. **Put the secrets in place** under the service user (§15), mode 600 — both
    `plaid.env` and `plaid-sandbox.env`, since a rehearsal needs its own
    credential and its own database.
-4. **Confirm the host publishes nothing.** `ss -ltnp` shows the snapshot port on
-   the tailnet address and nothing on a public one, and `tailscale funnel status`
-   shows no funnel configured. *(v0 has no webhook endpoint — §8.4. This step
-   exists because "no public service" is a property that decays silently, and the
-   only way to notice is to look.)*
+4. **Record the host's approved public surface, then confirm networth added
+   nothing to it.** Capture the set of non-loopback, non-tailnet listeners from
+   `ss -ltnp` as the **baseline** (§13); on this host, today, that is exactly
+   `sshd` on `0.0.0.0:22` and `[::]:22`, which is §15.1's single opening. The
+   check from here on is that the set still **equals** the baseline, and
+   `tailscale funnel status` shows no funnel.
+
+   *(Rev 17, from review, and this is a correction to rev 16's own hardening
+   step rather than a note about it. Rev 16 demanded that **no** non-loopback,
+   non-tailnet listener exist anywhere — a claim about **the owner's host**, not
+   about this project — and the live VPS fails it before networth is installed,
+   because `sshd` is supposed to be there. A gate that is red on a correct
+   machine gets edited or skipped, and then it is not a gate. **This is the
+   owner's Tailscale exit node and it was here first (§15.1); "networth exposes
+   nothing publicly" is ours to assert, "this host has no public listener" is
+   not.** The baseline keeps rev 16's real intent — a new public listener is an
+   event, not a background condition — while being true on day one.)*
 
 **Step 3a — Pair the phone** (~2 min, once, and again whenever you want to
 rotate)
