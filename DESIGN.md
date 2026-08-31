@@ -133,8 +133,10 @@ it.
   §8.4a's costed plan.
 - **`networth-serve` was simultaneously the webhook writer and a read-only
   database process.** Both could not hold. Rev 14 split the receiver into its own
-  unit; **rev 15 removed the receiver**, so §13 is back to two units and the
-  "one writer" claim is true rather than merely repeated.
+  unit; **rev 15 removed the receiver**, so §13 is back to two units — *and rev
+  15 then repeated the "one writer" claim a third time, still wrongly; rev 16
+  narrows it to **one long-running writer** and specifies the locking discipline
+  the command writers need (§13).*
 - **The schema had nowhere to put the object `GET /snapshot` serves.** §6.3.1
   said the envelope is stored; `publication` held only metadata. §7 adds
   `published_envelope` with a one-active-row index, and rotation drops it in the
@@ -643,10 +645,25 @@ lost browser tab is not a stranded slot.** *(Rev 16, from review, and **measured
 on this account** rather than read from the docs alone.)* Plaid's
 `/link/token/get` returns a `link_sessions` array whose
 `results.item_add_results[].public_token` is the token for a completed session.
-The design's own `link_token` is the key to that call, and the VPS minted it and
-still holds it — so the token can be fetched **without an inbound route, a
-webhook, or a human copying anything.** Three bounds come with it, and all three
-are real constraints rather than caveats:
+The design's own `link_token` is the key to that call — so the token can be
+fetched **without an inbound route, a webhook, or a human copying anything.**
+
+> **The `link_token` must therefore be durable before the URL is opened, and
+> saying "the VPS still holds it" is not enough.** If it lived only in the memory
+> of the SSH command that minted it, then *the very failure F7 exists to survive*
+> — something goes wrong between Link succeeding and the token being exchanged —
+> would also destroy the means of recovery, and this fact would be a guarantee
+> that evaporates in exactly the case it is claimed for. So: `link.sh` writes the
+> `link_token` and its `archive_id`-style flow id **durably on the VPS before it
+> prints the URL**, and deletes it after a successful exchange. It is a
+> short-lived credential that can retrieve a `public_token`, so it lives under
+> `/etc/networth/` with the other secrets (§15), never in a log, and never as a
+> command-line argument. A flow interrupted at any point is resumable with
+> `link.sh --resume`, which is what makes the six-hour window usable by a person
+> rather than only by an uninterrupted script.
+
+Three bounds come with it, and all three are real constraints rather than
+caveats:
 
 - **Session data is retained for six hours after the session ends.** That is the
   whole recovery window; after it, the Item is genuinely stranded.
@@ -2884,6 +2901,22 @@ run the drill on a machine with no network path to the VPS at all.** If it
 passes, the evidence is genuinely self-contained. If it needs the VPS, this
 section has not been implemented, whatever the code says.
 
+**Which forces a split inside the drill, because criterion 3 also has it report
+`last_verified_restore_at` back to the VPS** — and a drill that must reach the
+VPS to finish is precisely what this subsection forbids:
+
+| Phase | Needs the VPS? | If the VPS is unreachable |
+|---|---|---|
+| **Verify** — decrypt, restore, check the manifest, reconcile tokens, replay the `seq` check (§9.3a) | **no, and this is the requirement** | proceeds and produces a verdict |
+| **Report** — `record-drill` over SSH into `backup_state` | yes | **the verdict is kept locally and re-sent on the next run**, exactly like `record-pull`'s retry-when-`NULL` rule |
+
+**The verdict is the drill's output; the report is bookkeeping.** A failure to
+report leaves `last_verified_restore_at` older than reality, which under-reports
+— the correct direction, the same one `pulled_verified_at` already fails in. What
+must never happen is the inverse: a drill that treats "could not reach the VPS"
+as a *drill* failure would go red every time the laptop is offline, and an alarm
+that cries wolf on a sleeping laptop is an alarm the owner learns to ignore.
+
 **Gate:** all three must hold before task 08 links the first Production Item. A
 hard dependency in the task graph, not a recommendation — the window in which a
 host failure costs permanent slots opens the moment task 08 runs, which is why
@@ -3004,15 +3037,25 @@ structurally incapable of succeeding. So:
 restrict,command="/usr/local/lib/networth/backup-ssh-dispatch" ssh-ed25519 AAAA…
 ```
 
-The dispatcher reads **`SSH_ORIGINAL_COMMAND`** and allow-lists exactly three
+The dispatcher reads **`SSH_ORIGINAL_COMMAND`** and allow-lists exactly four
 verbs, with no arguments passed through as a shell string:
 
 | `SSH_ORIGINAL_COMMAND` | Dispatches to | Writes? |
 |---|---|---|
-| `serve-archive` | streams the current archive to stdout | no |
+| `build-archive <current\|probe>` | builds an archive now. `current` is the real one; `probe` is `link.sh`'s canary, built to a **distinct path** and, per §14a, **never writing a `backup_archive` row** | a file; a row for `current` only |
+| `serve-archive <current\|probe>` | streams that archive to stdout | no |
 | `record-pull <archive_id> <verdict> <full-tailnet-name>` | `networth backup record-pull`, arguments **parsed and validated**, `archive_id` matched against an existing row | one row, `backup_archive` only |
 | `record-drill <archive_id> <verdict>` | `networth backup record-drill` — the weekly restore drill runs on the Mac (§14a.1 criterion 3) and its result has to reach the VPS, where `doctor` reads it | `backup_state` only, singleton |
 | anything else, or unset | **exit non-zero, log, do nothing** | no |
+
+**Why `build-archive` is on this key at all**, since it is the one verb that makes
+the VPS do work on request: `link.sh`'s canary must prove **the path the
+unattended puller actually uses** — same key, same dispatcher, same transport —
+or it proves something else and the pre-Link gate is theatre (§14a.1). Running
+the canary over the interactive key would test a route that no backup ever takes.
+The residual is named: a compromised laptop can make the VPS build archives on
+demand. That is a nuisance, bounded by the work of one `VACUUM INTO`, and it buys
+a canary that tests the real thing.
 
 Four properties that make this a boundary rather than a formality, and the last
 two are where an allow-list of this shape usually goes wrong:
@@ -3516,10 +3559,20 @@ the ordering is the whole point — §14a.1)
    copy a real recovery would reach for — and checks that **every `item` row
    resolves to a token in the same archive**, not just that the row counts look
    right.
+4a. **Then run it once with the VPS unreachable** — turn Tailscale off on this
+   Mac, or unplug the network — and see it still pass. *(Rev 16.)* That is not a
+   nice-to-have: until rev 16 the drill compared the archive against a row in the
+   database **on the VPS**, so it would have passed every rehearsal and failed
+   the one situation it exists for. If it needs the VPS, it is not a backup test.
+   It will report that it could not send its result; that is expected, and the
+   result goes up on the next run (§14a.1).
 5. **Do not proceed to Step 2 until it passes.** After the first Production Link,
    losing the tokens does not cost a re-link — a lost `access_token` cannot be
    recovered at all and strands permanent Item slots (**F2**, **F2a**, **F6**,
-   §14a).
+   §14a). *(This is still true after rev 16. **F7** makes a lost `public_token`
+   recoverable for six hours; it does nothing for an `access_token` that was
+   stored and then lost, which is what this backup protects and why the gate
+   stands.)*
 
 **Step 2 — Link each institution** (~2 min each, once per institution)
 1. Run `scripts/link.sh` **on this Mac** — `zelengs-macbook-air-2` (built by
