@@ -31,12 +31,17 @@ between code and data is. So: the repo holds *code and schema only*.
 This is the rule that matters most, because the credentials involved are
 long-lived and grant read access to real financial accounts.
 
-- Plaid `access_token`s, the Plaid `client_id`/`secret`, the transport
-  credentials, the payload encryption key, the backup key, the Android keystore
-  and the quotes key live in `~/agents/secrets/` — **never** in git, never in a
-  PR, never in a PR comment, never echoed into a log or a test fixture.
-- **Nothing secret is ever compiled into the app.** The phone receives its key
-  and read token by runtime pairing and stores them in the platform keystore
+- Plaid `access_token`s, the Plaid `client_id`/`secret`, the payload encryption
+  key, the backup key and the quotes key live in the **service user's secrets
+  directory on the sync host**; the SSH key to that host and the Android keystore
+  live in `~/agents/secrets/` on the Mac (`DESIGN.md` §15). **Never** in git,
+  never in a PR, never in a PR comment, never echoed into a log or a test
+  fixture.
+- **No agent ever asks the owner for a password** — for the sync host or
+  anything else. Agents authenticate with their own key, which the owner installs
+  himself.
+- **Nothing secret is ever compiled into the app.** The phone receives its
+  payload key by runtime pairing and stores it in the platform keystore
   (`DESIGN.md` §6.3). No `--dart-define` of a credential, no key in a Dart
   constant — a shipped APK must never be worth stealing.
 - The database stores a *reference* to a secret (a key name), never the secret.
@@ -114,7 +119,7 @@ original failure mode, one layer down.
   UI-specific or transport-specific; the first consumer is a CLI, the second is
   a published payload. Depend on the interfaces described in `DESIGN.md`, not on
   concrete implementations across layers.
-- The Mac and the phone share **one contract: the payload schema**, versioned
+- The daemon and the phone share **one contract: the payload schema**, versioned
   explicitly. Changing it means bumping `schema_version`; an older app must
   refuse to render a newer payload rather than misread it.
 - **Bump `pubspec.yaml` before every APK handed to the owner** — a feature batch
