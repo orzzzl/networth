@@ -31,11 +31,13 @@ between code and data is. So: the repo holds *code and schema only*.
 This is the rule that matters most, because the credentials involved are
 long-lived and grant read access to real financial accounts.
 
-- **Every runtime secret lives in `/etc/networth/` on the sync host** — Plaid
-  `access_token`s, the Plaid `client_id`/`secret` (Production *and* Sandbox, in
-  separate files), the payload key, the backup key and the quotes key
+- **Every *daemon* runtime secret lives in `/etc/networth/` on the sync host** —
+  Plaid `access_token`s, the Plaid `client_id`/`secret` (Production *and*
+  Sandbox, in separate files), the payload key, the backup key and the quotes key
   (`DESIGN.md` §15). **Never** in git, never in a PR, never in a PR comment,
-  never echoed into a log or a test fixture.
+  never echoed into a log or a test fixture. *(Rev 16 inserted "daemon": the
+  unqualified version said "every" and was contradicted by the very next bullet,
+  which names a runtime secret that lives on the Mac.)*
 - **`~/agents/secrets/` is `zelengs-macbook-air-2`'s directory**, holding what
   that machine needs: the two SSH keys to the host, its copy of the backup key
   (the puller and the restore drill decrypt with it), and the Android keystore.
