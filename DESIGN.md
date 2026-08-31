@@ -3,6 +3,33 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 13 — **not review-driven. A correction the owner had to make to this
+project's own reporting**, which is worth recording as such rather than folding
+in quietly.
+
+- **The Mac is not on the tailnet, and was never on it.** A status summary from
+  this project said it was done. It was not: this Mac has no Tailscale installed
+  at all. §19 step 1b is now marked **an open owner action** rather than
+  satisfied. Nothing else waits on it, but **O8's destination does not exist
+  until it happens**, so task 03a cannot pass and 03a gates the first Production
+  Link.
+- **The trap that caused it is recorded, because it is this project's own thesis
+  turned on itself.** `tailscale status` run *from the VPS* lists two entries for
+  this Mac — both **stale registrations from previous installs**, both offline —
+  and one's "last seen" was misread as a fresh join. **A registry that keeps
+  serving an entry after the thing it describes is gone, read as current because
+  it was there**, is precisely the failure this product exists to prevent. The
+  check is now specified as positive and *local*: this machine has a `100.x`
+  address and says so itself.
+- **The backup is opportunistic and no revision may imply otherwise.** The Mac
+  sleeps, so it runs when the Mac is awake. That is sufficient — the purpose is
+  that the token set is **not single-copy**, not that it is continuously
+  mirrored. And the project's own discipline applies to its own backup: the
+  system reports **when the last successful backup actually happened**, read from
+  a record of a completed transfer, never inferred from the schedule having
+  fired. An unreachable Mac means the backup **did not happen** and is recorded
+  as such (§13, §14a.1).
+
 Revision 12 — **not review-driven, and it found a defect in rev 11.** The owner
 installed the Plaid credential on the VPS and it was verified live. Folded into
 the same round again; Codex had still not claimed the review.
@@ -434,14 +461,16 @@ is a machine with no screen.
    │    SQLite: full history, append-only                            │
    │    Snapshot server: GET /snapshot, bound to the TAILNET only    │
    └───────┬──────────────────────────────────────────┬───────────────┘
-           │ tailnet (WireGuard)                      │  nightly rsync
-           │ + payload encrypted anyway (§6.1)        │  over the tailnet
-   ┌───────▼──────────────────────────────────────┐   │   (§14a — the
-   │  Flutter app: fetch → decrypt → cache →      │   │    tokens, not
-   │  display, secrets from one-time pairing      │   │    the curve)
-   │  shows BOTH staleness dimensions (§9)        │   ▼
-   │  AND is the only place alerts appear (§11)   │  the Mac: backup target
-   └──────────────────────────────────────────────┘  + where Link is run once
+           │ tailnet (WireGuard)                      │  rsync when the
+           │ + payload encrypted anyway (§6.1)        │  Mac is awake —
+   ┌───────▼──────────────────────────────────────┐   │  OPPORTUNISTIC,
+   │  Flutter app: fetch → decrypt → cache →      │   │  not guaranteed
+   │  display, secrets from one-time pairing      │   │  (§14a — the
+   │  shows BOTH staleness dimensions (§9)        │   │  tokens, not
+   │  AND is the only place alerts appear (§11)   │   │  the curve)
+   └──────────────────────────────────────────────┘   ▼
+                                                     the Mac: backup target
+                                                     + Link runs in its browser
 ```
 
 The VPS keeps every credential and the full history. The phone is a
@@ -1665,7 +1694,7 @@ The timer fires every 5 minutes and the worker asks the database what is due:
 | full sync | **either** no successful full sync since the most recent market close + 1h, **or** >20h since the last successful full sync — whichever comes first (see below) |
 | quote refresh | any `MANUAL_QTY_LIVE_PRICE` price older than the last close |
 | publish | a snapshot exists newer than the last successful `publication` (§6.4) |
-| backup | >24h since the last verified backup — §14a |
+| backup | >24h since the last verified backup **and the Mac is reachable** — §14a. **This is a due-ness predicate, not a promise.** The Mac sleeps, so the backup is opportunistic by construction; an unreachable destination means the job did not run, and it is recorded as not having run |
 
 *(No webhook-drain row: events are verified and stored by the receiver as they
 arrive, §8.4. And no pre-write compare or read-back around the publish, §9.3.)*
@@ -1842,10 +1871,22 @@ Three acceptance criteria, all owner-controlled and all free:
    a success because the schedule ran. *(A check that passes when it cannot see
    is worse than no check: it reports a green gate.)*
 
-   The nightly window matters and is a known limitation rather than a bug: the
-   Mac is not always on, so backups land when it is. `doctor` and the app both
-   surface **days since the last verified backup**, because that number silently
-   growing is exactly how the token set gets lost.
+   **The backup is opportunistic, and this document must never imply otherwise.**
+   *(Rev 13, at the owner's explicit instruction after a status report claimed
+   something that was not true.)* The Mac **sleeps**. So the backup runs when the
+   Mac happens to be awake — there is no daily guarantee here and no revision may
+   quietly introduce one. That is sufficient for the purpose, because the purpose
+   is that **the `access_token` set is not single-copy**, not that it is
+   continuously mirrored.
+
+   **And the project's own rule applies to its own backup.** This design exists
+   because a product rendered a number without saying how old it was. A backup
+   subsystem that assumes it ran is the same failure in a different domain — so
+   `doctor` and the app both surface **when the last successful backup actually
+   happened**, as a fact read from a record of a completed transfer, never
+   inferred from the schedule having fired. If that number is old, the owner sees
+   that it is old. **An unreachable Mac means the backup did not happen**, and it
+   is recorded as not having happened.
 
    **But "daily" is the wrong criterion, and running the ordinary timeline
    through this schedule is what exposes it.** Suppose the Mac has been off for
@@ -2212,10 +2253,28 @@ step everything else on the host waits for**)
    this host or any other — that is a standing rule, not a preference for this
    step (§15.1).
 
-**Step 1b — Put the Mac on the tailnet** (~2 min, once)
+**Step 1b — Put the Mac on the tailnet** (~5 min, once) — ⚠️ **NOT DONE. Open
+owner action.**
 
-The phone is already on it. The Mac needs to be, for the backup in step 1c to
-have anywhere to land.
+The phone is already on the tailnet. **This Mac is not, and has no Tailscale
+installed at all.** Until it is, O8's destination does not exist and the backup
+has nowhere to land. Nothing else waits on it — the design PR and the whole
+foundation are unaffected — but task 03a cannot pass, and 03a gates the first
+Production Link (§14a.1).
+
+**A trap that already caused one false status report, recorded so it cannot cause
+a second.** `tailscale status` **run from the VPS shows two entries for this
+Mac** — `zelengs-macbook-air` and `zelengs-macbook-air-1` — which are **stale
+registrations from previous installs**. Both are offline. Reading a device list
+and concluding the Mac is on the tailnet is wrong, and one entry's "last seen"
+timestamp was misread as evidence of a fresh join.
+
+*Worth noticing what that is: **a registry that keeps serving an entry after the
+thing it describes is gone**, read as current because it was there. That is this
+project's founding failure mode wearing different clothes, and it caught this
+project's own status reporting. The check is therefore positive and local — this
+machine has a `100.x` address and `tailscale status` **run here** says it is
+online — never the presence of a name in a list somewhere else.*
 
 **Step 1c — Confirm where backups land** (~5 min, once; **before** Step 2, and
 the ordering is the whole point — §14a.1)
@@ -2238,8 +2297,18 @@ the ordering is the whole point — §14a.1)
    and MFA there** — that page is Plaid's; neither machine sees them.
 3. Paste the returned `public_token` back into the waiting SSH session. The
    script exchanges it, writes the `access_token` via `TokenStore` (mode 600),
-   and records the item.
+   records the item, and **immediately backs up** (§14a).
 4. Link the **highest-value institutions first** — slots are permanent (**F2**).
+
+**Before you start step 2, make sure this Mac is awake and on the tailnet**, and
+that is an ordering requirement rather than a convenience. *(Rev 13.)* The
+post-exchange backup is what keeps a brand-new `access_token` from existing in
+exactly one place — but **an exchange cannot be undone.** By the time the backup
+runs, the slot is spent (**F2**), so a failed backup can only shout; it cannot
+roll anything back. `link.sh` therefore **checks the destination is reachable
+before it mints the link token**, and refuses to start rather than failing
+afterwards. The one place this design can convert an irreversible risk into a
+recoverable one is *before* the irreversible step.
 
 **Step 3 — Stand up the daemon on the VPS** (~20 min, once; agents prepare
 everything, the owner runs it)
