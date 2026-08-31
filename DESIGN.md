@@ -3,6 +3,47 @@
 Status: **proposed** (design phase; nothing implemented).
 Author: Claude. Reviewer: Codex.
 
+Revision 15 — **the owner asked whether Plaid webhooks are worth having at all,
+and the answer is no. Two of rev 14's mechanisms are deleted rather than
+reviewed.**
+
+- **v0 polls and does not receive webhooks** (§8.4). This is a **scope
+  reduction**, stated plainly rather than buried: the design gives up
+  `PENDING_DISCONNECT`'s advance warning, which no poll can derive.
+- **What made the case was this design's own delivery chain, not a preference.**
+  An alert travels *inside the payload* (§11) and is seen when the owner opens
+  the app. So the path from "Plaid knows" to "the owner knows" is bounded below
+  by the next publication and above by nothing at all. Webhooks shorten the
+  **first** hop from ≤1h to seconds, on a chain measured in hours to days.
+  **The improvement lands inside the noise**, and no stated invariant moves: I3
+  is already scoped to what `/item/get` proves, and Axis B ages the data
+  honestly whether or not anyone was warned.
+- **What it costs is structural and permanent:** a publicly reachable,
+  unauthenticated write path on the machine holding the Plaid master credential,
+  every `access_token`, the payload key and the full history — for the life of
+  the project, in exchange for a rare, days-scale heads-up. Deleting it means
+  **the VPS exposes no inbound service at all beyond SSH.**
+- **Deleted with it:** the `POST /hook` route, `networth-hook.service` (so §13 is
+  back to two units and **one writer**, and rev 14's WAL-contention rules are
+  moot), the `webhook_event` table, the `WebhookReceiver` seam, the Funnel
+  dependency and its two unverified assumptions, the JWT/`kid`/constant-time
+  verification surface, and task 20's backfill obligation. **Blockers 3 and 4 are
+  void by removal, not by fix** — the same distinction rev 10 had to make.
+- **The owner's premise is corrected in his favour, and it does not change the
+  answer.** A domain is *not* required and there is no recurring cost: Tailscale
+  Funnel would have supplied a domain-form HTTPS URL with a managed certificate
+  for free. Webhooks are being dropped because the benefit is small, not because
+  the bill was large.
+- **One argument could reverse this, and it is named rather than dismissed
+  (§8.4).** If an institution migration that passes its deadline unattended
+  requires a *fresh* Link rather than update mode, then advance warning protects
+  a **permanent Item slot** — the scarcest thing in this project — and the
+  calculus changes completely. **That is unverified**, it is answerable from
+  Plaid's documentation without spending anything, and §8.4 records it as the
+  trigger to revisit.
+- §8.4a is kept as a **costed plan that is deliberately not built**, so re-adding
+  the accelerator is a decision rather than a redesign.
+
 Revision 14 — **Codex's seven blockers against rev 13, plus two owner
 corrections that arrived while the review was being written.** The blockers
 cluster at the seams rev 10's host move created, which is the honest summary:
@@ -38,17 +79,14 @@ it.
 - **The webhook endpoint was specified as a public IPv4 and a nameless reverse
   proxy — neither a deployable HTTPS endpoint nor attached to any Item.** Plaid
   wants a domain-form URL with a valid certificate, and Item webhooks are set by
-  `/link/token/create` or `/item/webhook/update`, not by a dashboard field. §8.4
-  picks one complete path (**Tailscale Funnel**, so there is no certificate to
-  buy or renew and **no public port on the VPS at all**), names its fallback,
-  and makes a **live Sandbox webhook delivery** the acceptance test that decides
-  between them.
+  `/link/token/create` or `/item/webhook/update`, not by a dashboard field. Rev
+  14 answered this with Tailscale Funnel and a live-Sandbox acceptance test;
+  **rev 15 deleted the endpoint instead** (§8.4), and the analysis survives as
+  §8.4a's costed plan.
 - **`networth-serve` was simultaneously the webhook writer and a read-only
-  database process.** Both could not hold. The public receiver is now **its own
-  unit** (`networth-hook.service`), so the isolation §13 asked for as a property
-  is structural, and the snapshot server keeps a genuinely read-only handle.
-  Two writing processes is a real change: §13 states the WAL rules that make it
-  safe instead of repeating "one writer".
+  database process.** Both could not hold. Rev 14 split the receiver into its own
+  unit; **rev 15 removed the receiver**, so §13 is back to two units and the
+  "one writer" claim is true rather than merely repeated.
 - **The schema had nowhere to put the object `GET /snapshot` serves.** §6.3.1
   said the envelope is stored; `publication` held only metadata. §7 adds
   `published_envelope` with a one-active-row index, and rotation drops it in the
@@ -164,8 +202,9 @@ matters, and §6.2 and §9.3 state it where the mechanisms used to be.
   Tailscale exit node), so the daemon moves off the Mac and onto it. Both
   drawbacks the Tailscale option carried through rev 9 were **Mac** drawbacks and
   both are void at once: "the Mac must be awake" (a VPS is), and "Plaid webhooks
-  are impossible" (it has a public IP, so §8.4 gets its accelerator back, and the
-  JWT is verified on the machine that already holds the Plaid secret).
+  are impossible" (it has a public IP). *(Rev 15 note: only the first of those
+  two ever mattered — the design later declined webhooks on their merits, §8.4.
+  The host move stands on the sleep argument alone.)*
 - **The third-party transport branch is deleted, not resolved.** With it go the
   write/read token pair, the publish/read-back cycle, the pre-write compare and
   its `ROLLBACK`/`FOREIGN`/`ABSENT` classifier, the publication outcome state
@@ -294,8 +333,11 @@ its purpose):
   number as though it were the age of the number.
 - **I3.** Every Item error state visible to `/item/get` raises an alert within
   one hour, not at the next time someone happens to look. *(Deliberately
-  narrowed to what polling can prove — advance-warning events that Item state
-  cannot express are handled in §8.4.)*
+  narrowed to what polling can prove. Rev 13 pointed here at a webhook
+  accelerator for advance-warning events that Item state cannot express; **rev 15
+  drops it, and this invariant is unchanged** — it never rested on the webhook,
+  which is precisely why the webhook was droppable. §8.4 states what is given up
+  instead of implying nothing was.)*
 - **I4.** **The two staleness dimensions are never collapsed.** On a phone the
   number can be old for two independent reasons — the *connection* to an
   institution died, or the *phone's copy* of the snapshot is old — and the UI
@@ -567,10 +609,11 @@ is a machine with no screen.
    │  networth-sync.timer  (§13)                                      │
    │    SyncEngine → StalenessMachine → Snapshotter → Publisher       │
    │    PlaidClient (holds client_id/secret + access_tokens)          │
+   │    ItemHealthPoller: /item/get hourly — the only Plaid signal    │
    │    BackupBuilder: writes the encrypted archive to a local dir    │
    │  networth-serve.service   GET /snapshot — TAILNET only, DB r/o   │
-   │  networth-hook.service    POST /hook/… — public via Funnel       │
    │  SQLite (WAL): full history, append-only                        │
+   │  NOTHING is reachable from the public internet (§8.4)           │
    └───────┬────────────────────────────────────────────▲─────────────┘
            │ tailnet (WireGuard)                        │ the Mac PULLS,
            │ + payload encrypted anyway (§6.1)          │ whenever it is
@@ -617,7 +660,7 @@ this document's hardest section.)*
 | Was a problem | Now |
 |---|---|
 | The Mac sleeps, so a daily guarantee needed a third-party transport that serves while it is asleep | The VPS is always awake. The phone fetches straight from it |
-| Plaid webhooks need a public endpoint the Mac does not have | The VPS can have one. Plaid POSTs directly and the JWT is verified on the machine that already holds the Plaid secret — over Funnel rather than the public IPv4 rev 10 assumed, so it costs no certificate and no open port (§8.4a) |
+| Plaid webhooks need a public endpoint the Mac does not have | The VPS could have one — but **rev 15 dropped webhooks entirely** (§8.4), so this row records a benefit the design chose not to take. The other row above is the one that carried the host move |
 | A third party stored the payload — bounded retention, provider restores, a control plane, two credential tiers, a whole rollback-detection apparatus | **No third party at all.** The daemon serves its own SQLite over the tailnet |
 | **New:** co-location risk | The VPS is also the owner's VPN exit node, and now also holds the Plaid master credential. **The owner was told and accepted it** (§15) |
 
@@ -636,14 +679,10 @@ Seams (interfaces the rest of the code depends on, never concrete classes):
   back. *(Rev 10 deleted the upload, the read-back, the pre-write compare and
   their audit states along with the third party they existed to police. The seam
   survives so a future transport is a swap rather than a rewrite.)*
-- `WebhookReceiver` — the public endpoint Plaid POSTs to; **verifies Plaid's JWT
-  locally** and converts events to item state changes (§8.4). It runs in **its
-  own process** (`networth-hook.service`), which is the one structural
-  consequence of it being the only route on this host an unauthenticated
-  stranger can reach. Advisory *for the number* — a dropped event can never make
-  the total wrong, because the poll floor is what I3 rests on. It is **not**
-  redundant with polling: `PENDING_DISCONNECT`'s `reason` and `disconnect_time`
-  are advance warning no poll can derive.
+- *(No `WebhookReceiver`. Rev 15 dropped it with the route — §8.4. The seam is
+  not kept "for later" either: an interface with no implementation is the
+  speculative generality §2 rules out, and §8.4a already holds everything a
+  future implementation would need.)*
 - `Notifier` — alert delivery. On a headless host that means **into the payload**
   and nowhere else (§11).
 - `BackupBuilder` — produces the encrypted archive of a **consistent** database
@@ -787,8 +826,9 @@ against nothing the host's own compromise does not already give away.
 
 **O5 is answered: Tailscale, with the daemon on the owner's VPS.** The phone
 fetches `GET /snapshot` from a server bound to the VPS's **tailnet interface**;
-nothing about this system is reachable from the public internet except the
-webhook endpoint Plaid needs (§8.4). This section keeps the comparison that led
+**nothing about this system is reachable from the public internet at all** — rev
+13 carved out an exception for the webhook endpoint and rev 15 removed the
+exception with the endpoint (§8.4). This section keeps the comparison that led
 here, because the criterion it produced is the reusable part.
 
 **The criterion: what does the transport *retain*?** *(From review, which
@@ -818,11 +858,11 @@ option carried through rev 9 was a *Mac* drawback:
 
 - "the Mac must be awake" — the VPS is always awake;
 - "Plaid webhooks become impossible, because there is no public endpoint" — the
-  VPS can publish one, so §8.4 gets its accelerator back, verified on the machine
-  that already holds the Plaid secret. *(Rev 14: the endpoint is Funnel, not the
-  public IPv4 — "has a routable address" was never the same thing as "has a
-  domain-form HTTPS URL with a valid certificate", and rev 10 spent that
-  difference without noticing, §8.4a.)*
+  VPS *could* publish one. *(Rev 14 found that a routable address was never the
+  same thing as a domain-form HTTPS URL with a valid certificate, and specified
+  Funnel. **Rev 15 then declined the capability altogether** — §8.4 — so this
+  drawback of the Mac turns out not to have mattered either way. Recorded because
+  it was one of the two reasons the host moved, and only the other one held.)*
 
 With the third party gone, so is everything that existed to police it: the write
 token and read token pair, the publish/read-back cycle, the pre-write compare and
@@ -1109,21 +1149,11 @@ CREATE UNIQUE INDEX one_active_envelope            -- at most one servable envel
                                                    --   answers, and a partial unique index makes
                                                    --   the second one unwritable
 
-webhook_event(                                     -- §8.4; advisory input, never a dependency
-  id,
-  received_at,                                     -- this host's clock when the HTTPS request
-                                                   --   arrived — and, because the receiver
-                                                   --   verifies inline, also when `iat` is
-                                                   --   checked. Rev 9 needed a separate drain
-                                                   --   time; there is no queue now (§8.4)
-  processed_at,
-  verified,                                        -- Plaid JWT checked HERE: this host already
-                                                   --   holds client_id/secret
-  body_sha256, jwt_iat,                            -- UNIQUE(body_sha256, jwt_iat) — Plaid
-                                                   --   retries, so duplicates are normal
-  webhook_type, webhook_code, plaid_item_id,
-  reason, disconnect_time,                         -- PENDING_DISCONNECT carries both
-  raw_ref)
+-- No `webhook_event` table. Rev 15 dropped the receiver (§8.4), and an empty
+--   table with no writer is dead schema, not a reservation: §2 rules out
+--   scaffolding for capabilities this version does not build. If webhooks are
+--   ever adopted, §8.4a carries the shape and this is a migration, not a
+--   redesign.
 
 backup_archive(                                    -- §14a. Two clocks again, and for the same
                                                    --   reason as everywhere else: "an archive
@@ -1342,7 +1372,7 @@ owner's threshold).
                       │  successful call   └────────────┘
                       │
    ITEM_LOGIN_REQUIRED / PENDING_EXPIRATION ┌─────────────┐
-   / PENDING_DISCONNECT / consent expired   │ NEEDS_REAUTH│ OWNER ACTION,
+   / consent expired                        │ NEEDS_REAUTH│ OWNER ACTION,
                       ├─────────────────────►             │ alert immediately
                       │◄────────────────────┤             │
                       │ Link *update mode*  └─────────────┘
@@ -1357,6 +1387,16 @@ Rules:
 
 - **`STALE` is not on this axis.** Data age is Axis B (§8.1) and is computed from
   source clocks, per account. An Item is not "stale"; its *data* is.
+- **`PENDING_DISCONNECT` is not a transition on this diagram, and rev 15 removed
+  it from one.** It was listed as an entry into `NEEDS_REAUTH` through rev 14,
+  which contradicted §8.4's own argument two sections later: an Item scheduled
+  for migration is **not in an error state**, which is exactly why `/item/get`
+  cannot see it and why the webhook was the only way to learn of it. Listing it
+  as a poll-driven transition would have had the implementation looking for a
+  condition that never appears — and, worse, would have made the design read as
+  though dropping webhooks cost nothing. It costs this transition. The Item
+  arrives at `NEEDS_REAUTH` or `REVOKED` later, by the door it actually uses:
+  the error that surfaces once the disconnect happens.
 - `DEGRADED` is **not** owner-actionable and must not alert like `NEEDS_REAUTH`.
   Confusing "the internet was down" with "your connection is dead" is how alert
   fatigue starts. It is still visible in the UI — silently swallowing it would be
@@ -1382,7 +1422,7 @@ the existing `access_token`, re-authenticating the *same* Item. The
 surfaced to the owner as a decision ("this costs one of your N remaining slots"),
 never taken automatically, and it does not end at the new Link — see §8.5.
 
-### 8.4 What polling proves, and what it cannot
+### 8.4 What polling proves, what it cannot, and why v0 stops there
 
 The brief asked for Plaid error webhooks; the first draft replaced them with
 hourly `/item/get` polling and claimed "the same signal". Review disproved the
@@ -1398,155 +1438,147 @@ claim, and it was worth disproving:
   event that lands in `REVOKED`, and it can arrive without a poll ever seeing a
   usable error.
 
-So the honest position is a floor and an accelerator, not an equivalence:
+So the honest position through rev 14 was a floor and an accelerator, not an
+equivalence. **Rev 15 keeps the floor and drops the accelerator.**
 
 **The floor — polling, always on, no infrastructure.** `/item/get` per Item,
 hourly, returns the Item's current `error`. This is what **I3** promises, and I3
 is deliberately worded as *"every Item error state visible to `/item/get`"* —
-what polling can actually prove.
+what polling can actually prove. **In v0 it is the whole mechanism**, and no
+invariant in §1 moves as a result: I3 was already scoped to it, and Axis B (§8.1)
+ages the data honestly whether or not anyone was warned in advance.
 
-**The accelerator — one route on the host that already holds the credential.**
-*(Rewritten in rev 10, and this is the section the host move improved most.)*
-Plaid POSTs to a public HTTPS endpoint on the VPS; the receiver **verifies the
-JWT inline and writes the event straight to the local database** in the same
-request. That is the whole mechanism.
+#### The decision, because it is a scope reduction and not a detail
 
-#### 8.4a The endpoint has to actually exist, and Items have to be told about it
+*(Owner question, 2026-08-30: "webhooks are optional — weigh dropping them
+rather than fixing the two blockers they caused." Rev 14 had just answered those
+two blockers by specifying a Funnel endpoint and splitting the receiver into its
+own unit. Both are deleted here.)*
 
-*(Rev 14, from review. Rev 10 wrote "the VPS has a public IPv4" as though that
-were an HTTPS endpoint, and then leaned on a "rate-limiting reverse proxy" that
-no section, task or runbook step ever specified. Neither half survived contact
-with what Plaid requires: a **domain-form** webhook URL with a **valid
-certificate**, and Item webhooks that are set through the API rather than a
-dashboard field.)*
+**What decided it was this design's own delivery chain.** An alert does not go
+anywhere when it is raised: alerts are in-app only, they travel **inside the
+payload** (§11), and the owner sees one when he opens the app. So the path from
+*Plaid knows* to *the owner knows* has four hops:
 
-**The URL: Tailscale Funnel, and the reason is that it removes work rather than
-adding it.** `tailscale funnel` publishes one path on this node at
-`https://tokyo-exit.<tailnet>.ts.net/hook/<random>` — a real domain, with a
-certificate Tailscale provisions and renews.
+| Hop | Latency |
+|---|---|
+| Plaid knows → we know | **≤ 1h polling, or seconds by webhook** |
+| we know → it is in a payload | next publication (§13) |
+| payload → the phone | next fetch; background execution is explicitly not dependable (task 22) |
+| the phone → the owner | **when he opens the app** — unbounded |
 
-*Two properties of Funnel are load-bearing here and **neither has been verified
-on this tailnet**: that the personal tier permits it (it needs the node
-attribute enabled in the ACL policy), and that Plaid accepts a `.ts.net` URL.
-They are written as the plan, not as facts, and task 28/20 settle them — the
-same discipline §19 step 1b had to learn the hard way. If either fails, the
-fallback below is the answer, not a redesign.*
+**Webhooks improve the first hop only, by under an hour, on a chain whose total
+is measured in hours to days and whose last hop has no bound at all.** The
+improvement lands inside the noise. This is the same reasoning that made the
+receiver "deliberately not on the critical path of anything" in rev 10 — followed
+one step further, to the conclusion that a component off every critical path,
+whose latency gain is swallowed downstream, is a component this version does not
+need.
 
-What Funnel buys, listed because each item was otherwise an unowned task:
+**What is genuinely given up, stated as a loss and not minimised:** advance
+warning of a scheduled disconnect. Polling cannot derive it — an Item heading for
+`INSTITUTION_MIGRATION` is **not** in an error state yet, so `/item/get` shows
+nothing. Without it, a migration is detected when it breaks: the Item errors,
+polling catches it within the hour, the alert reaches the phone at the next
+publication, and the owner re-links in update mode (no slot). The cost is **a few
+days of one account being visibly stale on a rare event** — not a wrong number,
+not a broken invariant, and not silence, because Axis B keeps ageing that account
+in plain sight.
 
-- **No domain to buy** — a registration is a recurring bill, and §4 does not
-  permit one.
-- **No certificate lifecycle at all.** No ACME client, no renewal timer, no
-  expiry alert, and no 90-day clock that eventually fires on a project nobody is
-  actively watching.
-- **No reverse proxy, and no *new* public port.** The firewall keeps exactly
-  **one** public opening — SSH, which was already open — instead of the two rev
-  13 specified. Ingress arrives through `tailscaled`'s existing outbound
-  connection, so `POST /hook/<random>` is reachable from Plaid while the port
-  serving it is not reachable from a port scan.
-- Rate limiting therefore lives **in the receiver process**, not in a proxy: a
-  fixed body-size cap enforced before parsing and a token bucket per source. Say
-  it here because the deleted proxy was doing this job on paper.
+**What keeping it would have cost**, now that the price is known precisely:
 
-**The fallback, named so the choice is falsifiable:** if Plaid rejects a
-`.ts.net` URL, or Funnel is unavailable on the owner's tailnet, the endpoint
-becomes `nginx` on the VPS's public IPv4 with a Let's Encrypt certificate over a
-free wildcard-DNS name (`<ip-with-dashes>.sslip.io`), which costs a second public
-port, an ACME renewal timer and an expiry check. That is strictly more
-operational surface, which is why it is second.
+- **A permanently internet-reachable, unauthenticated write path on the machine
+  holding the Plaid master credential, every `access_token`, the payload key and
+  the entire history.** That is the whole cost, and Funnel does not reduce it —
+  Funnel is *how* the route becomes publicly reachable. Dropping it means **the
+  VPS exposes no inbound service at all beyond SSH.**
+- A verification surface that is silent when wrong: constant-time comparison over
+  raw bytes, a `kid` cache, the `iat` window, size caps, in-process rate
+  limiting, a catch-all boundary, a second writing process and the WAL contention
+  that comes with it. None of it is exercised by the number being right, so a
+  defect there is invisible until it matters.
+- Two unverified dependencies (Funnel on the personal tier; Plaid accepting a
+  `.ts.net` URL), a live-Sandbox delivery test, and a standing obligation to run
+  `/item/webhook/update` for every Item that predates the endpoint.
 
-**Neither option is asserted to work: task 20 proves it with a live Sandbox
-webhook.** The acceptance criterion is a real `SANDBOX_PRODUCT_TRANSITION` (or a
-`/sandbox/item/fire_webhook` call) arriving at the route, verifying, and landing
-a `webhook_event` row. Until that has happened, the endpoint is a plan.
+**And the owner's premise is corrected in his favour without changing the
+answer.** He asked that a free, durable route be named rather than assumed, and
+warned against quietly introducing a recurring cost. There is one: **Tailscale
+Funnel** supplies a domain-form HTTPS URL with a certificate it provisions and
+renews, on the personal tier, with no domain to buy and no new open port. So this
+is **not** a decision forced by §4 — webhooks are affordable. They are dropped
+because what they buy is small, which is a better reason and a more durable one.
 
-**And the second acceptance criterion is what Funnel must *not* expose.** Funnel
-publishes a port, so pointing it at the wrong process would put `GET /snapshot`
-on the public internet — the same "silently publishes a private endpoint" mistake
-§13 and §15.1 already guard against at the bind address, arriving through a new
-door that those guards do not watch. Funnel targets `networth-hook`'s port only,
-and the test asserts that **`https://…ts.net/snapshot` returns nothing** while
-the tailnet address still serves it.
+#### The one argument that would reverse this, named rather than dismissed
 
-**Wiring an Item to the URL — the part rev 13 had wrong twice.** The dashboard
-webhook field is not the mechanism for Item-based products; Item webhooks are set
-by the **`webhook` field of `/link/token/create`**, and changed afterwards with
-**`/item/webhook/update`**. So:
+If an `INSTITUTION_MIGRATION` whose `disconnect_time` passes unattended leaves an
+Item that **update mode cannot recover** — requiring a fresh Link — then advance
+warning is not buying latency at all. It is protecting a **permanent Item slot**
+(**F2**), which is the scarcest resource in this project, and against that the
+public-route cost is obviously worth paying.
 
-1. The webhook URL is **configuration** (`/etc/networth/networth.env`). When it
-   is set, `link.sh` includes it in every `/link/token/create`, and every Item
-   created from then on is wired from birth.
-2. When it is unset — which is the state during Phase 2, because task 08 links
-   institutions long before task 20 exists — Items are created **without** a
-   webhook, deliberately and visibly. `doctor` reports **"N Items with no webhook
-   registered"**, so the gap is a number on a screen rather than an assumption.
-3. **Task 20 backfills.** Landing the endpoint is not complete until every
-   existing Item has been through `/item/webhook/update` and the count above
-   reads zero. That is an acceptance criterion of task 20, not a follow-up.
+**This is unverified.** It is not written as a risk that was weighed and
+discounted, because it was not weighed — it is a fact nobody here has checked.
+Two things follow: it is **answerable from Plaid's documentation or support at
+zero cost and without touching an Item**, and until it is answered this decision
+rests on the assumption that a post-deadline migration is recoverable through
+update mode like any other broken Item. **If that assumption is false, revisit
+this section immediately**; §8.4a exists so that doing so is a decision rather
+than a redesign.
 
-**Linking is deliberately *not* gated on the endpoint**, and this is a choice
-rather than an oversight: the webhook is an accelerator over a poll floor that
-carries **I3** on its own (below). Gating task 08 on task 20 would put the whole
-read layer, payload and pairing chain ahead of the first Link, in exchange for
-advance warning on Items that do not exist yet. The backfill is what makes
-deferring it safe.
+#### 8.4a The plan if the accelerator is ever added — specified, deliberately not built
 
-It is worth being explicit about what disappeared, because it was a third of
-this section and every part of it was a workaround for a host that could not be
-reached from the internet: a receive route at a third party, a queue to hold
-events until the Mac woke up, a drain loop, an ack protocol, at-least-once
-semantics with an idempotent consumer, a `drain stalled` alert for when the loop
-broke, a TTL racing the drain, and a rule about which of two clocks the
-five-minute check should use. **The receiver is now the verifier is now the
-consumer** — one process, one hop, no queue between them.
+*(Rev 14 worked this out in full while answering two review blockers, and rev 15
+keeps the conclusions rather than the machinery. It is documentation, not dead
+code: no route, no table, no seam and no unit exist for it. The point is that
+adding webhooks later costs a decision and an implementation, not another round
+of design.)*
 
-Two properties that used to need argument are now structural:
+- **The endpoint would be Tailscale Funnel**, publishing one path on the VPS at
+  `https://<node>.<tailnet>.ts.net/hook/<random>`: a real domain, a certificate
+  Tailscale provisions and renews, and **no new inbound port** — ingress arrives
+  over `tailscaled`'s existing outbound connection. That removes the domain
+  purchase, the ACME client, the renewal timer and the reverse proxy that a
+  public-IPv4 design needs. Rate limiting would live in the receiver process,
+  since there is no proxy. **Both of its load-bearing assumptions are
+  unverified**: that the personal tier permits Funnel, and that Plaid accepts a
+  `.ts.net` URL. Fallback: `nginx` on the public IPv4 with Let's Encrypt over
+  `<ip-with-dashes>.sslip.io`, which costs an open port and a renewal lifecycle.
+- **A public IPv4 is not a public HTTPS endpoint.** Rev 10 wrote it as though it
+  were, and then leaned on a "rate-limiting reverse proxy" that no section, task
+  or runbook step ever specified. Whatever route is chosen, Plaid requires a
+  domain-form URL with a valid certificate.
+- **Item webhooks are set through the API, not the dashboard.** The `webhook`
+  field of `/link/token/create` wires an Item at birth; `/item/webhook/update`
+  fixes one that already exists. The dashboard webhook setting belongs to other
+  product families. Any adoption must therefore **backfill every Item created
+  before the endpoint existed**, and surface the remaining count until it is zero.
+- **The receiver must be its own process.** It cannot share one with the snapshot
+  server, both because a public input would then have a path to killing the route
+  the phone uses — the only channel any alert reaches the owner through (§11) —
+  and because that server holds the database **read-only** while a receiver must
+  write. Rev 13 specified both of one process, which is impossible; that is the
+  defect this bullet exists to prevent recurring.
+- **Correctness details that are easy to get subtly wrong:** verify ES256 against
+  `/webhook_verification_key/get` cached by `kid`; compare `request_body_sha256`
+  in **constant time against the raw received bytes**, because the hash is
+  whitespace-sensitive and a handler that parses and re-serializes before hashing
+  breaks every signature while making healthy traffic look like an attack; check
+  `iat` against receipt time; size-cap and reject before parsing; and make
+  duplicates inert with `UNIQUE(body_sha256, jwt_iat)`, since Plaid retries and
+  a replay inside five minutes is ordinary traffic rather than an attack.
+- **The unguessable path is a nuisance filter, never authorisation.** The JWT is
+  the control, and nothing may treat knowledge of `<random>` as permission.
+- **It would remain advisory.** A dropped event must never change the number,
+  only delay a warning — the poll floor is what I3 rests on, then and now.
 
-- **Plaid's five-minute `iat` rule is checked against the clock that received the
-  request**, because there is only one clock in the path. Rev 9 needed a whole
-  subsection to establish this, since a five-minute drain interval stacked on
-  Plaid's five-minute window would have rejected genuine events intermittently.
-  The stacking is gone.
-- **Verification happens where the credential already is.** Plaid's
-  `/webhook_verification_key/get` needs `client_id` + `secret`; this host holds
-  them for every other call it makes. Rev 9 had to argue against putting them at
-  the third party; there is no second place to put them now.
+**What we accept in v0, restated because it is now the only case:** a migration
+or revocation is detected after the fact, on the next poll, when the Item's error
+surfaces. The number stays honest either way, because the account's data ages
+visibly on Axis B regardless. **A missing webhook can never cause a wrong number,
+only a later warning** — which was rev 10's argument for letting the receiver be
+best-effort, and is rev 15's argument for not having one.
 
-What still has to be built carefully, because it is a public unauthenticated
-route (Plaid cannot present our credential):
-
-- **A forged event** fails JWT verification — the signing key is Plaid's, fetched
-  from `/webhook_verification_key/get` and cached by `kid`. `request_body_sha256`
-  is compared in **constant time**, against the **raw received bytes**: the hash
-  is whitespace-sensitive, so a receiver that parses and re-serializes the JSON
-  before hashing breaks every signature and makes healthy traffic look like an
-  attack.
-- **A replayed genuine event** carries its original `iat` and fails the
-  five-minute check exactly as Plaid intends.
-- **A replay inside five minutes** passes, and is inert: it collides on
-  `UNIQUE(body_sha256, jwt_iat)`. Plaid retries, so this is ordinary traffic,
-  not an attack signature.
-- **Flooding the route** costs CPU and disk, not correctness: the body is
-  size-capped and rejected before parsing, the route is rate-limited **in the
-  receiver process** (§8.4a — there is no proxy to do it), and an unverified
-  event never reaches the state machine. If the route is knocked over entirely
-  the poll floor carries on — **the number stays honest**, which is the property
-  that has to hold. And since rev 14 the receiver is its own unit, so "knocked
-  over" costs the accelerator and nothing else: the phone's route is in a
-  different process (§13).
-- **The path is unguessable and it is not a secret.** `POST /hook/<random>` keeps
-  ordinary internet scanning out of the logs; it is a nuisance filter, and the
-  JWT is the actual control. Nothing anywhere may treat knowledge of the path as
-  authorisation.
-
-**What we accept when the receiver is down or a webhook is lost:** advance warning.
-A migration or revocation is then detected after the fact, on the next poll,
-when the Item's error surfaces — `PENDING_DISCONNECT`'s deadline having already
-passed, or the Item having landed in `REVOKED`. The number stays honest either
-way, because the account's data ages visibly on Axis B regardless. Because the
-floor holds on its own, **a dropped webhook can never cause a wrong number, only
-a later warning** — which is why the receiver is allowed to be best-effort, and
-why it is deliberately *not* on the critical path of anything.
 
 ### 8.5 Replacing an Item: reconcile before contributing
 
@@ -1971,43 +2003,26 @@ sibling project, and **entirely Mac-specific**. A VPS has no battery and never
 sleeps. Recorded here only so nobody reintroduces a workaround for a problem
 this host does not have.)*
 
-**Three units**, all running as a **dedicated unprivileged user** that owns the
-database and nothing else (§15), all **enabled at boot** — "the VPS is always
+**Two units**, both running as a **dedicated unprivileged user** that owns the
+database and nothing else (§15), both **enabled at boot** — "the VPS is always
 awake" is a claim about the *host*, and it buys nothing if a reboot leaves the
 daemon stopped:
 
 | Unit | What it is | Database handle |
 |---|---|---|
-| `networth-sync.service` (+ `.timer`) | the periodic worker: sync, snapshot, publish, build the backup archive | read-write |
+| `networth-sync.service` (+ `.timer`) | the periodic worker: poll, sync, snapshot, publish, build the backup archive | read-write — **the only writer** |
 | `networth-serve.service` | `GET /snapshot`, bound to the **tailnet interface only**, `Restart=always` | **read-only** |
-| `networth-hook.service` | `POST /hook/<random>`, public via Funnel (§8.4a), `Restart=always` | read-write, one table |
 
-**Why three and not two** *(rev 14, from review, and rev 13 was not merely untidy
-here — it was impossible)*. §8.4 had the receiver verifying and writing events
-inline; §13 and task 16 had the same `networth-serve` process opening SQLite
-read-only. Both cannot be true of one process. Two ways out existed and only one
-of them is worth having: withdrawing the read-only guarantee would have made the
-phone's route a writer for no reason, whereas splitting makes the isolation §13
-already demanded as a *property* — "no request to `/hook` can terminate the
-process the phone depends on" — hold **structurally**, since the process the
-phone depends on is now a different process. The public input and the private
-output no longer share a fate, an address space, or a database handle.
+**One writer, and this time it is true.** *(Rev 13 claimed it while §8.4 had a
+webhook receiver writing events inline in the read-only serving process — a
+contradiction review caught, and which rev 14 resolved by adding a third unit.
+Rev 15 removes the receiver entirely (§8.4), so the simplest version is the
+correct one again.)* No `busy_timeout` contention to reason about, no second
+process holding a write lock, and the read-only handle on `networth-serve` is
+what keeps it from ever observing a half-applied rotation (§6.3.1).
 
-**Two writing processes is a real change, so the WAL rules are stated rather than
-assumed.** WAL allows concurrent readers with a writer and serialises writers on
-a single write lock — it does not permit two simultaneous writes, it makes the
-second one wait. Concretely: every connection sets `busy_timeout` (5s) and
-`journal_mode=WAL`; the receiver's write is a **single-row insert in its own
-short transaction** and never opens a transaction across a network read; the sync
-worker's long work happens outside its write transactions. `SQLITE_BUSY` on the
-receiver is logged and returns a 5xx, which is correct behaviour — Plaid retries,
-and a dropped webhook is advisory by construction (§8.4). Rev 13's flat claim of
-"one writer" is retired; it stopped being true the moment the receiver wrote
-anything.
-
-**Three further ordering and isolation details that a straightforward
-implementation gets wrong, all of them consequences of rev 10's host move rather
-than of systemd:**
+**Two ordering and isolation details that a straightforward implementation gets
+wrong, both consequences of rev 10's host move rather than of systemd:**
 
 1. **The tailnet interface does not exist at boot time.** `networth-serve` binds
    the tailnet address (§6.3.1), which `tailscaled` has not yet brought up when
@@ -2017,20 +2032,8 @@ than of systemd:**
    configuration mistake in this design that silently converts a private endpoint
    into a public one, and "the address was not ready yet" is exactly the
    plausible-looking reason someone would add it.
-2. **The webhook receiver cannot take the snapshot server down with it, and
-   since rev 14 that is arithmetic rather than discipline.** They are separate
-   units, so an unhandled exception in a parser reachable from the public
-   internet kills `networth-hook` and `Restart=always` brings it back, while the
-   route the *phone* uses never noticed. This matters because the whole alerting
-   design rests on the phone being able to fetch (§11): a public input with a
-   path to silencing the owner's only channel is not something to defend with a
-   catch-all `except`. The catch-all stays anyway — the property is still
-   **no request to `/hook` may terminate the receiver** — but it is now a second
-   line rather than the only one.
-3. **All three processes share one SQLite file**, `networth-serve` opening it
+2. **Both processes share one SQLite file**, `networth-serve` opening it
    **read-only** — it has no reason to write and every reason not to be able to.
-   The read-only handle is also what keeps the serving process from ever
-   observing a half-applied rotation (§6.3.1).
 
    **"Read-only" here means the open mode, not filesystem permissions, and the
    difference is a deployment trap worth naming.** A WAL reader needs to write
@@ -2038,8 +2041,14 @@ than of systemd:**
    its own unix user with no write access to the database directory does not
    produce a safer service — it produces one that cannot read at all, and the
    failure arrives as an unhelpful `SQLITE_CANTOPEN` at the moment the phone
-   asks. All three units therefore run as the **same** service user, and the
+   asks. Both units therefore run as the **same** service user, and the
    read-only guarantee is enforced by opening `file:…?mode=ro`.
+
+*(There is no third unit and no isolation requirement between a public input and
+the phone's route, because since rev 15 there is no public input. The property
+rev 13 and rev 14 were both trying to secure — "nothing reachable from the
+internet can silence the owner's only channel" — is now satisfied by there being
+nothing reachable from the internet, §8.4.)*
 
 The timer fires every 5 minutes and the worker asks the database what is due:
 
@@ -2051,8 +2060,8 @@ The timer fires every 5 minutes and the worker asks the database what is due:
 | publish | a snapshot exists newer than the last successful `publication` (§6.4) |
 | build archive | >24h since the last archive was **built** — §14a. This job is entirely local: it snapshots the database, packs the token material and encrypts, into a directory on this host. It has no destination and cannot fail for a reason involving another machine |
 
-*(No webhook-drain row: events are verified and stored by the receiver as they
-arrive, §8.4. And no pre-write compare or read-back around the publish, §9.3.)*
+*(No webhook-drain row and no receiver at all: v0 polls and does not receive,
+§8.4. And no pre-write compare or read-back around the publish, §9.3.)*
 
 **There is no "backup" row in that table any more, and its absence is the
 inverted direction showing up in the schedule.** *(Rev 14, owner.)* Through rev
@@ -2511,8 +2520,8 @@ path bug turns into "it worked on my machine" for a file holding access tokens.)
   **encrypt**.
 - `/etc/networth/quotes.env` — the quotes key for `QuoteClient` (§12).
 - `/etc/networth/networth.env` — non-secret runtime config, listed here because
-  it sits beside the secrets: the webhook URL (§8.4a), `balance_mode` (**F5**),
-  and the archive directory.
+  it sits beside the secrets: `balance_mode` (**F5**) and the archive directory.
+  *(No webhook URL — v0 has no endpoint, §8.4.)*
 
 **Environment selection fails closed.** `NETWORTH_ENV` (`sandbox` |
 `production`) is required — there is no default — and it selects the credential
@@ -2601,11 +2610,10 @@ and are part of the deploy task, not aspirations:
   machine and it is recorded rather than worked around. *Hardening that can strand
   the owner is not hardening.*
 - **A firewall that opens exactly one thing to the public internet: SSH.**
-  *(Rev 14 removes the second opening.)* The webhook route reaches the internet
-  through Tailscale Funnel (§8.4a), which arrives over `tailscaled`'s existing
-  outbound connection — so there is no inbound port to open for it and no proxy
-  to harden. The snapshot server binds the **tailnet interface only** and must
-  never be published; a bind-address regression is the one configuration mistake
+  *(Rev 14 removed the second opening by routing the webhook over Funnel; rev 15
+  removed the webhook, so there is now **no public inbound service of any kind**
+  beyond SSH — no port, no Funnel, no proxy, nothing to harden.)* The snapshot
+  server binds the **tailnet interface only** and must never be published; a bind-address regression is the one configuration mistake
   here that quietly turns a private endpoint into a public one, so it is an
   acceptance criterion with a test, not a config comment.
 - **No inbound anything on `zelengs-macbook-air-2`.** Rev 13's push design would
@@ -2614,7 +2622,8 @@ and are part of the deploy task, not aspirations:
   ask for Remote Login to be turned on.
 - **Unattended security upgrades** enabled.
 - **A dedicated unprivileged service user** owning the database and the secrets,
-  so the daemon is not root and a bug in the webhook parser is not a root bug.
+  so the daemon is not root and a bug in a Plaid response parser is not a root
+  bug.
   **`/etc/networth/` is currently root-owned**, because the owner created it. The
   deploy task `chown`s it to the service user and **keeps mode `600`/`700`** —
   and **reports that it did so**. A permission change to a file holding the master
@@ -2692,12 +2701,14 @@ two separate processes** *(rev 14 split them, §13)*:
 | Route | Process | Bound to | Auth | DB | Purpose |
 |---|---|---|---|---|---|
 | `GET /snapshot` | `networth-serve` | **tailnet interface only** | tailnet membership; the payload key is the read credential (§6.3.1) | **read-only** | the phone reads the current envelope |
-| `POST /hook/<random>` | `networth-hook` | Tailscale Funnel (§8.4a); **no public port on the host** | none — Plaid cannot present our credential; the **JWT** is the control (§8.4) | read-write, `webhook_event` only | receive, verify inline, store |
 
-*(Two processes rather than one because rev 13 asked the same process to write
-webhook events and to hold the database read-only. The split is what makes "a
-public input cannot silence the owner's only channel" structural rather than a
-promise about exception handling — §13.)*
+**One route, and nothing else listens.** *(Rev 15.)* Rev 9 had six routes at a
+third party; rev 10 cut them to two in one process; rev 13's two turned out to be
+impossible in one process; rev 14 split them across two units; rev 15 deletes the
+second route with the webhook decision (§8.4). **The end state is that this host
+answers exactly one HTTP request, from exactly one tailnet, and nothing on it is
+reachable from the public internet.** Worth stating as a destination rather than
+a diff, because five revisions of movement is hard to read as a shape.
 
 Four routes disappeared with the Worker, and it is worth naming them so a reader
 of an old review comment can see where they went: `PUT /snapshot` (there is no
@@ -2878,12 +2889,11 @@ records a trap, not because there is work left.
    verbatim: they keep the secret out of shell history and out of `ps` output,
    which are the two places a careful person still leaks it.)*
 5. Register the redirect URI (§16) under *Allowed redirect URIs*. **That is the
-   only dashboard registration this project needs.** *(Rev 14 removes a second
-   one that did not exist as described: the webhook URL is **not** set in the
-   dashboard for Item-based products — it is the `webhook` field of
-   `/link/token/create`, changed later with `/item/webhook/update`, and §8.4a
-   owns it. Telling the owner to look for a dashboard setting that does not apply
-   would have produced either a wrong setting or a support ticket.)*
+   only dashboard registration this project needs.** *(Rev 13 also asked for a
+   webhook URL here. Rev 14 found that setting does not apply to Item-based
+   products at all — the webhook is the `webhook` field of `/link/token/create` —
+   and rev 15 dropped webhooks entirely (§8.4), so there is nothing to register
+   under either reading.)*
 6. **Do not request special access for the equity-comp brokerage.** Rev 9 listed
    this as an optional step; the owner decided against it (§18). The manual path
    (§12) is the plan, it needs no request and no Item, and the request would cost
@@ -3032,8 +3042,8 @@ an account to create, a Worker to deploy, and a login/logout bracket around ever
 device. All of it is gone with the third party it protected.)*
 
 1. **Harden the host** (§15.1), from the provided script: key-only SSH
-   (`PasswordAuthentication no`), a firewall opening **only SSH** (the webhook
-   arrives through Funnel, so there is no second port — §8.4a), unattended
+   (`PasswordAuthentication no`), a firewall opening **only SSH** — v0 has no
+   public inbound service at all (§8.4) — unattended
    security upgrades, and a dedicated unprivileged service user that owns the
    database and the secrets.
 
@@ -3054,19 +3064,19 @@ device. All of it is gone with the third party it protected.)*
       himself. If he declines, that is recorded as his decision on his own
       machine, not worked around. *Hardening that can strand the owner is not
       hardening.*
-2. **Install the three units** (§13): `networth-sync.timer`/`.service`,
-   `networth-serve.service` and `networth-hook.service`. Confirm `networth-serve`
-   is listening on the **tailnet address only** — `ss -ltnp` must not show the
-   snapshot port on `0.0.0.0`. This is the one misconfiguration that silently
-   publishes the endpoint, so it is checked by hand once here and by a test
-   forever after.
+2. **Install the two units** (§13): `networth-sync.timer`/`.service` and
+   `networth-serve.service`. Confirm `networth-serve` is listening on the
+   **tailnet address only** — `ss -ltnp` must not show the snapshot port on
+   `0.0.0.0`. This is the one misconfiguration that silently publishes the
+   endpoint, so it is checked by hand once here and by a test forever after.
 3. **Put the secrets in place** under the service user (§15), mode 600 — both
    `plaid.env` and `plaid-sandbox.env`, since a rehearsal needs its own
    credential and its own database.
-4. **Publish the webhook route with `tailscale funnel`** (§8.4a) and put the
-   resulting `https://…ts.net/hook/<random>` URL in `/etc/networth/networth.env`.
-   Nothing is registered in the Plaid dashboard: Item webhooks travel in the link
-   token, and task 20 backfills the Items that already exist.
+4. **Confirm the host publishes nothing.** `ss -ltnp` shows the snapshot port on
+   the tailnet address and nothing on a public one, and `tailscale funnel status`
+   shows no funnel configured. *(v0 has no webhook endpoint — §8.4. This step
+   exists because "no public service" is a property that decays silently, and the
+   only way to notice is to look.)*
 
 **Step 3a — Pair the phone** (~2 min, once, and again whenever you want to
 rotate)
