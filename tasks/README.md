@@ -68,12 +68,12 @@ that row. He caught it, not us.)
 | 02 | Project scaffold + secret scanner | — | **claude** | codex | **DONE** (#19, 2026-09-01) |
 | 03 | SQLite schema + migration runner | 02 | **codex** | claude | **DONE** (#22, 2026-09-01) |
 | 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **READY** |
-| 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **WIP** (PR #29) |
+| 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **DONE** (#29, 2026-09-01) |
 | 05a | `TokenStore` | 02 | **claude** | codex | **WIP** (PR #21) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | BLOCKED (05a) |
 | 00a | Generate the constrained backup keypair; pin its `command=` | 03a | **codex** | claude | BLOCKED (03a) |
 | 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b | **codex** (the wire and the records) / **owner** (runs §19 step 1c) | claude | BLOCKED (03a, 00b) |
-| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | BLOCKED (05, 05a, 00c) |
+| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | BLOCKED (05a, 00c) |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half) | codex | BLOCKED (06) |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
@@ -244,9 +244,15 @@ other agent must review first converts one quota outage into an outage for both:
 2026-09-01 Codex idled for hours across two Claude quota resets because `04` waited on `03`
 and `03` waited on a Claude review. When sequencing, check that each agent holds at least
 one `READY` task whose dependencies are all merged — and **say so explicitly** if the graph
-makes that impossible, rather than discovering it as idle time. As of 2026-09-01 it is
-satisfied: Codex holds `04` and `28`, Claude holds `05`, and neither needs the other's
-review to start.
+makes that impossible, rather than discovering it as idle time. **As of 2026-09-01, with
+`05` merged, it is no longer satisfied for Claude — saying so here is the point of the
+rule.** Codex holds `04` and `28`, both `READY`. Claude holds nothing `READY`: `05a` is
+with the owner (issue #28), and every other claude row is behind `04` (`26a`, `13`),
+behind `05a`+`00c` (`06`), or further down the chain. **Nothing was reassigned to fix
+this**, because the two `READY` tasks are Codex's own root work rather than tasks queued
+behind a stalled agent, and taking one would leave *him* idle instead. The three things
+that restore it, in the order they would land: `04` merges (frees `26a` and `13`), the
+owner answers `#28` (frees `05a`), the owner installs `00c` (with `05a`, frees `06`).
 
 **Owner-only work stays with the owner.** `00` (done), `00b` (installing the constrained
 backup key, and escrowing it) and `00c` (installing the Sandbox secret) are not assignable
