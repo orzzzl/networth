@@ -548,20 +548,33 @@ class TokenStore:
                 f"record for {secret_ref!r} has an unusable item_id; "
                 f"a non-empty string or null is required"
             )
+
+        # The clock is validated here rather than where it is converted, because
+        # `get` does not convert it. Leaving it to `_to_record` meant a record
+        # `record()` refused was still a credential `get()` handed out — one file
+        # with two verdicts, which is exactly the split "validate the whole shape
+        # once" exists to remove.
+        self._parse_created_at(record, secret_ref)
         return record
 
-    def _to_record(self, record: dict[str, Any], secret_ref: str) -> SecretRecord:
-        kind, flow_id = parse_secret_ref(secret_ref)
+    @staticmethod
+    def _parse_created_at(record: dict[str, Any], secret_ref: str) -> datetime:
         try:
             created_at = datetime.fromisoformat(cast(str, record["created_at"]))
         except ValueError:
             raise CorruptRecord(f"record for {secret_ref!r} has an unreadable created_at") from None
         if created_at.tzinfo is None:
+            # A naive stamp cannot be compared across hosts, and every staleness
+            # figure in this project is computed in UTC (AGENTS.md).
             raise CorruptRecord(f"record for {secret_ref!r} has a created_at with no timezone")
+        return created_at.astimezone(UTC)
+
+    def _to_record(self, record: dict[str, Any], secret_ref: str) -> SecretRecord:
+        kind, flow_id = parse_secret_ref(secret_ref)
         return SecretRecord(
             secret_ref=secret_ref,
             kind=kind,
             flow_id=flow_id,
             item_id=cast("str | None", record.get("item_id")),
-            created_at=created_at.astimezone(UTC),
+            created_at=self._parse_created_at(record, secret_ref),
         )
