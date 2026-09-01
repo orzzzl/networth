@@ -93,8 +93,17 @@ def paths_for(
 class PlaidCredentials:
     """One environment's Plaid credentials, read from its own file.
 
-    ``secret`` is a credential. It is not rendered: the default dataclass repr
-    would print it into any log line or traceback that touched this object.
+    **Both fields are credentials and neither is rendered.** The default
+    dataclass repr would print them into any log line or traceback that touched
+    this object.
+
+    ``client_id`` is redacted too, which the first version of this class got
+    wrong by treating it as an identifier (found in review, round 1). Plaid
+    authenticates a request with the *pair* — `clientId` and `secret` travel
+    together in every call this program makes — so half the pair in a log is
+    half of a working credential, and it is the half that identifies which
+    account the other half unlocks. The environment is not a credential and
+    stays, because it is the field that makes a stray repr diagnosable at all.
     """
 
     client_id: str
@@ -103,7 +112,7 @@ class PlaidCredentials:
 
     def __repr__(self) -> str:
         return (
-            f"PlaidCredentials(client_id={self.client_id!r}, "
+            "PlaidCredentials(client_id=<redacted>, "
             f"secret=<redacted>, environment={self.environment.value!r})"
         )
 
@@ -125,9 +134,15 @@ def selected_environment(env: dict[str, str] | None = None) -> PlaidEnvironment:
     try:
         return PlaidEnvironment(raw)
     except ValueError:
+        # Also not echoed, for the same reason and one more: this value reaches
+        # us from the process environment, where a mis-pasted unit file or an
+        # exported shell variable can put anything at all, and the refusal is
+        # logged. Naming the two acceptable values is the diagnostic that
+        # matters; the operator can read back what he set.
         raise ConfigError(
-            f"{ENV_VAR}={raw!r} is not an environment; expected "
-            f"{PlaidEnvironment.SANDBOX.value!r} or {PlaidEnvironment.PRODUCTION.value!r}"
+            f"{ENV_VAR} is set to something that is not an environment; expected "
+            f"{PlaidEnvironment.SANDBOX.value!r} or {PlaidEnvironment.PRODUCTION.value!r} "
+            f"(the value is not echoed here, because it is logged)"
         ) from None
 
 
@@ -187,11 +202,18 @@ def load_credentials(
     values = _parse_env_file(text, path)
     declared = values.get("PLAID_ENV")
     if declared != environment.value:
-        # The declared value is a closed vocabulary, not a secret, so naming it
-        # is what makes this failure fixable in one step.
+        # The value is NOT echoed. An earlier version did, reasoning that
+        # PLAID_ENV is a closed vocabulary — but the vocabulary is what a
+        # correct file contains, and this branch runs precisely when the file is
+        # not correct. Whatever is on that line is arbitrary text from the file
+        # that also holds the Plaid master credential, and the most likely way
+        # this branch ever fires on a real host is an editing accident in that
+        # file. The path and the expectation are enough to fix it in one step,
+        # and neither is a secret. (Found in review, round 1.)
         raise ConfigError(
-            f"{path} declares PLAID_ENV={declared!r} but {ENV_VAR} selected "
-            f"{environment.value!r}; refusing to start (section 15)"
+            f"{path} declares a PLAID_ENV that is not {environment.value!r}, which is what "
+            f"{ENV_VAR} selected; refusing to start (section 15). The value is not shown "
+            f"here because this file holds the Plaid credential — read the line itself"
         )
 
     missing = [key for key in ("PLAID_CLIENT_ID", "PLAID_SECRET") if not values.get(key)]

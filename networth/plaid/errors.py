@@ -14,6 +14,16 @@ which is the failure this whole product exists to refuse. Unknown codes get a
 so ``doctor`` and the payload can surface them as what they are: something we
 have not seen before.
 
+**Health is proved, never inferred from an absence.** :data:`HEALTHY` has
+exactly one producer — a caller holding a Plaid response that contained an Item
+and no error object at all. No function here returns it, and in particular
+:func:`classify_error` cannot, because it is only ever called when an error
+object *is* present. *(Round 1 of review: this module's entry point returned
+``HEALTHY`` for ``error_code=None`` whatever else it was told, so an
+``error_type`` with no code — and, through the client, a response missing its
+Item entirely — came out healthy. "No code" is not the same fact as "no error",
+and the difference is a dead connection rendering as a live number.)*
+
 **The code table holds only codes this project's own design names.** Plaid's
 catalogue is large and this module cannot verify it from here, so writing it out
 from memory would put unverified claims in the position that decides whether the
@@ -138,13 +148,31 @@ HEALTHY = Classification(
 )
 
 
-def classify(error_code: str | None, error_type: str | None) -> Classification:
-    """Map one Plaid error onto Axis A.
+def malformed_response(detail: str) -> Classification:
+    """Plaid answered, and the answer was not one we can read.
 
-    ``error_code=None`` is a clean response — the *only* input that produces
-    ``HEALTHY``. Nothing else in this module can reach that state, which is the
-    property that keeps an unrecognised failure from rendering as a live
-    connection.
+    A response with no Item, or an Item with no ``error`` field at all, is not
+    evidence of health — it is evidence that something changed underneath us.
+    ``DEGRADED``, and ``recognised=False`` so it surfaces as the anomaly it is
+    rather than sitting quietly in the same bucket as a bank outage.
+    """
+    return Classification(
+        state=ItemState.DEGRADED,
+        recognised=False,
+        error_code=None,
+        error_type=None,
+        detail=f"unreadable Plaid response: {detail}",
+    )
+
+
+def classify_error(error_code: str | None, error_type: str | None) -> Classification:
+    """Map one *present* Plaid error onto Axis A. Never returns ``HEALTHY``.
+
+    Call this only when an error object exists. Both fields may still be
+    ``None`` — an error object that carries neither a code nor a type is
+    something we have never seen, and it is classified as an unrecognised
+    ``DEGRADED`` rather than waved through, because the fact that decides health
+    is the presence of the error object, not the population of its fields.
 
     Neither argument may be an ``error_message``: those can quote request
     content, and this result is written to logs and into the payload
@@ -152,7 +180,23 @@ def classify(error_code: str | None, error_type: str | None) -> Classification:
     not data about the owner's accounts.
     """
     if error_code is None:
-        return HEALTHY
+        provisional = _TYPE_STATES.get(error_type or "", _UNKNOWN_TYPE_STATE)
+        logger.warning(
+            "Plaid error object with no error_code (type %r); treating the Item as %s "
+            "provisionally",
+            error_type,
+            provisional.value,
+        )
+        return Classification(
+            state=provisional,
+            recognised=False,
+            error_code=None,
+            error_type=error_type,
+            detail=(
+                f"error object carrying no code; {provisional.value} is provisional, "
+                f"chosen from error_type {error_type!r}"
+            ),
+        )
 
     if error_code in _NO_TRANSITION_CODES:
         return Classification(

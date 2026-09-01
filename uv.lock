@@ -258,6 +258,7 @@ version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "plaid-python" },
+    { name = "urllib3" },
 ]
 
 [package.dev-dependencies]
@@ -268,7 +269,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "plaid-python", specifier = ">=43.0.0" }]
+requires-dist = [
+    { name = "plaid-python", specifier = ">=43.0.0" },
+    { name = "urllib3", specifier = ">=2.7.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [

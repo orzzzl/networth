@@ -17,12 +17,41 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 import plaid
+import urllib3.exceptions
 from plaid.api import plaid_api
 from plaid.exceptions import ApiException
 from plaid.model.item_get_request import ItemGetRequest
 
 from networth.plaid.environment import PlaidCredentials, PlaidEnvironment
-from networth.plaid.errors import Classification, classify, transport_failure
+from networth.plaid.errors import (
+    HEALTHY,
+    Classification,
+    classify_error,
+    malformed_response,
+    transport_failure,
+)
+
+# The SDK's transport is urllib3 and it passes almost all of it straight
+# through: `plaid/rest.py` catches exactly one urllib3 exception (`SSLError`,
+# which it turns into `ApiException(status=0)`) and lets the rest escape. So a
+# connection reset, a DNS failure or exhausted retries arrives here as a
+# `urllib3.exceptions.HTTPError` — which, despite the name, is not an `OSError`
+# and is not an `ApiException`. Catching `OSError` alone therefore missed the
+# ordinary case of the host being unreachable (found in review, round 1).
+#
+# The base class is deliberate: it is the whole urllib3 family
+# (`MaxRetryError`, `ProtocolError`, `ReadTimeoutError`, `NewConnectionError`,
+# …) and nothing else. `Exception` would also swallow the SDK's `ApiTypeError`
+# and `ApiValueError`, which mean *we* built a bad request — a bug that must
+# crash loudly rather than be reported as "the institution is having trouble".
+# `LocationValueError` is inside this family and is that same kind of bug; it
+# is re-raised explicitly below.
+_TRANSPORT_ERRORS = (urllib3.exceptions.HTTPError, OSError)
+
+# Distinguishes "the attribute is absent" from "the attribute is None". For
+# `item.error` those are opposite facts: absent means the response was not the
+# shape we understand, None means Plaid affirmatively reported no error.
+_MISSING = object()
 
 
 class _ItemGetApi(Protocol):
@@ -50,15 +79,19 @@ class ItemStatus:
 
 
 def _error_fields(error: Any) -> tuple[str | None, str | None]:
-    """``(error_code, error_type)`` out of an SDK error object.
+    """``(error_code, error_type)`` out of an SDK error object that is present.
+
+    Only ever called with a non-``None`` error, because the caller has already
+    decided that an error exists — this function's answer is provenance for a
+    classification, never the evidence for one. Either field coming back
+    ``None`` means the error object did not carry it, which is a fact about the
+    payload and not a reason to call the Item healthy.
 
     The SDK renders enums as objects with a ``value``; ``str()`` on the wrong
     one would produce something that matches no code in the taxonomy and would
     therefore be classified as unrecognised — a silent downgrade of a code we do
     know. Take ``.value`` when it is there.
     """
-    if error is None:
-        return None, None
 
     def field(name: str) -> str | None:
         value = getattr(error, name, None)
@@ -123,7 +156,7 @@ class PlaidClient:
             response = self._api.item_get(request)
         except ApiException as exc:
             code, kind = _api_exception_fields(exc)
-            if code is None:
+            if code is None and kind is None:
                 return ItemStatus(
                     item_id=None,
                     classification=transport_failure(f"HTTP {exc.status} with no Plaid error body"),
@@ -131,22 +164,53 @@ class PlaidClient:
                 )
             return ItemStatus(
                 item_id=None,
-                classification=classify(code, kind),
+                classification=classify_error(code, kind),
                 request_id=None,
             )
-        except OSError as exc:
+        except urllib3.exceptions.LocationValueError:
+            # The one member of the urllib3 family that is a programmer error
+            # rather than an environmental one — it is also a `ValueError`, and
+            # it means the URL *we* built is not a URL. Reported as DEGRADED it
+            # would mark the Item unhealthy forever with a cause nobody can see;
+            # the host is a constant per environment, so this can only ever be
+            # our bug. Re-raised before the broad clause below, which would
+            # otherwise catch it by inheritance.
+            raise
+        except _TRANSPORT_ERRORS as exc:
             return ItemStatus(
                 item_id=None,
                 classification=transport_failure(type(exc).__name__),
                 request_id=None,
             )
 
-        item = getattr(response, "item", None)
-        code, kind = _error_fields(getattr(item, "error", None))
+        request_id = cast("str | None", getattr(response, "request_id", None))
+        item = getattr(response, "item", _MISSING)
+        if item is _MISSING or item is None:
+            return ItemStatus(
+                item_id=None,
+                classification=malformed_response("the response carried no item"),
+                request_id=request_id,
+            )
+
+        item_id = cast("str | None", getattr(item, "item_id", None))
+        error = getattr(item, "error", _MISSING)
+        if error is _MISSING:
+            return ItemStatus(
+                item_id=item_id,
+                classification=malformed_response("the item carried no error field"),
+                request_id=request_id,
+            )
+
+        # The only path to HEALTHY in this program: Plaid answered, the answer
+        # had an Item, and that Item's error field is present and null.
+        if error is None:
+            return ItemStatus(item_id=item_id, classification=HEALTHY, request_id=request_id)
+
+        code, kind = _error_fields(error)
         return ItemStatus(
-            item_id=cast("str | None", getattr(item, "item_id", None)),
-            classification=classify(code, kind),
-            request_id=cast("str | None", getattr(response, "request_id", None)),
+            item_id=item_id,
+            classification=classify_error(code, kind),
+            request_id=request_id,
         )
 
 

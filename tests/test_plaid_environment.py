@@ -134,19 +134,73 @@ def test_no_secret_value_appears_in_any_error(tmp_path: Path) -> None:
     assert secret not in str(raised.value)
 
 
-def test_credentials_repr_does_not_render_the_secret(tmp_path: Path) -> None:
-    """The default dataclass repr would put it in every traceback that touched
-    this object (AGENTS.md rule 1)."""
+def test_credentials_repr_does_not_render_either_half_of_the_credential(tmp_path: Path) -> None:
+    """The default dataclass repr would put them in every traceback that touched
+    this object (AGENTS.md rule 1). Plaid authenticates with the *pair*, so the
+    client id is a credential too — the first version of this repr printed it
+    (found in review, round 1)."""
+    client_id = "synthetic-client-id-value-do-not-print"
     secret = "synthetic-secret-value-do-not-print"
     write_credentials(
         tmp_path,
         "plaid-sandbox.env",
-        f"PLAID_CLIENT_ID=synthetic-client\nPLAID_SECRET={secret}\nPLAID_ENV=sandbox\n",
+        f"PLAID_CLIENT_ID={client_id}\nPLAID_SECRET={secret}\nPLAID_ENV=sandbox\n",
     )
     credentials = load_credentials(PlaidEnvironment.SANDBOX, secrets_dir=tmp_path)
-    assert secret not in repr(credentials)
-    assert secret not in str(credentials)
+    for rendering in (repr(credentials), str(credentials), f"{credentials}"):
+        assert secret not in rendering
+        assert client_id not in rendering
+        assert "sandbox" in rendering
     assert credentials.secret == secret
+    assert credentials.client_id == client_id
+
+
+def test_no_value_from_the_credential_file_appears_in_the_mismatch_error(tmp_path: Path) -> None:
+    """The branch that fires when the file is *wrong* is the last place to
+    assume its contents are a closed vocabulary. Whatever is on that PLAID_ENV
+    line is arbitrary text out of the file that holds the master credential, and
+    this message is logged (found in review, round 1)."""
+    declared = "synthetic-declared-env-value-do-not-print"
+    client_id = "synthetic-client-id-value-do-not-print"
+    secret = "synthetic-secret-value-do-not-print"
+    write_credentials(
+        tmp_path,
+        "plaid-sandbox.env",
+        f"PLAID_CLIENT_ID={client_id}\nPLAID_SECRET={secret}\nPLAID_ENV={declared}\n",
+    )
+    with pytest.raises(ConfigError) as raised:
+        load_credentials(PlaidEnvironment.SANDBOX, secrets_dir=tmp_path)
+    rendered = f"{raised.value!r} {raised.value!s}"
+    for value in (declared, client_id, secret):
+        assert value not in rendered
+    assert "plaid-sandbox.env" in rendered
+    assert "sandbox" in rendered
+
+
+def test_no_credential_value_appears_when_a_required_key_is_empty(tmp_path: Path) -> None:
+    """The other error path that has read the whole file by the time it raises."""
+    secret = "synthetic-secret-value-do-not-print"
+    write_credentials(
+        tmp_path,
+        "plaid-sandbox.env",
+        f"PLAID_CLIENT_ID=\nPLAID_SECRET={secret}\nPLAID_ENV=sandbox\n",
+    )
+    with pytest.raises(ConfigError) as raised:
+        load_credentials(PlaidEnvironment.SANDBOX, secrets_dir=tmp_path)
+    assert secret not in f"{raised.value!r} {raised.value!s}"
+    assert "PLAID_CLIENT_ID" in str(raised.value)
+
+
+def test_the_rejected_networth_env_value_is_not_echoed() -> None:
+    """It arrives from the process environment, where a mis-pasted unit file can
+    put anything at all, and the refusal is logged."""
+    bogus = "synthetic-networth-env-value-do-not-print"
+    with pytest.raises(ConfigError) as raised:
+        selected_environment({"NETWORTH_ENV": bogus})
+    rendered = f"{raised.value!r} {raised.value!s}"
+    assert bogus not in rendered
+    assert "sandbox" in rendered
+    assert "production" in rendered
 
 
 def test_comments_quotes_and_export_are_read_the_way_systemd_reads_them(tmp_path: Path) -> None:

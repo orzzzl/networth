@@ -5,6 +5,7 @@ description = "Personal net-worth aggregator — sync daemon and CLI"
 requires-python = ">=3.12"
 dependencies = [
     "plaid-python>=43.0.0",
+    "urllib3>=2.7.0",
 ]
 
 [project.scripts]

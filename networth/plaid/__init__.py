@@ -10,9 +10,17 @@ from networth.plaid.environment import (
     paths_for,
     selected_environment,
 )
-from networth.plaid.errors import Classification, ItemState, classify, transport_failure
+from networth.plaid.errors import (
+    HEALTHY,
+    Classification,
+    ItemState,
+    classify_error,
+    malformed_response,
+    transport_failure,
+)
 
 __all__ = [
+    "HEALTHY",
     "Classification",
     "ConfigError",
     "ItemState",
@@ -21,8 +29,9 @@ __all__ = [
     "PlaidClient",
     "PlaidCredentials",
     "PlaidEnvironment",
-    "classify",
+    "classify_error",
     "load_credentials",
+    "malformed_response",
     "paths_for",
     "selected_environment",
     "transport_failure",
