@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Blocks a commit that stages credential-shaped text (task 02, AGENTS.md rule 1).
+# Installed by scripts/dev-setup.sh via core.hooksPath — no framework, no deps.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/check-no-secrets.sh" --staged

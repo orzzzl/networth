@@ -33,8 +33,49 @@ number:
 
 ## Status
 
-Design phase. Nothing is implemented yet. See [`DESIGN.md`](DESIGN.md) for the
-architecture and [`tasks/README.md`](tasks/README.md) for the task breakdown.
+Implementation has started, from the scaffold outwards. See [`DESIGN.md`](DESIGN.md)
+for the architecture and [`tasks/README.md`](tasks/README.md) for the task
+breakdown, which says who owns what and what "done" means for each piece.
+
+## Getting set up
+
+One prerequisite — [uv](https://docs.astral.sh/uv/), which installs the Python
+this project targets, so a clean machine needs one tool rather than a Python of
+the right version plus a package manager:
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then, one command:
+
+```sh
+./scripts/dev-setup.sh
+```
+
+That syncs the environment (fetching Python 3.12 if you do not have it),
+installs the git hooks, and checks the secret scanner runs. From there:
+
+| Command | What it does |
+|---|---|
+| `./scripts/check.sh` | everything CI runs, in the order CI runs it |
+| `uv run pytest` | tests |
+| `uv run ruff format` / `uv run ruff check --fix` | format / lint |
+| `uv run mypy` | types |
+| `uv run networth demo` | the CLI |
+
+**`scripts/check-no-secrets.sh` runs as a pre-commit hook and as a CI job**, and
+it has no allowlist and no escape comment on purpose: the repository is public
+and its history is permanent, so the only correct response to a finding is to
+remove the value. Where credentials actually belong is [`DESIGN.md`](DESIGN.md)
+§15.
+
+### Adding a CLI verb
+
+Drop one file in `networth/commands/`. It is discovered — there is no registry
+to edit, which is what keeps concurrent tasks from colliding on a shared file.
+`networth/commands/demo.py` is the worked example and the contract is documented
+in `networth/cli.py`.
 
 ## Constraints that shape everything
 
