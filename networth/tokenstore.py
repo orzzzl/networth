@@ -258,10 +258,10 @@ class TokenStore:
     ) -> str:
         """Write material durably and return its ``secret_ref``.
 
-        Durable when this returns: the record is ``fsync``ed, renamed into place,
-        and the directory itself is ``fsync``ed so the rename survives too. The
-        caller commits the ``item`` row **after** this call (§14a ordering) — that
-        way a crash in between leaves an orphan, never a stranded slot.
+        Durable when this returns: the record is ``fsync``ed, published under its
+        final name, and the directory is ``fsync``ed so that name survives too.
+        The caller commits the ``item`` row **after** this call (§14a ordering) —
+        that way a crash in between leaves an orphan, never a stranded slot.
 
         Refuses to overwrite, and refuses *atomically*. An exchange writes once,
         and a worker that has crashed mid-flow is required to :meth:`reconcile`
