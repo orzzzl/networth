@@ -50,7 +50,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 02 | Project scaffold + secret scanner | — | **claude** | codex | **READY** |
+| 02 | Project scaffold + secret scanner | — | **claude** | codex | **WIP** (PR #19) |
 | 03 | SQLite schema + migration runner | 02 | **codex** | claude | BLOCKED (02) |
 | 04 | Domain model + `Store` repositories | 03 | **codex** | claude | BLOCKED (03) |
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | BLOCKED (02) |

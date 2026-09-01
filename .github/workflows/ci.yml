@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The secret scanner reads `git ls-files`, so it needs the tree, not
+          # a shallow slice of it. (History depth is irrelevant: this job checks
+          # what the PR *contains*, and a secret already in history is a
+          # different, unrecoverable problem — AGENTS.md rule 0.)
+          fetch-depth: 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python and dependencies
+        run: uv sync --locked
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Types
+        run: uv run mypy
+
+      - name: Tests
+        run: uv run pytest
+
+      # Last, and as its own step, so a failure here is unmistakable in the run
+      # list rather than buried in a combined "checks" log.
+      - name: No secrets
+        run: ./scripts/check-no-secrets.sh
