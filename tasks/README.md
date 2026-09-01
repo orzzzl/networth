@@ -51,7 +51,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 02 | Project scaffold + secret scanner | — | **claude** | codex | **DONE** (#19, 2026-09-01) |
-| 03 | SQLite schema + migration runner | 02 | **codex** | claude | **READY** |
+| 03 | SQLite schema + migration runner | 02 | **codex** | claude | **WIP** (PR #22) |
 | 04 | Domain model + `Store` repositories | 03 | **codex** | claude | BLOCKED (03) |
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **READY** |
 | 05a | `TokenStore` | 02 | **claude** | codex | **READY** |
