@@ -9,9 +9,12 @@ failure message.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
+import subprocess
+import sys
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -28,12 +31,20 @@ from networth.tokenstore import (
     SecretRefExists,
     TokenStore,
     UnknownSecretRef,
+    new_flow_id,
     parse_secret_ref,
     secret_ref_for,
 )
 
-FLOW = "flow0123456789"
+# Minted flow ids, fixed here so a failure names the same file every run.
+FLOW = "1f0c9a2b3d4e5f60718293a4b5c6d7e8"
+OTHER_FLOW = "9a8b7c6d5e4f30211203a4b5c6d7e8f9"
 ITEM = "item-synthetic-0001"
+
+
+def pending_name(ref: str) -> str:
+    """The name `put` builds a record under, before it is published."""
+    return f".{ref}.pending"
 
 
 def synthetic_material(seed: str) -> str:
@@ -127,7 +138,7 @@ def test_reconcile_is_none_when_nothing_was_written(store: TokenStore) -> None:
 
 def test_reconcile_does_not_answer_for_a_different_flow(store: TokenStore) -> None:
     store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("a"), item_id=ITEM)
-    assert store.reconcile("someotherflow") is None
+    assert store.reconcile(OTHER_FLOW) is None
 
 
 def test_reconcile_ignores_a_link_token_for_the_same_flow(store: TokenStore) -> None:
@@ -199,6 +210,12 @@ def test_put_fsyncs_the_record_and_the_directory_before_it_returns(
     were; the directory entry needs its own fsync. Both must happen before `put`
     returns, because the caller's very next act is to commit the `item` row that
     points here.
+
+    There are *two* directory barriers, and the first one is the whole of the
+    recovery guarantee: it makes the pending entry durable before the link, so a
+    crash in that window leaves material `reconcile` can still find. Without it
+    the record's own fsync is a promise about contents under a name that may not
+    survive.
     """
     calls: list[str] = []
     real_fsync, real_link = os.fsync, os.link
@@ -215,7 +232,7 @@ def test_put_fsyncs_the_record_and_the_directory_before_it_returns(
     monkeypatch.setattr(os, "link", spy_link)
     store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("fsync"))
 
-    assert calls == ["fsync-file", "publish", "fsync-dir"]
+    assert calls == ["fsync-file", "fsync-dir", "publish", "fsync-dir"]
 
 
 def test_a_crash_between_the_write_and_the_commit_leaves_a_findable_orphan(
@@ -241,38 +258,42 @@ def test_a_crash_between_the_write_and_the_commit_leaves_a_findable_orphan(
     assert recovered is not None and recovered.item_id == ITEM
 
 
-def test_a_competitor_that_lands_mid_put_is_refused_not_overwritten(
+def test_a_competitor_is_refused_in_the_kernel_in_both_windows(
     store: TokenStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The race an existence check cannot close.
+    """The race an existence check cannot close, refused twice.
 
     Two workers both find nothing, both write, and the second silently destroys
     the first's credential — after which the `item` row references a token that
     belongs to a different Item. That is the unrecoverable direction, so the
-    refusal has to happen in the kernel (`os.link` → `EEXIST`) rather than in a
-    check that ran earlier.
+    refusal has to happen in the kernel rather than in a check that ran earlier.
 
-    The competitor is injected at the last possible moment: `fsync` of our own
-    record, which is the instruction immediately before publication.
+    A second worker can arrive in either of two windows, and each has its own
+    kernel refusal: `O_EXCL` while the winner still holds the pending name, and
+    `os.link` → `EEXIST` once the winner has published. Both are exercised here,
+    because closing only the later one leaves the earlier one open.
     """
     winner = synthetic_material("winner")
     loser = synthetic_material("loser")
     ref = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW)
-    real_fsync = os.fsync
-    landed = False
+    competitor = TokenStore(store.directory)
+    real_link = os.link
 
-    def competitor(fd: int) -> None:
-        nonlocal landed
-        real_fsync(fd)
-        if not landed and not stat.S_ISDIR(os.fstat(fd).st_mode):
-            landed = True
-            TokenStore(store.directory).put(SecretKind.ACCESS_TOKEN, FLOW, winner, item_id=ITEM)
+    # Window 1: the loser arrives while the winner's pending record is on disk,
+    # written and fsynced, one instruction before publication.
+    def loser_arrives_mid_write(src: Any, dst: Any) -> None:
+        with pytest.raises(SecretRefExists):
+            competitor.put(SecretKind.ACCESS_TOKEN, FLOW, loser)
+        real_link(src, dst)
 
-    monkeypatch.setattr(os, "fsync", competitor)
-    with pytest.raises(SecretRefExists):
-        store.put(SecretKind.ACCESS_TOKEN, FLOW, loser)
-
+    monkeypatch.setattr(os, "link", loser_arrives_mid_write)
+    store.put(SecretKind.ACCESS_TOKEN, FLOW, winner, item_id=ITEM)
     monkeypatch.undo()
+
+    # Window 2: the winner has published and released the pending name.
+    with pytest.raises(SecretRefExists):
+        competitor.put(SecretKind.ACCESS_TOKEN, FLOW, loser)
+
     assert store.get(ref).reveal() == winner, "the loser overwrote a durable credential"
     assert store.record(ref).item_id == ITEM
 
@@ -316,6 +337,175 @@ def test_a_failed_put_leaves_no_temporary_file_behind(store: TokenStore) -> None
     assert [p.name for p in store.directory.iterdir()] == [
         f"{secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW)}.json"
     ]
+
+
+# --- issue #15 and #11: the two windows a random temporary name left open --------
+
+
+def _child_that_dies(directory: Path, material: str, at: str) -> int:
+    """Run a `put` in a subprocess that dies at `at`, and return its exit code.
+
+    A subprocess rather than an injected exception, because `os._exit` is the
+    only way to skip a `finally` block — and the cleanup this is about lives in
+    one. An in-process test would tidy up on the way out and prove nothing.
+    """
+    program = f"""
+import os
+from pathlib import Path
+from networth.tokenstore import SecretKind, TokenStore
+
+real_link = os.link
+
+def die_before_link(src, dst):
+    os._exit(17)
+
+def die_after_link(src, dst):
+    real_link(src, dst)
+    os._exit(17)
+
+os.link = {{"before-link": die_before_link, "after-link": die_after_link}}[{at!r}]
+TokenStore(Path({str(directory)!r})).put(
+    SecretKind.ACCESS_TOKEN, {FLOW!r}, {material!r}, item_id={ITEM!r}
+)
+"""
+    return subprocess.run([sys.executable, "-c", program], check=False).returncode
+
+
+def test_a_crash_before_the_link_leaves_material_reconcile_can_still_find(
+    tmp_path: Path,
+) -> None:
+    """Issue #15's exact case: post-fsync, pre-publication.
+
+    The record is durable — `put` fsynced it and fsynced the directory entry
+    — and the worker died before the name it will be published under exists. If
+    recovery cannot see it, a live credential is reported to Plaid support as
+    lost and the owner re-links, spending one of ten lifetime slots on an Item he
+    already has. Under a random temporary name this returned `None`.
+    """
+    directory = tmp_path / "tokenstore"
+    material = synthetic_material("crash-before-link")
+    ref = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW)
+
+    assert _child_that_dies(directory, material, "before-link") == 17
+    assert not (directory / f"{ref}.json").exists(), "the child was meant to die before publishing"
+    assert (directory / pending_name(ref)).exists()
+
+    found = TokenStore(directory).reconcile(FLOW)
+    assert found is not None, "a durable credential was written and recovery cannot see it"
+    assert found.item_id == ITEM
+    assert TokenStore(directory).get(ref).reveal() == material
+
+
+def test_a_crash_after_the_link_leaves_no_name_that_delete_cannot_reach(
+    tmp_path: Path,
+) -> None:
+    """Issue #11's orphan, arrived at from the write side.
+
+    The child publishes and dies before releasing the name it built under, so two
+    names hold one credential. A `delete` that removes only the published one
+    leaves material on disk after the database reference is cleared — invisible,
+    referenced by nothing, and reaped by nothing. The check is not "delete
+    returned True"; it is that no name in the directory still holds the material.
+    """
+    directory = tmp_path / "tokenstore"
+    material = synthetic_material("crash-after-link")
+    ref = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW)
+
+    assert _child_that_dies(directory, material, "after-link") == 17
+    assert (directory / f"{ref}.json").exists()
+    assert (directory / pending_name(ref)).exists(), "the child was meant to die before cleanup"
+
+    store = TokenStore(directory)
+    with store.deleting(ref) as existed:
+        assert existed
+
+    survivors = [path for path in directory.iterdir() if material in path.read_text("utf-8")]
+    assert survivors == [], f"material survived deletion under {[p.name for p in survivors]}"
+
+
+def test_a_half_written_pending_record_wedges_the_ref_until_it_is_deleted(
+    tmp_path: Path,
+) -> None:
+    """The cost of a derived pending name, pinned so it stays a known cost.
+
+    A crash *during* the write leaves a record that does not parse. It is not a
+    credential and never was, but this store cannot prove that, so it refuses
+    rather than silently replacing material it can never re-fetch: `reconcile`
+    raises instead of reporting absence, and `put` refuses instead of
+    overwriting. `delete` is the way out, and it is the same call the issue #16
+    reaper already makes on a terminal flow — so the escape hatch is a documented
+    operation, not a manual `rm`.
+    """
+    directory = tmp_path / "tokenstore"
+    store = TokenStore(directory)
+    ref = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW)
+    (directory / pending_name(ref)).write_text('{"schema": 1, "mat', encoding="utf-8")
+
+    with pytest.raises(CorruptRecord):
+        store.reconcile(FLOW)
+    with pytest.raises(SecretRefExists):
+        store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("wedged"))
+
+    assert store.delete(ref) is True
+    assert store.reconcile(FLOW) is None
+    assert store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("wedged")) == ref
+
+
+def test_a_record_get_would_serve_is_not_one_record_refuses(store: TokenStore) -> None:
+    """One file must not have two verdicts.
+
+    `created_at` used to be checked only where it was converted, which `get` does
+    not do — so a record `record()` called corrupt was still a credential `get()`
+    handed out. Any field validated on one read path has to be validated on both.
+    """
+    ref = store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("verdict"), item_id=ITEM)
+    raw = read_raw(store, ref)
+    raw["created_at"] = "2026-09-01T08:00:00"  # parseable, and naive
+    (store.directory / f"{ref}.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(CorruptRecord):
+        store.record(ref)
+    with pytest.raises(CorruptRecord):
+        store.get(ref)
+
+
+def test_delete_establishes_the_directory_barrier_even_when_nothing_was_there(
+    store: TokenStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The absent branch is a durability claim, not a no-op.
+
+    Run one: the unlink lands and the directory fsync fails, so the removal is
+    visible to this process and not yet on the platter. Run two sees the entry
+    absent — and if it returns `False` without its own barrier, `deleting()` lets
+    the caller clear `secret_ref` while a power loss can still restore the entry,
+    leaving material nothing refers to. "Absent" has to be made durable before it
+    may be acted on.
+    """
+    ref = store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("barrier"))
+    real_fsync = os.fsync
+
+    def failing_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "injected directory fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with pytest.raises(OSError):
+        store.delete(ref)
+    monkeypatch.undo()
+    assert not (store.directory / f"{ref}.json").exists(), "the unlink was meant to land"
+
+    synced: list[int] = []
+
+    def counting_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            synced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", counting_fsync)
+    with store.deleting(ref) as existed:
+        assert existed is False
+        assert synced, "the absent branch cleared the ref without making the removal durable"
 
 
 # --- criterion: deletion is material first, then the ref (issue #11) ------------
@@ -386,12 +576,13 @@ def test_there_is_no_interface_that_returns_every_token() -> None:
         "/etc/networth/plaid-items",
         "access-token.",
         "access-token..",
-        "access-token.flow/../other",
-        "unknown-kind.flow",
-        "access-token.flow.extra",
+        f"access-token.{FLOW}/../other",
+        f"unknown-kind.{FLOW}",
+        f"access-token.{FLOW}.extra",
         "",
-        "access-token.flow\x00",
+        f"access-token.{FLOW}\x00",
         "access-token.f" + "o" * 200,
+        f"access-token.{FLOW.upper()}",  # the grammar is lowercase hex, exactly
     ],
 )
 def test_a_ref_that_could_name_another_file_is_refused(store: TokenStore, ref: str) -> None:
@@ -400,12 +591,44 @@ def test_a_ref_that_could_name_another_file_is_refused(store: TokenStore, ref: s
             call(ref)
 
 
-@pytest.mark.parametrize("flow_id", ["../x", "a/b", ".", "", "flow id", "flow\n"])
+@pytest.mark.parametrize(
+    "flow_id",
+    ["../x", "a/b", ".", "", "flow id", "flow\n", "flow0123456789", FLOW[:31], FLOW + "0"],
+)
 def test_a_flow_id_that_could_name_another_file_is_refused(store: TokenStore, flow_id: str) -> None:
     with pytest.raises(InvalidSecretRef):
         store.put(SecretKind.ACCESS_TOKEN, flow_id, synthetic_material("escape"))
     with pytest.raises(InvalidSecretRef):
         store.reconcile(flow_id)
+
+
+def test_material_cannot_be_mistaken_for_a_flow_id(store: TokenStore) -> None:
+    """The leak that had no exception in it at all.
+
+    Under the previous grammar — letters, digits, hyphens, under 64 characters —
+    an ordinary Plaid access token was a *well-formed* `flow_id`. A caller that
+    passed material where a flow id belonged got no error: the credential went
+    into the filename and came back as the `secret_ref` the caller then writes to
+    the database, which is §15 violated by the module that exists to enforce it.
+    A minted-only shape makes that unrepresentable rather than merely unlikely.
+    """
+    material = synthetic_material("as-a-flow-id")
+
+    with pytest.raises(InvalidSecretRef) as caught:
+        store.put(SecretKind.ACCESS_TOKEN, material, material)
+    assert material not in str(caught.value)
+
+    with pytest.raises(InvalidSecretRef):
+        secret_ref_for(SecretKind.ACCESS_TOKEN, material)
+    assert [p.name for p in store.directory.iterdir()] == []
+
+
+def test_a_minted_flow_id_is_accepted_and_a_credential_shape_is_not() -> None:
+    minted = new_flow_id()
+    assert parse_secret_ref(secret_ref_for(SecretKind.ACCESS_TOKEN, minted))[1] == minted
+    assert new_flow_id() != minted
+    with pytest.raises(InvalidSecretRef):
+        secret_ref_for(SecretKind.ACCESS_TOKEN, synthetic_material("minted"))
 
 
 def test_a_symlink_inside_the_store_is_refused_rather_than_followed(
@@ -423,16 +646,67 @@ def test_a_symlink_inside_the_store_is_refused_rather_than_followed(
         store.get(ref)
 
 
-def test_a_record_whose_contents_disagree_with_its_name_is_refused(store: TokenStore) -> None:
+@pytest.mark.parametrize("field", ["flow_id", "kind", "secret_ref"])
+def test_a_record_whose_contents_disagree_with_its_name_is_refused(
+    store: TokenStore, field: str
+) -> None:
     """`reconcile` attributes material to a flow by the file's *name*. If the name
-    and the contents can disagree, the wrong Item gets the wrong token."""
+    and the contents can disagree, the wrong Item gets the wrong token.
+
+    Every redundant identity field is checked, not just the two that used to be:
+    the record's own `secret_ref` was written by `put` and then never read back,
+    so it was a field that could only ever have lied.
+    """
     ref = store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("mismatch"), item_id=ITEM)
     raw = read_raw(store, ref)
-    raw["flow_id"] = "adifferentflow"
+    raw[field] = {
+        "flow_id": OTHER_FLOW,
+        "kind": SecretKind.LINK_TOKEN.value,
+        "secret_ref": secret_ref_for(SecretKind.ACCESS_TOKEN, OTHER_FLOW),
+    }[field]
     (store.directory / f"{ref}.json").write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(CorruptRecord):
         store.record(ref)
+    with pytest.raises(CorruptRecord):
+        store.get(ref)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("material", ""),
+        ("material", None),
+        ("material", 12345),
+        ("material", ["a", "b"]),
+        ("material", {"reveal": "me"}),
+        ("item_id", 12345),
+        ("item_id", ""),
+        ("item_id", ["item"]),
+        ("created_at", 0),
+        ("schema", True),
+        ("schema", "1"),
+    ],
+)
+def test_a_corrupt_field_is_refused_rather_than_coerced(
+    store: TokenStore, field: str, value: Any
+) -> None:
+    """Presence was never the contract; shape is.
+
+    `get` used to coerce whatever it found with `str(...)`, so a record whose
+    material had been emptied returned an empty credential — and `put` refuses to
+    *write* that exact value because a flow holding nothing reads as EXCHANGED and
+    strands the slot. The read path was undoing the write path's own rule.
+    """
+    ref = store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("shape"), item_id=ITEM)
+    raw = read_raw(store, ref)
+    raw[field] = value
+    (store.directory / f"{ref}.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(CorruptRecord):
+        store.get(ref)
+    with pytest.raises(CorruptRecord):
+        store.reconcile(FLOW)
 
 
 def test_an_unreadable_ref_is_distinguishable_from_an_absent_one(store: TokenStore) -> None:
@@ -472,7 +746,13 @@ def test_a_corrupt_record_reports_neither_the_material_nor_the_file(store: Token
 
 
 def test_no_exception_path_carries_material(store: TokenStore) -> None:
-    """Every raise this module can reach with material in play, checked at once."""
+    """Material through every public argument, and through every metadata field.
+
+    The rule is not "do not print the material field". A caller can pass a
+    credential anywhere a string is taken, and a corrupt record can carry one in
+    any field, so an exception that interpolates *any* untrusted value is a leak
+    waiting for the wrong argument. This drives material through all of them.
+    """
     material = synthetic_material("exceptions")
     ref = store.put(SecretKind.ACCESS_TOKEN, FLOW, material, item_id=ITEM)
 
@@ -483,16 +763,27 @@ def test_no_exception_path_carries_material(store: TokenStore) -> None:
             fn(*args, **kwargs)
         raised.append(caught.value)
 
+    # ...as every public argument that takes a string.
+    capture(store.get, material)
+    capture(store.record, material)
+    capture(store.delete, material)
+    capture(store.reconcile, material)
+    capture(store.put, SecretKind.ACCESS_TOKEN, material, material)
+    capture(secret_ref_for, SecretKind.ACCESS_TOKEN, material)
+    capture(parse_secret_ref, material)
+    # ...and the ordinary refusals, which see the material in play.
     capture(store.put, SecretKind.ACCESS_TOKEN, FLOW, material)  # SecretRefExists
-    capture(store.get, "../escape")  # InvalidSecretRef
     capture(store.get, secret_ref_for(SecretKind.LINK_TOKEN, FLOW))  # UnknownSecretRef
 
-    raw = read_raw(store, ref)
-    raw["schema"] = 99
-    (store.directory / f"{ref}.json").write_text(json.dumps(raw), encoding="utf-8")
-    capture(store.get, ref)  # CorruptRecord, and the file still holds the material
+    # ...as every metadata field of a corrupt record. The file keeps its real
+    # material throughout, so a reader that echoes any field can be caught.
+    for field in ("schema", "kind", "flow_id", "secret_ref", "created_at", "item_id"):
+        raw = read_raw(store, ref)
+        raw[field] = material
+        (store.directory / f"{ref}.json").write_text(json.dumps(raw), encoding="utf-8")
+        capture(store.get, ref)  # CorruptRecord
 
-    assert len(raised) == 4
+    assert len(raised) == 15
     for exc in raised:
         assert material not in str(exc), f"{type(exc).__name__} leaked material"
         assert material not in repr(exc), f"{type(exc).__name__} leaked material in repr"

@@ -36,6 +36,14 @@ project belong to two different machines and must never be searched for one
 another (§15 rule 3): ``/etc/networth/`` is the sync host's and
 ``~/agents/secrets/`` is ``zelengs-macbook-air-2``'s. A constructor that cannot
 guess is a rule that cannot be violated by a path bug.
+
+**A ref holds exactly two names, and both are predictable.** ``{ref}.json`` is
+the published record; ``.{ref}.pending`` is the one it is built under. Neither is
+random, and that is the point: a random temporary name is invisible to recovery
+(the material is durable and :meth:`TokenStore.reconcile` cannot find it) and
+invisible to deletion (a leftover link keeps the credential alive after the
+database reference is gone — issue #11's immortal orphan, arrived at from the
+other side). Both names are therefore reconciled and both are deleted.
 """
 
 from __future__ import annotations
@@ -43,14 +51,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 #: On-disk record format. Bumped when the record's shape changes, so a reader
 #: that predates the change refuses it rather than misreading a field.
@@ -87,19 +95,31 @@ class CorruptRecord(TokenStoreError):
     """A record on disk could not be read as this store's format."""
 
 
-# A conservative identifier: no dot, no slash, no separator of any kind, so a
-# `flow_id` cannot spell a relative path and a `secret_ref` cannot address a file
-# outside the store. Validation happens before any name becomes a path — the
-# confinement is in the grammar, not in a check after the fact.
-_NAME = r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}"
-_FLOW_ID_RE = re.compile(rf"\A{_NAME}\Z")
+# A `flow_id` is 32 lowercase hex characters — a minted uuid4 and nothing else.
+#
+# Two jobs, and the second is why the grammar is this narrow. The first is
+# confinement: no dot, no slash, no separator of any kind, so a `flow_id` cannot
+# spell a relative path and a `secret_ref` cannot address a file outside the
+# store. Validation happens before any name becomes a path, so the confinement is
+# in the grammar rather than in a check after the fact.
+#
+# The second is that a `secret_ref` is the value the *database* stores (§15), and
+# under the previous, looser grammar (letters, digits, hyphens, under 64) a Plaid
+# `access_token` was a well-formed `flow_id`. Passing material where a flow id
+# belonged would have written the credential into a filename and handed it back
+# as the `secret_ref` a caller persists — §15 violated by the one module that
+# exists to enforce it. A shape no credential can have makes that unrepresentable
+# rather than merely discouraged, which is why this is a generated format and not
+# a list of prefixes to refuse.
+_FLOW_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 _SECRET_REF_RE = re.compile(
     r"\A(?P<kind>"
     + "|".join(re.escape(k.value) for k in SecretKind)
-    + rf")\.(?P<flow_id>{_NAME})\Z"
+    + r")\.(?P<flow_id>[0-9a-f]{32})\Z"
 )
 
 _SUFFIX = ".json"
+_PENDING_SUFFIX = ".pending"
 
 
 class Secret:
@@ -148,6 +168,16 @@ class SecretRecord:
     created_at: datetime
 
 
+def new_flow_id() -> str:
+    """Mint a ``flow_id``.
+
+    §7 has the ``flow_id`` minted before the ``link_token`` and carried by
+    ``link_flow.flow_id``; this is the minter, and it lives here because this
+    module is the one that has to be able to *refuse* anything it did not mint.
+    """
+    return uuid.uuid4().hex
+
+
 def secret_ref_for(kind: SecretKind, flow_id: str) -> str:
     """The ``secret_ref`` naming scheme (issue #15).
 
@@ -155,7 +185,11 @@ def secret_ref_for(kind: SecretKind, flow_id: str) -> str:
     database row exists is still attributable after a restart.
     """
     if not _FLOW_ID_RE.match(flow_id):
-        raise InvalidSecretRef(f"not a usable flow_id: {flow_id!r}")
+        # The rejected value is never repeated. A caller that got here by passing
+        # a credential where a flow id belonged would otherwise have the module
+        # that exists to contain material be the one that prints it — into a
+        # traceback, a log line, or an alert (§15).
+        raise InvalidSecretRef("not a usable flow_id; expected a minted flow id")
     return f"{kind.value}.{flow_id}"
 
 
@@ -163,7 +197,7 @@ def parse_secret_ref(secret_ref: str) -> tuple[SecretKind, str]:
     """Split a ``secret_ref`` back into its kind and ``flow_id``."""
     match = _SECRET_REF_RE.match(secret_ref)
     if match is None:
-        raise InvalidSecretRef(f"not a well-formed secret_ref: {secret_ref!r}")
+        raise InvalidSecretRef("not a well-formed secret_ref")
     return SecretKind(match.group("kind")), match.group("flow_id")
 
 
@@ -221,6 +255,22 @@ class TokenStore:
         the database and expects at most one worker here; this is the same
         invariant held a second time, by the filesystem, because the cost of
         being wrong about it is a lifetime slot.
+
+        The name it is built under is ``.{ref}.pending``, and it is **derived,
+        not random**. A random temporary name opens two crash windows that this
+        store's whole purpose is to close: die after the record's ``fsync`` and
+        before the ``link``, and the credential is durable under a name
+        :meth:`reconcile` does not know to look at — reported as a lost token,
+        which re-spends a lifetime slot (issue #15). Die after the ``link`` and
+        before the temporary name is removed, and two names hold the material
+        while :meth:`delete` removes one — the invisible orphan issue #11 exists
+        to prevent, reached from the other side. A derived name is reconciled and
+        deleted like any other, so neither window survives.
+
+        The cost is that a half-written pending record blocks the ref until it is
+        explicitly deleted, rather than being silently replaced by the next
+        attempt. That is the right way round: refusing is recoverable, and
+        overwriting material this store cannot re-fetch is not.
         """
         if not material:
             # Writing empty material would let a flow reach EXCHANGED holding
@@ -228,7 +278,8 @@ class TokenStore:
             # lost token would — with none of the evidence that it happened.
             raise ValueError("refusing to store empty material")
         ref = secret_ref_for(kind, flow_id)
-        path = self._path(ref)
+        final = self._path(ref)
+        pending = self._pending_path(ref)
 
         record = {
             "schema": RECORD_SCHEMA,
@@ -243,43 +294,62 @@ class TokenStore:
             "material": material,
         }
 
-        # A unique temporary name, and one that carries the ref it belongs to: a
-        # crash between the write and the link leaves this file behind, and a
-        # leftover holding material should be attributable rather than anonymous.
-        # Uniqueness also means a leftover never blocks the retry — a fixed
-        # temporary name would fail O_EXCL forever after one crash.
-        fd, tmp_name = tempfile.mkstemp(dir=self._dir, prefix=f".{ref}.", suffix=".tmp")
-        tmp = Path(tmp_name)
         try:
-            # mkstemp already opens 0600, and umask can only clear bits, so both
-            # paths agree — but the mode on disk is the acceptance criterion, so
-            # it is set rather than inherited.
-            os.fchmod(fd, FILE_MODE)
-            with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
-                json.dump(record, handle)
-                handle.flush()
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-
-        try:
-            os.link(tmp, path)
+            fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
         except FileExistsError:
+            # Claiming the pending name is the first of the two kernel refusals.
+            # Whatever is under it is either a live write by another worker or a
+            # crashed one, and both are material this call must not touch.
             raise SecretRefExists(
-                f"material already stored under {ref!r}; "
+                f"a write for {ref!r} is already in progress or was interrupted; "
                 f"reconcile before writing (issue #15), or delete it explicitly"
             ) from None
-        finally:
-            tmp.unlink(missing_ok=True)
 
-        self._fsync_directory()
+        try:
+            try:
+                # O_CREAT's mode is a request that umask can clear; fchmod is the
+                # guarantee, and the mode on disk is the acceptance criterion.
+                os.fchmod(fd, FILE_MODE)
+                with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
+                    json.dump(record, handle)
+                    handle.flush()
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+            # The pending *entry* has to be durable, not just its contents:
+            # recovery reads this name, and an unsynced directory can lose it.
+            # This is the barrier that makes the first crash window recoverable.
+            self._fsync_directory()
+
+            try:
+                os.link(pending, final)
+            except FileExistsError:
+                raise SecretRefExists(
+                    f"material already stored under {ref!r}; "
+                    f"reconcile before writing (issue #15), or delete it explicitly"
+                ) from None
+        finally:
+            # This name was claimed with O_EXCL, so it is this call's to remove on
+            # every path: after a successful link the material lives under `final`,
+            # and on any failure what is here is our own incomplete or unclaimed
+            # write. Crashing before this leaves both names — which is why both
+            # are deleted, not just one.
+            pending.unlink(missing_ok=True)
+            self._fsync_directory()
         return ref
 
     # --- reading ---------------------------------------------------------------
 
     def get(self, secret_ref: str) -> Secret:
-        """Resolve one ``secret_ref`` to its material."""
-        return Secret(str(self._read(secret_ref)["material"]))
+        """Resolve one ``secret_ref`` to its material.
+
+        No coercion: :meth:`_read` has already established that ``material`` is a
+        non-empty string. ``str(...)`` here would have turned a corrupt record
+        into a plausible credential — an empty string, a list's ``repr`` — and
+        handed it to a caller about to mark a flow ``EXCHANGED``.
+        """
+        return Secret(cast(str, self._read(secret_ref)["material"]))
 
     def record(self, secret_ref: str) -> SecretRecord:
         """Metadata for one ``secret_ref``, without moving the material."""
@@ -294,8 +364,11 @@ class TokenStore:
         survived and the flow needs its local transaction finished, not another
         exchange.
 
-        Answers from the one path the naming scheme predicts — no directory
-        listing, and nothing about any other flow is read or returned.
+        Answers from the two paths the naming scheme predicts — no directory
+        listing, and nothing about any other flow is read or returned. The second
+        of them is the pending name, which is the whole of issue #15's crash: a
+        worker that died between the record's ``fsync`` and the ``link`` left a
+        durable credential that only this lookup can find.
         """
         ref = secret_ref_for(SecretKind.ACCESS_TOKEN, flow_id)
         try:
@@ -313,14 +386,29 @@ class TokenStore:
         (issue #11), and the repair for that is to run the same deletion again —
         so "already absent" is a success, not an error. An operation that threw
         here would make the visible failure the harder one to fix.
+
+        Both names go, not just the published one. A crash between :meth:`put`'s
+        ``link`` and its cleanup leaves the pending name holding the same
+        material, and removing only the record a caller knows about would leave a
+        credential on disk that nothing refers to and no reaper will ever visit.
+
+        The directory barrier runs **even when both names were already absent**,
+        and that is not defensive tidiness. A previous call can unlink and die
+        before its own ``fsync``: the entry is gone from this process's view and
+        still recoverable on the platter, so returning ``False`` without the
+        barrier lets :meth:`deleting` clear the database reference while a power
+        loss can still bring the material back — with nothing left pointing at
+        it. "Absent" has to be made durable before it may be acted on.
         """
-        path = self._path(secret_ref)
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            return False
+        removed = False
+        for path in (self._path(secret_ref), self._pending_path(secret_ref)):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                continue
+            removed = True
         self._fsync_directory()
-        return True
+        return removed
 
     @contextmanager
     def deleting(self, secret_ref: str) -> Iterator[bool]:
@@ -347,9 +435,16 @@ class TokenStore:
         # already had. Neither is good enough for a directory of credentials.
         os.chmod(self._dir, DIRECTORY_MODE)
 
+    # Every `secret_ref` reaching these two has been through the grammar, so it is
+    # `kind.<32 hex>` and provably not material — which is what makes it safe to
+    # name in an exception message when nothing else here is.
     def _path(self, secret_ref: str) -> Path:
         parse_secret_ref(secret_ref)  # rejects anything that could name another file
         return self._dir / f"{secret_ref}{_SUFFIX}"
+
+    def _pending_path(self, secret_ref: str) -> Path:
+        parse_secret_ref(secret_ref)
+        return self._dir / f".{secret_ref}{_PENDING_SUFFIX}"
 
     def _fsync_directory(self) -> None:
         fd = os.open(self._dir, os.O_RDONLY)
@@ -358,8 +453,7 @@ class TokenStore:
         finally:
             os.close(fd)
 
-    def _read(self, secret_ref: str) -> dict[str, Any]:
-        path = self._path(secret_ref)
+    def _read_text(self, path: Path, secret_ref: str) -> str:
         try:
             # O_NOFOLLOW: an entry inside the store that is a symlink is refused
             # rather than followed. A store that follows links can be pointed at a
@@ -374,10 +468,38 @@ class TokenStore:
             ) from None
         try:
             with os.fdopen(fd, encoding="utf-8", closefd=False) as handle:
-                text = handle.read()
+                return handle.read()
         finally:
             os.close(fd)
 
+    def _read(self, secret_ref: str) -> dict[str, Any]:
+        """The one validated record for ``secret_ref``, from either of its names."""
+        kind, flow_id = parse_secret_ref(secret_ref)
+        try:
+            text = self._read_text(self._path(secret_ref), secret_ref)
+        except UnknownSecretRef:
+            # Published name absent — but a pending write may hold material that
+            # was fsynced before the crash (issue #15). Only *absence* falls
+            # through: a published record that exists and does not parse is
+            # corrupt, and corruption must raise rather than look absent.
+            text = self._read_text(self._pending_path(secret_ref), secret_ref)
+        return self._validate(text, secret_ref, kind, flow_id)
+
+    def _validate(
+        self, text: str, secret_ref: str, kind: SecretKind, flow_id: str
+    ) -> dict[str, Any]:
+        """Establish the whole record shape once, so no reader has to coerce.
+
+        Key presence is not enough. A record whose ``material`` is ``""``, a
+        list, or a number used to reach :meth:`get` and become a credential by
+        ``str(...)`` — an empty access token handed to a caller that is about to
+        mark a flow ``EXCHANGED``, which is the stranded slot :meth:`put` refuses
+        to create, arriving through the read path instead.
+
+        No value from the file appears in any message raised here. The file holds
+        a credential, and a reader cannot know which field an attacker or a bad
+        write put it in.
+        """
         try:
             record = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -389,40 +511,57 @@ class TokenStore:
 
         if not isinstance(record, dict):
             raise CorruptRecord(f"record for {secret_ref!r} is not an object")
-        if record.get("schema") != RECORD_SCHEMA:
+
+        schema = record.get("schema")
+        # `bool` is a subclass of `int` and `True == 1`, so a record carrying
+        # `"schema": true` would pass a bare equality check against schema 1.
+        if isinstance(schema, bool) or not isinstance(schema, int) or schema != RECORD_SCHEMA:
             raise CorruptRecord(
-                f"record for {secret_ref!r} has schema {record.get('schema')!r}, "
-                f"and this reader understands {RECORD_SCHEMA}"
+                f"record for {secret_ref!r} does not carry schema {RECORD_SCHEMA}, "
+                f"which is the only shape this reader understands"
             )
-        missing = [
-            key for key in ("kind", "flow_id", "created_at", "material") if key not in record
-        ]
-        if missing:
-            raise CorruptRecord(f"record for {secret_ref!r} is missing {', '.join(missing)}")
+
+        for key in ("secret_ref", "kind", "flow_id", "created_at", "material"):
+            value = record.get(key)
+            if not isinstance(value, str) or not value:
+                raise CorruptRecord(
+                    f"record for {secret_ref!r} has no usable {key}; a non-empty string is required"
+                )
+
+        # Every redundant identity field is bound to the name the file was found
+        # under. reconcile() attributes material to a flow by its *name*, so a
+        # name and contents that may disagree is how the wrong Item gets the
+        # wrong access token — and the stored `secret_ref` was previously written
+        # and never checked, which is a field that could only ever have lied.
+        if (record["secret_ref"], record["kind"], record["flow_id"]) != (
+            secret_ref,
+            kind.value,
+            flow_id,
+        ):
+            raise CorruptRecord(
+                f"record stored as {secret_ref!r} describes a different secret; refusing to use it"
+            )
+
+        item_id = record.get("item_id")
+        if item_id is not None and (not isinstance(item_id, str) or not item_id):
+            raise CorruptRecord(
+                f"record for {secret_ref!r} has an unusable item_id; "
+                f"a non-empty string or null is required"
+            )
         return record
 
     def _to_record(self, record: dict[str, Any], secret_ref: str) -> SecretRecord:
         kind, flow_id = parse_secret_ref(secret_ref)
-        if record["kind"] != kind.value or record["flow_id"] != flow_id:
-            # The name and the contents disagree: the file has been moved,
-            # hand-edited or written by something else. Refusing is the only safe
-            # answer — reconcile() attributes material to a flow by its *name*,
-            # and attributing the wrong token to a flow is how the wrong Item
-            # gets its access token.
-            raise CorruptRecord(
-                f"record stored as {secret_ref!r} describes a different secret; refusing to use it"
-            )
         try:
-            created_at = datetime.fromisoformat(str(record["created_at"]))
+            created_at = datetime.fromisoformat(cast(str, record["created_at"]))
         except ValueError:
             raise CorruptRecord(f"record for {secret_ref!r} has an unreadable created_at") from None
         if created_at.tzinfo is None:
             raise CorruptRecord(f"record for {secret_ref!r} has a created_at with no timezone")
-        item_id = record.get("item_id")
         return SecretRecord(
             secret_ref=secret_ref,
             kind=kind,
             flow_id=flow_id,
-            item_id=None if item_id is None else str(item_id),
+            item_id=cast("str | None", record.get("item_id")),
             created_at=created_at.astimezone(UTC),
         )
