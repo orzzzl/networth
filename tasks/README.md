@@ -43,20 +43,29 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
-| 00a | Install agent keys on the VPS; escrow the backup key | — | **owner** | — | BLOCKED (owner) |
+| 00b | Install the constrained backup key on the VPS; escrow the backup key | 00a | **owner** | — | BLOCKED (00a) |
+| 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` | 00 | **owner** | — | **READY (owner)** |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
+
+**Every row in this table names something the owner can do the day it says
+`READY (owner)`, with the artifact already in his hands.** A row that needs an
+agent to produce something first belongs in a phase below, blocked on the agent —
+`BLOCKED (owner)` on work he cannot start parks a task where nobody looks and
+spends his attention on a thing that does not exist yet. (2026-09-01: `00a` was
+that row. He caught it, not us.)
 
 ### Phase 1 — foundation (no Production Item is reachable from any of these)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 02 | Project scaffold + secret scanner | — | **claude** | codex | **DONE** (#19, 2026-09-01) |
-| 03 | SQLite schema + migration runner | 02 | **codex** | claude | **WIP** (PR #22) |
-| 04 | Domain model + `Store` repositories | 03 | **codex** | claude | BLOCKED (03) |
+| 03 | SQLite schema + migration runner | 02 | **codex** | claude | **DONE** (#22, 2026-09-01) |
+| 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **READY** |
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **READY** |
-| 05a | `TokenStore` | 02 | **claude** | codex | **READY** |
-| 03a | Encrypted archive + Mac-initiated pull + restore drill | 03, 05a, 00a | **codex** | claude | BLOCKED (00a) |
-| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00 | **claude** | codex | BLOCKED (05, 05a, Sandbox secret) |
+| 05a | `TokenStore` | 02 | **claude** | codex | **WIP** (PR #21) |
+| 03a | Encrypted archive + Mac-initiated pull + restore drill | 03, 05a | **codex** | claude | BLOCKED (05a) |
+| 00a | Generate the constrained backup keypair; pin its `command=` | 03a | **codex** | claude | BLOCKED (03a) |
+| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | BLOCKED (05, 05a, 00c) |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half) | codex | BLOCKED (06) |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
@@ -102,7 +111,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 28 | VPS provisioning + hardening (**base host only**) | 00a | **codex** | claude | BLOCKED (00a) |
+| 28 | VPS provisioning + hardening (**base host only**) | — | **codex** | claude | **READY** |
 | 25 | ~~DB backup/restore~~ | — | — | — | **SUPERSEDED by 03a** |
 
 **Totals:** claude 17, codex 16, owner 2 (+1 answered, 1 superseded). Two of claude's are
@@ -212,9 +221,27 @@ stalling it for hours. If an assignee is out of quota and a `READY` task is wait
 the PR, and the reviewer becomes whoever did not write it. This does not require the
 owner's approval; letting a root task idle behind a stalled agent is the failure mode.
 
-**Owner-only work stays with the owner.** `00` (done) and `00a` (his keys, his password)
-are not assignable to an agent, and `08` is a script an agent writes and **the owner runs**
-— no agent ever performs a Production Link or sees the Production secret.
+**Give each agent a branch of the graph that does not stall on the other's review turn.**
+With two agents and no third reviewer, a chain where every agent task depends on a task the
+other agent must review first converts one quota outage into an outage for both: on
+2026-09-01 Codex idled for hours across two Claude quota resets because `04` waited on `03`
+and `03` waited on a Claude review. When sequencing, check that each agent holds at least
+one `READY` task whose dependencies are all merged — and **say so explicitly** if the graph
+makes that impossible, rather than discovering it as idle time. As of 2026-09-01 it is
+satisfied: Codex holds `04` and `28`, Claude holds `05`, and neither needs the other's
+review to start.
+
+**Owner-only work stays with the owner.** `00` (done), `00b` (installing the constrained
+backup key, and escrowing it) and `00c` (installing the Sandbox secret) are not assignable
+to an agent, and `08` is a script an agent writes and **the owner runs** — no agent ever
+performs a Production Link or sees the Production secret.
+
+**An owner row is a row he can act on today.** Everything that has to be built before he
+can act belongs to an agent, in the phase where that work lives, blocked on the task that
+defines it — `00a` is the worked example. Marking the owner's half `BLOCKED (owner)` while
+the agent half does not exist yet parks the task where nobody looks and asks him for
+something impossible; it cost this project a task sitting in Phase 0 until he checked the
+machines himself and told us (2026-09-01).
 
 ---
 
@@ -236,29 +263,61 @@ bank access is **automatic on the Trial** — no per-institution request (**F4**
 - **The Production secret must never reach an agent.** Agents write the command; the owner
   runs it on the VPS (§15).
 
-### 00a — Install agent keys on the VPS; escrow the backup key — **owner only**
+### 00b — Install the constrained backup key; escrow the backup key — **owner only**
 
-**What the owner does:** `DESIGN.md` §19 steps 1a–1c. Install **two** keys (§15):
+**Blocked on `00a`, which is ours.** This entry used to be `00a` and used to read
+`BLOCKED (owner)`, which was false: it asked the owner to install a key that does not
+exist. Verified on the machines 2026-09-01 — `~/agents/secrets/` holds only
+`networth-vps.key(.pub)`, and `authorized_keys` on `tokyo-exit` holds exactly two entries,
+`tokyo-exit-tailscale` and `networth-daemon@claude-agents`. The interactive key is
+installed and working; the backup key is not, because there was never anything to install.
 
-1. `networth-vps.key` — interactive.
-2. `networth-backup-ssh.key` — constrained with
-   `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"`, so a compromised
-   laptop cannot open a shell on the host holding the Plaid master credential.
+**What the owner does, once `00a` hands him the finished line:** `DESIGN.md` §19 step 1c.
+Paste one `authorized_keys` entry for `networth-backup-ssh.key`, already carrying its
+`restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix. Then escrow the
+backup key that `03a`'s criterion 2 attests to.
 
-Also escrows the backup key that `03a`'s criterion 2 attests to.
-
-**Already done and verified:** the tailnet half. `zelengs-macbook-air-2` is Connected at
-`100.96.163.67`; the VPS host key matches across its public and tailnet addresses;
-`tailscale ping` is direct; SSH Mac→VPS works with the peer observing `100.96.163.67`.
+**Already done and verified:** the tailnet half, and the interactive key.
+`zelengs-macbook-air-2` is Connected at `100.96.163.67`; the VPS host key matches across
+its public and tailnet addresses; `tailscale ping` is direct; SSH Mac→VPS works with the
+peer observing `100.96.163.67`.
 
 **Must not:**
 
+- **Install an unrestricted backup key now and add the restriction later.** That inverts
+  the security property the two-key split exists for: the whole point is that a compromised
+  laptop cannot open a shell on the host holding the Plaid master credential. The key is
+  generated when `03a` defines the command, and the owner receives the finished constrained
+  line in **one** step. (Owner instruction, 2026-09-01.)
 - **No agent may ever ask the owner for a password** (§15.1).
 - **Never write a bare hostname prefix into a config, unit, script or runbook step.** There
   are **four** MacBook Airs on this tailnet and they are four different computers,
   differing only by suffix. `zelengs-macbook-air` is a *different machine* that a prefix
   match silently selects. Write the full name or the IP (§19 step 1b).
-- Do not block foundation work on this. `28` is the only task that needs it.
+- Block foundation work on this. Nothing depends on it but `03a`'s criterion 2.
+
+### 00c — Install the Plaid Sandbox secret — **owner only**, actionable today
+
+**Why it is its own row.** It was buried inside `06`'s status as
+`BLOCKED (05, 05a, Sandbox secret)`, which reads as blocked on two agent tasks and hides
+the one part the owner could have done weeks ago. That is the same defect as a false owner
+block, pointing the other way: it does not waste his attention, it wastes the parallelism.
+Doing it now means `06` is gated only on `05` and `05a` when they land.
+
+**What the owner does:** install the Sandbox `client_id`/`secret` at
+`/etc/networth/plaid-sandbox.env`, mode `0600`, same owner-installs-it rule as every other
+credential (§15, §19 step 3.3). Plaid issues one `client_id` per team with a **separate
+secret per environment**, so this is a different value from the Production one and both
+files exist side by side — which is exactly why `NETWORTH_ENV` selects the credential file,
+the items file and the database together, with no default (`AGENTS.md` rule 1).
+
+**The artifact is already in his hands:** task `00` is DONE, so the Plaid dashboard account
+exists, and `/etc/networth/` exists on `tokyo-exit` (verified 2026-09-01: `drwx------`,
+root-owned).
+
+**Must not:** put the Sandbox secret anywhere an agent reads it from the repo, or let a
+Sandbox credential sit in a file labelled production — `06`'s fourth criterion makes that a
+**startup failure**, not a run nobody questions.
 
 ---
 
@@ -589,6 +648,40 @@ unconditional passes case 1 and fails them:
 **Hard gate on task `08`:** a lost `access_token` cannot be recovered and strands a
 permanent Item slot (**F2**, **F2a**, **F6**). This cannot wait for Phase 5.
 
+### 00a — Generate the constrained backup keypair; pin its `command=` — **codex**
+
+**What to build.** The thing `00b` is waiting for: one `networth-backup-ssh` keypair, and
+one finished `authorized_keys` line the owner pastes without editing.
+
+**It sits here, after `03a`, because the ordering runs the other way from how the board
+used to read it.** `00a` was numbered as a Phase 0 owner gate, so `03a` depended on it —
+but the restriction it installs is `command="/usr/local/lib/networth/backup-ssh-dispatch"`,
+and the dispatcher, its four allow-listed verbs and its argument patterns are all defined
+by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked blocked on
+`00a`: a cycle, sitting on the board labelled as waiting for the owner.
+
+**Acceptance:**
+
+- [ ] The private key is generated **on `zelengs-macbook-air-2`** and written to
+      `~/agents/secrets/networth-backup-ssh.key`, mode `0600`. It is the puller's key and
+      it belongs to the machine that pulls; it never exists on the VPS, and never in this
+      repository (`AGENTS.md` rule 1).
+- [ ] The output handed to the owner is **one line**, complete with its
+      `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix. Not a
+      procedure, not a key plus instructions to prepend something.
+- [ ] The `command=` string matches the dispatcher path `03a` actually installs, checked
+      against `03a`'s implementation rather than against this sentence.
+- [ ] A test or a documented check shows the constrained key **cannot** obtain a shell —
+      the property the two-key split exists for, asserted rather than assumed.
+
+**Must not:**
+
+- **Emit an unrestricted key "for now".** The owner's instruction, 2026-09-01: an
+  unrestricted key installed today and restricted later inverts the security property
+  outright, because a compromised laptop would hold shell access to the host with the Plaid
+  master credential for the whole window. One step, already constrained.
+- Ask the owner for a password, or install anything on the VPS on his behalf (§15.1).
+
 ### 06 — Sandbox end-to-end rehearsal of the Link flow — **claude**
 
 **What to build.** A complete Link → exchange → fetch cycle against Plaid **Sandbox**.
@@ -616,7 +709,8 @@ exists.
 - [ ] Starting with a Sandbox credential in a file labelled production is a **startup
       failure**, not a run nobody questions.
 
-**Blocked on the owner for one thing:** the Sandbox secret installed at
+**Blocked on the owner for one thing, and it is now its own row (`00c`) so he can do it
+without waiting for `05`/`05a`:** the Sandbox secret installed at
 `/etc/networth/plaid-sandbox.env` (§15, runbook step 3.3), same mode and same
 owner-installs-it rule as every other credential. Plaid issues **one `client_id` per team
 and a separate secret per environment** — the two files differ in their **secret**, not in
@@ -840,7 +934,7 @@ capture is issue **#14**.
 - [ ] **The durable destination is chosen and verified *before* the exchange is attempted,
       and the script refuses to exchange if it is not writable.** Either a replacement host
       with a ready `TokenStore`, or a Mac-side emergency artifact encrypted under the
-      **already-escrowed** backup key (`00a`) with a restore path into a real `TokenStore`.
+      **already-escrowed** backup key (`00b`) with a restore path into a real `TokenStore`.
       Verifying the sink after spending the token repeats the rev-17 mistake: a fallback
       chosen after the irreversible step is not a fallback.
 - [ ] `access_token` **and** `item_id` are written, `fsync`ed, **read back**, and only then
@@ -892,7 +986,7 @@ capture is issue **#14**.
 - Do not print the `access_token`, pass it in `argv`, write it as plaintext anywhere on the
   Mac, or ask the owner to paste it somewhere an agent can read it (`AGENTS.md` rule 1).
 - Do not invent a new key. The emergency artifact uses the escrowed backup key, which is
-  why this task depends on `03a` and `00a`.
+  why this task depends on `03a` and on the key reaching escrow in `00b`.
 - **Do not present the local conditional claim as protection against the old VPS.** A lock
   in a database the other host cannot open is a comment, and one that reads like a
   guarantee is worse than none — it is the failure mode where the owner skips the power-off
@@ -1466,6 +1560,17 @@ is left is the presentation, and presentation lands with the surfaces that prese
 ## Phase 5 — operations
 
 ### 28 — VPS provisioning + hardening — **codex**
+
+**Unblocked 2026-09-01, verified on the host rather than inferred from the board.** This
+entry read `BLOCKED (00a)` because it needed the agent SSH key installed. It is installed,
+and it is enough: over `~/agents/secrets/networth-vps.key` to `100.102.245.37`, `id`
+returns `uid=0(root)`, `/etc/networth/` already exists as `drwx------` root-owned, and
+`authorized_keys` holds two entries. The *backup* key `00a`/`00b` are about is a different
+key that nothing here needs. Re-check with `id` before provisioning rather than trusting
+this paragraph — it is a fact about a live host on a date, not a property of the design.
+
+Note that the existing `/etc/networth/` is what acceptance criterion (2) below is for: the
+`chown` has something to report on, so it must not be silent.
 
 **What to build.** Idempotent provisioning of the **base host** — the owner's **existing**
 Vultr host (`tokyo-exit`, `100.102.245.37`): key-only SSH (`PasswordAuthentication no`), a
