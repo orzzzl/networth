@@ -50,11 +50,11 @@ a judgement call. **No agent reviews a task it was assigned.**
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 02 | Project scaffold + secret scanner | — | **claude** | codex | **WIP** (PR #19) |
-| 03 | SQLite schema + migration runner | 02 | **codex** | claude | BLOCKED (02) |
+| 02 | Project scaffold + secret scanner | — | **claude** | codex | **DONE** (#19, 2026-09-01) |
+| 03 | SQLite schema + migration runner | 02 | **codex** | claude | **READY** |
 | 04 | Domain model + `Store` repositories | 03 | **codex** | claude | BLOCKED (03) |
-| 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | BLOCKED (02) |
-| 05a | `TokenStore` | 02 | **claude** | codex | BLOCKED (02) |
+| 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **READY** |
+| 05a | `TokenStore` | 02 | **claude** | codex | **READY** |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill | 03, 05a, 00a | **codex** | claude | BLOCKED (00a) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00 | **claude** | codex | BLOCKED (05, 05a, Sandbox secret) |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half) | codex | BLOCKED (06) |
@@ -267,7 +267,7 @@ Also escrows the backup key that `03a`'s criterion 2 attests to.
 **Nothing in Phase 1 can reach a Production Item.** These are the tasks the owner
 authorised to start immediately.
 
-### 02 — Project scaffold + secret scanner — **claude** — READY
+### 02 — Project scaffold + secret scanner — **claude** — **DONE** (#19, 2026-09-01)
 
 **What to build.** The repo skeleton every other task builds inside:
 
