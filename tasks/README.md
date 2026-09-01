@@ -65,7 +65,7 @@ that row. He caught it, not us.)
 | 05a | `TokenStore` | 02 | **claude** | codex | **WIP** (PR #21) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | BLOCKED (05a) |
 | 00a | Generate the constrained backup keypair; pin its `command=` | 03a | **codex** | claude | BLOCKED (03a) |
-| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b | **codex** | claude | BLOCKED (03a, 00b) |
+| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b | **codex** (the wire and the records) / **owner** (runs §19 step 1c) | claude | BLOCKED (03a, 00b) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | BLOCKED (05, 05a, 00c) |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half) | codex | BLOCKED (06) |
 
@@ -116,9 +116,17 @@ that row. He caught it, not us.)
 | 25 | ~~DB backup/restore~~ | — | — | — | **SUPERSEDED by 03a** |
 
 **Totals:** claude 17, codex 18, owner 3 (+1 answered, 1 superseded) — counted off the rows
-above at this revision, which is the only way this line has ever been wrong. Two of
-claude's are shared with the owner because he is the one who runs them: `08`, and `06a`'s
-measurement (iv). Agents write those commands; the owner executes them.
+above at this revision, which is the only way this line has ever been wrong. **Three agent
+rows are shared with the owner** because he is the one who runs part of them — two of
+claude's (`08`, and `06a`'s measurement (iv)) and one of codex's (`03a-live`, whose §19
+step 1c half is his). Agents write those commands; the owner executes them.
+
+**A row is shared the moment any of its acceptance criteria is a `DESIGN.md` §19 step**,
+and the entry must say which criteria those are. §19's preamble — *"agents must never
+perform these"* — has no exception for a step an agent could technically run, so an
+assignee cell naming only an agent is a defect whatever the agent is capable of. That is
+how `03a-live` shipped with three owner-run steps inside a codex-only row (caught in review,
+2026-09-01).
 
 ## Why the split is shaped this way
 
@@ -277,10 +285,19 @@ exist. Verified on the machines 2026-09-01 — `~/agents/secrets/` holds only
 installed and working; the backup key is not, because there was never anything to install.
 
 **What the owner does, once `00a` hands him the finished line and `28` has made the service
-account:** `DESIGN.md` §19 step 1c. Paste one `authorized_keys` entry for
-`networth-backup-ssh.key`, already carrying its
+account:** `DESIGN.md` **§19 step 1a, item 3** — *not* step 1c, which is a different
+sitting and a later one (corrected 2026-09-01; the wrong pointer sent him to the step that
+confirms the backup works to do the step that installs the key it pulls over). Paste one
+`authorized_keys` entry for `networth-backup-ssh.key`, already carrying its
 `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix, under the service
-user. Then escrow the backup key that `03a`'s criterion 2 attests to.
+user.
+
+Then, at the same sitting, **escrow** `networth-backup.key` — the archive key, a different
+key from the SSH one above — by copying it into a password manager or writing it down. That
+is the first half of §19 step 1c item 3, brought forward to here because the key already
+exists by now and a second trip serves nothing. **The `networth backup attest-key` run that
+*records* the escrow stays in step 1c**, where the rest of that step is, and is
+`03a-live`'s owner half; `03a`'s criterion 2 is satisfied by that run, not by this one.
 
 **Already done and verified:** the tailnet half, and the interactive key.
 `zelengs-macbook-air-2` is Connected at `100.96.163.67`; the VPS host key matches across
@@ -664,6 +681,15 @@ unconditional passes case 1 and fails them:
       battery with no plug-in prompt and no battery guard. The unit shape is checked here;
       **the pull observed while on battery is `03a-live`'s acceptance test**, because it
       pulls over the restricted key.
+- [ ] **Every pull run records the power source it ran under**, read from the machine at
+      run time, not inferred. Without it, `03a-live`'s battery criterion can only be met by
+      a person happening to watch the right run, which is not a criterion anybody can
+      execute — the same defect this board keeps finding in acceptance text.
+- [ ] **The LaunchAgent installs in one command** the owner can run and re-run — it writes
+      the plist, loads it, and prints what it did. §19 step 1c item 2 is *his* step
+      (`03a-live`), so the thing this task hands him is a command, never a plist to
+      hand-write into `~/Library/LaunchAgents/` and a `launchctl` incantation to get right.
+      Re-running it after a failed load must converge, not stack a second copy.
 
 **Must not:**
 
@@ -726,7 +752,7 @@ by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked b
   master credential for the whole window. One step, already constrained.
 - Ask the owner for a password, or install anything on the VPS on his behalf (§15.1).
 
-### 03a-live — `03a`'s acceptance over the installed restricted key — **codex**
+### 03a-live — `03a`'s acceptance over the installed restricted key — **codex** (the wire and the records) / **owner** (runs §19 step 1c)
 
 **What to do.** No new component. This is the half of `03a` that is a fact about the
 running system rather than about our code, and it can only be executed after the owner has
@@ -738,25 +764,62 @@ is done.
 **Deps:** `03a` (the code), `00b` (the installed key and the escrowed backup key), and
 through `00b`, `28` (the service user the key is installed under).
 
+**Who executes what, because three of these criteria are `DESIGN.md` §19 steps** *(added
+2026-09-01; this row previously named codex alone, which told an agent to perform step 1c
+while §19's preamble says agents never perform it)*:
+
+| Act | Who | Why |
+|---|---|---|
+| Install the puller LaunchAgent; confirm a pull on battery | **owner** | §19 step 1c item 2 |
+| `networth backup attest-key` | **owner** | §19 step 1c item 3 — it records *his* confirmation that he holds an escrow copy. An agent running it writes down a fact that did not happen |
+| The restore drill with the VPS unreachable | **owner** | §19 step 1c items 4/4a |
+| Everything over the wire, and every check that a fact was **recorded** | **codex** | not in §19; it is `ssh` and `sqlite`, and it touches neither the host's config nor a key |
+
+**His half is two visits, not one, and the gap between them is a wait nobody can shorten.**
+Installing the puller comes first; the offline drill restores the archive **as pulled**, so
+it cannot run until a pull has actually landed, and the battery run has to wait for the
+laptop to be on battery — which happens on its own. `attest-key` is the only one of the
+three that can be done at either visit. Say this to him when handing the task over; a
+runbook step that silently contains a wait reads as a stall.
+
+**The owner installs the puller even though agents administer this machine.** Agents
+installed the ticker LaunchAgents on `zelengs-macbook-air-2` themselves, so this one is
+technically ours to install too — and it is still his, because §19 is normative and the
+owner closed `DESIGN.md` to revision on 2026-08-31. A board edit is not the instrument for
+moving a runbook step. If it should move, it moves as a design issue: filed as
+**issue #30**, `during-implementation`, so the disagreement is tracked rather than
+resolved by whoever is editing this file. **What `03a` owes him for this is that it is one
+command** — see `03a`'s installer criterion. He must never be asked to hand-write a plist.
+
 **Acceptance — each one is an observation on the live host, not a test double:**
 
-- [ ] **The constrained key cannot obtain a shell.** A bare `ssh` with that key returns no
-      shell, and `ssh … bash`, `ssh … 'networth show'`, `ssh … 'build-archive current'` and
-      a mangled `archive_id` are each refused over the wire. The dispatcher-level versions
-      already passed in `03a`; this proves the `authorized_keys` line, which is a different
-      artifact and the one that actually protects the host.
-- [ ] **A pull observed while on battery**, by the `KeepAlive` LaunchAgent, over this key —
-      not a manual run, and not on power. This is the criterion the owner's standing
-      battery rule turns into a real check.
-- [ ] **`03a` criterion (3): the offline drill**, on `zelengs-macbook-air-2`
+- [ ] **codex — The constrained key cannot obtain a shell.** A bare `ssh` with that key
+      returns no shell, and `ssh … bash`, `ssh … 'networth show'`,
+      `ssh … 'build-archive current'` and a mangled `archive_id` are each refused over the
+      wire. The dispatcher-level versions already passed in `03a`; this proves the
+      `authorized_keys` line, which is a different artifact and the one that actually
+      protects the host.
+- [ ] **owner, then codex — A pull observed while on battery**, by the `KeepAlive`
+      LaunchAgent, over this key — not a manual run, and not on power. This is the
+      criterion the owner's standing battery rule turns into a real check. **The owner's
+      part ends when the puller is installed and has run**; codex's part is reading it off
+      the record, because `03a`'s puller stamps the power source on every run. Nobody has
+      to be watching at the moment it happens, and nobody is asked to unplug on cue — a
+      criterion that needs a person present at 3 a.m. is not a criterion.
+- [ ] **owner — `03a` criterion (3): the offline drill**, on `zelengs-macbook-air-2`
       (`100.96.163.67`), against the archive **as pulled** into its own destination
       directory, with no network path to the VPS. Verdict produced offline; `record-drill`
-      re-sent on a later run.
-- [ ] **`03a` criterion (2): `networth backup attest-key`** records
-      `key_escrow_confirmed_at` against the key the owner actually escrowed in `00b`.
-- [ ] **A verified pull writes back**, and a verified pull whose write-back fails leaves
-      `pulled_verified_at` `NULL` and re-records on the next run — observed here over the
-      real transport, having been proven against a fake one in `03a`.
+      re-sent on a later run — **codex** verifies that re-send landed. It is his and not
+      automated because it needs this Mac's real path to the VPS severed: an agent that
+      runs `tailscale down`, then dies before bringing it back, leaves the machine off the
+      tailnet, which silently breaks the backup this drill exists to prove *and* both
+      agents' route to the host.
+- [ ] **owner, then codex — `03a` criterion (2): `networth backup attest-key`** records
+      `key_escrow_confirmed_at` against the key the owner actually escrowed in `00b`. He
+      runs it; codex checks the column is non-`NULL` before this row is called done.
+- [ ] **codex — A verified pull writes back**, and a verified pull whose write-back fails
+      leaves `pulled_verified_at` `NULL` and re-records on the next run — observed here
+      over the real transport, having been proven against a fake one in `03a`.
 
 **Must not:**
 
@@ -765,6 +828,11 @@ through `00b`, `28` (the service user the key is installed under).
   must not become the place where the system quietly changes.
 - Ask the owner to re-paste anything to make a check pass. If the installed line is wrong,
   `00a` produced a wrong line — say so, regenerate, and hand him one corrected line.
+- **Perform his half for him** — install the LaunchAgent, run `attest-key`, or take this
+  Mac off the tailnet to produce the offline verdict. Blocked waiting on the owner is the
+  correct state for this row to sit in; an agent-produced `key_escrow_confirmed_at` is
+  worse than a `NULL` one, because `08`'s gate then reads as satisfied by a backup nobody
+  can decrypt.
 
 ### 06 — Sandbox end-to-end rehearsal of the Link flow — **claude**
 
