@@ -211,14 +211,21 @@ def test_put_fsyncs_the_record_and_the_directory_before_it_returns(
     returns, because the caller's very next act is to commit the `item` row that
     points here.
 
-    There are *two* directory barriers, and the first one is the whole of the
-    recovery guarantee: it makes the pending entry durable before the link, so a
-    crash in that window leaves material `reconcile` can still find. Without it
-    the record's own fsync is a promise about contents under a name that may not
-    survive.
+    There are *three* directory barriers, and each one is load-bearing. The first
+    makes the pending entry durable before the link, so a crash in that window
+    leaves material `reconcile` can still find; without it the record's own fsync
+    is a promise about contents under a name that may not survive. The second
+    makes the *publication* durable, and it has to land before the release: the
+    pending name is durable by then, so if the removal reached the platter and
+    the link did not, neither name would hold the material. Nothing in POSIX
+    orders those two directory operations, so the barrier between them is the
+    only thing that does. The third makes the release itself durable.
+
+    The sequence is the assertion. "Both happen" was true of the version that
+    lost a credential.
     """
     calls: list[str] = []
-    real_fsync, real_link = os.fsync, os.link
+    real_fsync, real_link, real_unlink = os.fsync, os.link, Path.unlink
 
     def spy_fsync(fd: int) -> None:
         calls.append("fsync-dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "fsync-file")
@@ -228,11 +235,58 @@ def test_put_fsyncs_the_record_and_the_directory_before_it_returns(
         calls.append("publish")
         real_link(src, dst)
 
+    def spy_unlink(path: Path, **kwargs: Any) -> None:
+        calls.append("release")
+        real_unlink(path, **kwargs)
+
     monkeypatch.setattr(os, "fsync", spy_fsync)
     monkeypatch.setattr(os, "link", spy_link)
+    monkeypatch.setattr(Path, "unlink", spy_unlink)
     store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("fsync"))
 
-    assert calls == ["fsync-file", "fsync-dir", "publish", "fsync-dir"]
+    assert calls == ["fsync-file", "fsync-dir", "publish", "fsync-dir", "release", "fsync-dir"]
+
+
+def test_a_publication_that_fails_keeps_the_only_durable_copy(
+    store: TokenStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stranded slot a broad `finally` created, driven by an injected `EIO`.
+
+    By the time `link` runs, the record and its directory entry have both been
+    fsynced: there is a live credential on this disk under the pending name, and
+    `reconcile` is built to find it. A cleanup that runs on *every* path then
+    deleted it — leaving no published name, no pending name, and `reconcile`
+    answering `None`, which is the answer that sends the owner back to Plaid to
+    spend one of ten lifetime slots on an Item he already has.
+
+    An ordinary publication error, not a crash: the process is alive and raising,
+    which is exactly the case a `finally` is written for and exactly the case
+    where it must not fire.
+    """
+    material = synthetic_material("failed-publication")
+    ref = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW)
+
+    def link_fails(src: Any, dst: Any) -> None:
+        raise OSError(errno.EIO, "input/output error")
+
+    monkeypatch.setattr(os, "link", link_fails)
+    with pytest.raises(OSError) as caught:
+        store.put(SecretKind.ACCESS_TOKEN, FLOW, material, item_id=ITEM)
+    monkeypatch.undo()
+    assert caught.value.errno == errno.EIO
+
+    assert not (store.directory / f"{ref}.json").exists(), "publication was meant to fail"
+    assert (store.directory / pending_name(ref)).exists(), "the only durable copy was deleted"
+
+    recovered = store.reconcile(FLOW)
+    assert recovered is not None, "a live credential is on disk and recovery cannot see it"
+    assert recovered.item_id == ITEM
+    assert store.get(ref).reveal() == material
+
+    # And the retry is refused rather than allowed to write a second credential
+    # over the surviving one — the same rule as every other pending record.
+    with pytest.raises(SecretRefExists):
+        store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("retry"))
 
 
 def test_a_crash_between_the_write_and_the_commit_leaves_a_findable_orphan(
@@ -775,18 +829,61 @@ def test_no_exception_path_carries_material(store: TokenStore) -> None:
     capture(store.put, SecretKind.ACCESS_TOKEN, FLOW, material)  # SecretRefExists
     capture(store.get, secret_ref_for(SecretKind.LINK_TOKEN, FLOW))  # UnknownSecretRef
 
-    # ...as every metadata field of a corrupt record. The file keeps its real
-    # material throughout, so a reader that echoes any field can be caught.
-    for field in ("schema", "kind", "flow_id", "secret_ref", "created_at", "item_id"):
-        raw = read_raw(store, ref)
+    # ...as every metadata field a corrupt record can be refused on. The file
+    # keeps its real material throughout, so a reader that echoes any field can
+    # be caught.
+    #
+    # Each case is rebuilt from the pristine record. Re-reading the file instead
+    # meant the poisoning accumulated: once `schema` held material, every later
+    # field was refused on that stale first field and never reached its own path
+    # at all — the loop looked like six cases and was one, repeated.
+    pristine = read_raw(store, ref)
+    for field in ("schema", "kind", "flow_id", "secret_ref", "created_at"):
+        raw = dict(pristine)
         raw[field] = material
         (store.directory / f"{ref}.json").write_text(json.dumps(raw), encoding="utf-8")
         capture(store.get, ref)  # CorruptRecord
 
-    assert len(raised) == 15
+    assert len(raised) == 14
     for exc in raised:
         assert material not in str(exc), f"{type(exc).__name__} leaked material"
         assert material not in repr(exc), f"{type(exc).__name__} leaked material in repr"
+
+
+def test_the_one_field_that_cannot_be_refused_is_not_rendered(store: TokenStore) -> None:
+    """`item_id` is the record's only unconstrained field, so it is the only leak.
+
+    Every other field is pinned to something this reader already knows:
+    `secret_ref`, `kind` and `flow_id` are checked against the name the file was
+    found under, and `created_at` has to parse as an aware timestamp. None of
+    them can hold a credential and survive validation. `item_id` is any non-empty
+    string Plaid returned, so there is nothing here to refuse — a record carrying
+    material in it is *valid*, both reads succeed, and the generated dataclass
+    `repr` used to print the credential into whatever log line or traceback held
+    the record.
+
+    It is withheld from the rendering, not from the caller: `record.item_id` is
+    still there, on purpose, like `Secret.reveal`.
+    """
+    material = synthetic_material("item-id-leak")
+    held = synthetic_material("held")
+    ref = store.put(SecretKind.ACCESS_TOKEN, FLOW, held, item_id=ITEM)
+    raw = read_raw(store, ref)
+    raw["item_id"] = material
+    (store.directory / f"{ref}.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    record = store.record(ref)
+    assert store.get(ref).reveal() == held, "this record is valid; nothing here can be refused"
+    assert record.item_id == material, "the value is still reachable on purpose"
+
+    for rendering in (repr(record), str(record), f"{record}", f"{record!r}", f"{record}"):
+        assert material not in rendering, "a rendered record leaked material"
+    assert "<redacted>" in repr(record)
+
+    # Presence still survives the redaction: "did material arrive with an Item
+    # id?" is what recovery asks of a rendered record (issue #15).
+    without = store.record(store.put(SecretKind.ACCESS_TOKEN, OTHER_FLOW, held))
+    assert "item_id=None" in repr(without)
 
 
 def test_the_store_itself_does_not_render_material(store: TokenStore) -> None:

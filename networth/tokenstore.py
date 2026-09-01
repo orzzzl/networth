@@ -153,12 +153,25 @@ class Secret:
         return "<Secret: redacted>"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class SecretRecord:
     """Everything about a stored secret **except** the secret.
 
     Returned by the metadata reads so that "does material exist for this flow?"
     never has to move a credential to answer.
+
+    ``item_id`` is not secret — §7 keeps it in a plain ``link_flow`` column — and
+    it is still withheld from ``repr``, for a different reason: it is the only
+    field here whose contents this store cannot constrain. ``secret_ref``,
+    ``kind`` and ``flow_id`` are each checked against the name the file was found
+    under, so they can only ever be ``kind.<32 hex>``; ``created_at`` has to parse
+    as an aware timestamp. ``item_id`` is any non-empty string Plaid handed back,
+    which means it is the one place a bad or hostile write can park a credential
+    and have a reader render it. It used to: a record with ``item_id`` set to
+    token material passed validation, and this dataclass's generated ``repr``
+    printed it into whatever log line or traceback held the record. Reading it is
+    a call you write on purpose — ``record.item_id`` — exactly like
+    :meth:`Secret.reveal`.
     """
 
     secret_ref: str
@@ -166,6 +179,17 @@ class SecretRecord:
     flow_id: str
     item_id: str | None
     created_at: datetime
+
+    def __repr__(self) -> str:
+        # Presence, never the value: "did this flow's material arrive with an
+        # Item id?" is the question recovery actually asks of a rendered record
+        # (issue #15), and it is answerable without printing one.
+        item_id = "None" if self.item_id is None else "<redacted>"
+        return (
+            f"SecretRecord(secret_ref={self.secret_ref!r}, kind={self.kind!r}, "
+            f"flow_id={self.flow_id!r}, item_id={item_id}, "
+            f"created_at={self.created_at!r})"
+        )
 
 
 def new_flow_id() -> str:
@@ -267,6 +291,32 @@ class TokenStore:
         to prevent, reached from the other side. A derived name is reconciled and
         deleted like any other, so neither window survives.
 
+        The pending name is released on exactly two outcomes, and both of them
+        are "this ref provably has durable published material": this call
+        published it, or the ``link`` was refused because another call already
+        had. **Every other failure leaves the pending record alone**, because on
+        those paths it is the only copy of a credential that cannot be re-fetched.
+        A broad ``finally`` here read as tidiness and was the stranded slot this
+        module exists to prevent: an ``EIO`` from ``link`` — after the record and
+        its directory entry were both ``fsync``ed — deleted the one durable copy
+        and left :meth:`reconcile` answering ``None``, which is the answer that
+        sends the owner back to Plaid to spend a lifetime slot.
+
+        The rule is deliberately not "unlink if the failure happened before the
+        material was durable". That boundary is unknowable: data can reach the
+        platter before ``fsync`` returns, so even a failing write may have left a
+        readable credential behind. Where a failure *happened* is the wrong
+        question; whether the ref has published material is the answerable one.
+
+        Publication is made durable **before** the durable pending name is
+        removed — ``link``, ``fsync`` the directory, then unlink, then ``fsync``
+        again. Doing both in one barrier meant the only ordering between them was
+        the filesystem's, and nothing in POSIX promises the ``link`` reaches the
+        platter before the ``unlink`` does. A crash in that window could persist
+        the removal without the publication and leave neither name holding the
+        material. Two barriers cost one ``fsync`` and make every crash point land
+        on at least one name.
+
         The cost is that a half-written pending record blocks the ref until it is
         explicitly deleted, rather than being silently replaced by the next
         attempt. That is the right way round: refusing is recoverable, and
@@ -306,37 +356,39 @@ class TokenStore:
             ) from None
 
         try:
-            try:
-                # O_CREAT's mode is a request that umask can clear; fchmod is the
-                # guarantee, and the mode on disk is the acceptance criterion.
-                os.fchmod(fd, FILE_MODE)
-                with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
-                    json.dump(record, handle)
-                    handle.flush()
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-
-            # The pending *entry* has to be durable, not just its contents:
-            # recovery reads this name, and an unsynced directory can lose it.
-            # This is the barrier that makes the first crash window recoverable.
-            self._fsync_directory()
-
-            try:
-                os.link(pending, final)
-            except FileExistsError:
-                raise SecretRefExists(
-                    f"material already stored under {ref!r}; "
-                    f"reconcile before writing (issue #15), or delete it explicitly"
-                ) from None
+            # O_CREAT's mode is a request that umask can clear; fchmod is the
+            # guarantee, and the mode on disk is the acceptance criterion.
+            os.fchmod(fd, FILE_MODE)
+            with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
+                json.dump(record, handle)
+                handle.flush()
+            os.fsync(fd)
         finally:
-            # This name was claimed with O_EXCL, so it is this call's to remove on
-            # every path: after a successful link the material lives under `final`,
-            # and on any failure what is here is our own incomplete or unclaimed
-            # write. Crashing before this leaves both names — which is why both
-            # are deleted, not just one.
-            pending.unlink(missing_ok=True)
-            self._fsync_directory()
+            os.close(fd)
+
+        # The pending *entry* has to be durable, not just its contents: recovery
+        # reads this name, and an unsynced directory can lose it. This is the
+        # barrier that makes the first crash window recoverable.
+        self._fsync_directory()
+
+        try:
+            os.link(pending, final)
+        except FileExistsError:
+            # The one failure that may release the pending name: `final` exists,
+            # so this ref already has durable published material and nothing is
+            # lost by dropping our own refused copy. Keeping it would wedge a ref
+            # whose only escape — `delete` — would take the live credential with
+            # it.
+            self._release(pending)
+            raise SecretRefExists(
+                f"material already stored under {ref!r}; "
+                f"reconcile before writing (issue #15), or delete it explicitly"
+            ) from None
+
+        # Publication first, and durably, before the name that currently holds
+        # the only durable copy is taken away.
+        self._fsync_directory()
+        self._release(pending)
         return ref
 
     # --- reading ---------------------------------------------------------------
@@ -445,6 +497,16 @@ class TokenStore:
     def _pending_path(self, secret_ref: str) -> Path:
         parse_secret_ref(secret_ref)
         return self._dir / f".{secret_ref}{_PENDING_SUFFIX}"
+
+    def _release(self, pending: Path) -> None:
+        """Drop a pending name and make its absence durable.
+
+        Only ever called once this ref has published material, so the removal can
+        never be the thing that loses a credential. `missing_ok` because a
+        concurrent :meth:`delete` reaches the same two names.
+        """
+        pending.unlink(missing_ok=True)
+        self._fsync_directory()
 
     def _fsync_directory(self) -> None:
         fd = os.open(self._dir, os.O_RDONLY)
