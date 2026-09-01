@@ -57,18 +57,18 @@ a judgement call. **No agent reviews a task it was assigned.**
 | 05a | `TokenStore` | 02 | **claude** | codex | BLOCKED (02) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill | 03, 05a, 00a | **codex** | claude | BLOCKED (00a) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00 | **claude** | codex | BLOCKED (05, 05a, Sandbox secret) |
-| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** | codex | BLOCKED (06) |
+| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half) | codex | BLOCKED (06) |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 05, 06a | **codex** | claude | BLOCKED (06a) |
+| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | BLOCKED (06a) |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a | **claude** | codex | BLOCKED (07a) |
-| 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a, 16 | **claude** (script) / **owner** (runs it) | codex | BLOCKED |
+| 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | BLOCKED (04) |
+| 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a, 16, 26a | **claude** (script) / **owner** (runs it) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
 | 12b | Replacement-Item reconcile flow | 04, 09 | **claude** | codex | BLOCKED (09) |
-| 26 | Item budget tracking + remaining-slot surfacing | 04, 08 | **claude** | codex | BLOCKED (08) |
 
 ### Phase 3 — sync and the honesty machinery
 
@@ -80,7 +80,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | BLOCKED (04) |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED |
 | 15 | Alerts: payload-carried delivery | 11 | **codex** | claude | BLOCKED (11) |
-| 16 | systemd units + timer + due-ness engine + catch-up | 10, 12, 14, 15, 07a | **codex** | claude | BLOCKED |
+| 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 28 | **codex** | claude | BLOCKED |
 | 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | BLOCKED |
 
 ### Phase 4 — getting the number onto the phone
@@ -96,15 +96,18 @@ a judgement call. **No agent reviews a task it was assigned.**
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | BLOCKED (21) |
 | 24 | Release signing + APK delivery | 20, 21, 22 | **claude** | codex | BLOCKED |
+| 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 22 | **claude** | codex | BLOCKED |
 
 ### Phase 5 — operations
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 28 | VPS provisioning + hardening | 00a | **codex** | claude | BLOCKED (00a) |
+| 28 | VPS provisioning + hardening (**base host only**) | 00a | **codex** | claude | BLOCKED (00a) |
 | 25 | ~~DB backup/restore~~ | — | — | — | **SUPERSEDED by 03a** |
 
-**Totals:** claude 16, codex 16, owner 2 (+1 answered, 1 superseded).
+**Totals:** claude 17, codex 16, owner 2 (+1 answered, 1 superseded). Two of claude's are
+shared with the owner because he is the one who runs them: `08`, and `06a`'s measurement
+(iv). Agents write those commands; the owner executes them.
 
 ## Why the split is shaped this way
 
@@ -153,15 +156,45 @@ this machine.
 | 1 | `02` alone | repo root | — |
 | 2 | `03` ∥ `05` ∥ `05a` | `networth/db/` + `migrations/` ∥ `networth/plaid/` ∥ `networth/secrets/` | No |
 | 3 | `04` ∥ `06` | `networth/model/` + `networth/store/` ∥ `scripts/` + `tests/sandbox/` | No |
-| 4 | `03a` ∥ `06a` | `networth/backup/` + `scripts/restore-drill.sh` ∥ `tests/sandbox/` | No |
+| 4 | `03a` ∥ `06a` | `networth/backup/` + `scripts/restore-drill.sh` ∥ `tests/sandbox/` + `scripts/link-recover.sh` | No |
 | 5 | `07b` ∥ `16` | `scripts/link-recover.sh` ∥ `networth/scheduler/` + `deploy/systemd/` | No — but see below |
 
+`06a` now creates `scripts/link-recover.sh` in its first form and `07b` extends it, so that
+one file is written in two waves by the same agent — sequential, not concurrent, and never
+open in two worktrees at once.
+
+`26a` is not in this table because it is not a wave: it needs only `04`, it touches its own
+`networth/budget/`, and it collides with nothing. It is claude's filler work whenever
+claude is otherwise waiting — which is most of Phase 2, since `07a` sits in codex's queue
+between `06a` and `07b`. It has to land before `08` regardless.
+
 Wave 5's files are disjoint but its *subject* is not: `07b` recovers a flow that `16`'s
-worker may still be driving, and both read the `link_flow` claim columns from `03`. They
-do not collide in git; they can contradict each other in behaviour. The shared contract is
-**the conditional `EXCHANGING` claim** — whichever lands second must prove, with a test,
-that the two cannot both exchange the same `public_token`. Neither may relax the claim to
-make its own path simpler.
+worker may still be driving. They do not collide in git; they can contradict each other in
+behaviour.
+
+**And the shared contract cannot be what an earlier draft of this file claimed it was.**
+That draft named the conditional `EXCHANGING` claim as the thing keeping both paths from
+exchanging the same `public_token`. That claim is a conditional `UPDATE` against **one
+SQLite file on the VPS**, and the entire scenario `07b` exists for is the one where that
+host and that file are unreachable. A restored copy on a replacement host is a *different*
+database. Two files can both win a claim they do not share, so the mechanism named as the
+safety property does not span the two processes it was supposed to serialise.
+
+The honest contract is two things, and both tasks are written against it:
+
+- **The fence is that the old VPS is provably not running** — a precondition the owner
+  establishes in the provider control plane before recovery exchanges, not a lock. See
+  `07b`. Unreachable is not off.
+- **At-most-once on the wire is Plaid's, not ours.** The `public_token` is single-use, so
+  if both hosts do reach the API, one exchange fails. What that failure *means* is measured
+  in `06a` (ii) — including whether the first `access_token` survives it — and both `07b`
+  and `16` must classify the losing branch from that measurement rather than from a guess.
+  Losing that race is **not** a lost slot; it means the other host holds the credential.
+
+Whichever of the two lands second proves with a test that the loser's branch is classified
+honestly. Neither may weaken the local claim to make its own path simpler: the claim is
+still what serialises two runs *on the same host*, which is a real failure mode (two
+terminal windows, a re-run after a crash) even though it is not the cross-host one.
 
 **Two known shared files, called out because they are the only ones:**
 
@@ -591,7 +624,7 @@ both values.
 
 **Must not:** touch Production. No agent sees either secret.
 
-### 06a — Prove F7 in Sandbox and measure the four unknowns — **claude**
+### 06a — Prove F7 in Sandbox and measure the four unknowns — **claude** builds; **owner** runs the Mac half of (iv)
 
 **A hard gate on `08` and on `07a`. If `06a` does not pass, `08` does not run.** There is
 no degraded mode and no fallback: Plaid states that in Hosted Link *"there is no frontend
@@ -647,7 +680,55 @@ Issues **#3, #4, #5**, **#13**, **#15**.
       before `08` — which is why this is measured here, in the task that precedes both,
       rather than discovered inside the emergency it was written for.
 
-**Must not:** run any of this in Production. That is the whole point of the task.
+**How (iv) is actually executed, because until this revision it could not be.** The Mac
+half needs `client_id` and the Sandbox secret to call Plaid at all, and this project has
+exactly one sanctioned Sandbox credential: `/etc/networth/plaid-sandbox.env` **on the
+VPS**, which no agent may read. A Claude session on `zelengs-macbook-air-2` therefore had
+no way to run this measurement without either involving the VPS — which destroys what is
+being measured — or inventing a second credential location, which §15 forbids. The task
+asserted a measurement with no executable path.
+
+The resolution is not a new secret location. It is that **(iv)'s Mac half is run by the
+owner, through the same TTY prompt `07b` will use in the real emergency** (`DESIGN.md`
+§19 step 2a: *"It will prompt you for `client_id` and the production secret… that prompt
+is the only manual part, and it exists because this Mac must not store the client
+secret"*). That makes the measurement a rehearsal of the actual recovery mechanism, prompt
+included, instead of a synthetic stand-in for it.
+
+Concretely, and this is part of the deliverable:
+
+- [ ] Claude builds and runs the **VPS half** (mint + complete the Sandbox session) — an
+      agent may do this because the process on the VPS reads the file; the agent never sees
+      its contents.
+- [ ] Claude writes the **Mac half as one pre-staged command** that reads `client_id` and
+      the **Sandbox** secret from a TTY with `read -rs`, never echoes them, never writes
+      them to disk, never puts them in `argv` (so they stay out of `ps`), and leaves no
+      shell-history entry. Run with `NETWORTH_ENV=sandbox`.
+      **This command is the seed of `scripts/link-recover.sh`, not a copy of it** — `07b`
+      depends on this task and extends *this* prompt and call path with the durable sink,
+      the fencing precondition and the crash injection. Writing a throwaway here and a
+      second prompt there would mean the emergency runs code this measurement never
+      touched, which is the whole thing (iv) exists to prevent.
+- [ ] The **owner runs that one command** and reports only the outcome — succeeded or
+      failed, and the error code if it failed. **He is never asked to paste a secret
+      anywhere an agent can read** (`AGENTS.md` rule 1, `DESIGN.md` §19 step 1 item 4).
+- [ ] The command **refuses to run with `NETWORTH_ENV=production`**. A prompt that accepts
+      the Production secret on this machine, during a measurement, is the one way this
+      criterion could cost something real.
+
+**Sequencing note:** (i)–(iii) are fully agent-run and must not wait on the owner. Only
+(iv) has an owner step, and it is one command at the end. If the owner is unavailable,
+(i)–(iii) still land; `07a` is gated on (ii) and (iii), and only `07b` and `08` are gated
+on (iv).
+
+**Must not:**
+
+- Do not run any of this in Production. That is the whole point of the task.
+- **Do not copy the Sandbox secret to the Mac** to make (iv) agent-runnable. A second
+  credential location is not sanctioned by §15, and the copy would rehearse a path that
+  does not exist in the emergency this measurement exists to validate.
+- Do not ask the owner to paste a secret into a chat, a file, a log or a PR — not even a
+  Sandbox one. The habit is the control.
 
 ---
 
@@ -665,6 +746,12 @@ surface, no browser cooperation.
 
 **Normative:** `DESIGN.md` **F7**, **F2a**, §16, §8. Issues **#7**, #3, #4, #5, **#14**,
 **#15**, **#16**.
+
+**Builds on `03` and `05a`, and both are now declared.** Every SQL criterion below
+transitions rows in the `link_flow` table `03` creates, and the `access_token` is written
+through `05a`'s `TokenStore`. The first revision of this file listed only `05` and `06a`,
+so the schema this task manipulates was created by nothing upstream of it — a graph that
+would have sent codex to write migrations inside a task that does not own them.
 
 **Three properties measured on the live account 2026-08-31 that the implementation must
 respect:**
@@ -686,6 +773,11 @@ respect:**
 - [ ] `ABANDONED` has a reachable definition, and a test reaches it.
 - [ ] Entry to `EXCHANGING` is a **conditional** `UPDATE … WHERE
       state='SUCCESS_PENDING_EXCHANGE'`; a worker changing **0 rows does not call Plaid**.
+      **Scope it honestly in the code comment and in any doc this task writes: this
+      serialises workers sharing *this* database file.** It does not reach `07b`, which runs
+      on another host against another file precisely because this one is gone. Cross-host
+      at-most-once is Plaid's single-use `public_token` plus `07b`'s power-off precondition,
+      not this `UPDATE`.
 - [ ] `EXCHANGE_UNCERTAIN` is a real terminal outcome, not a retry loop against a
       single-use token.
 - [ ] The `access_token` is written through `TokenStore` **before** the `item` row.
@@ -762,10 +854,38 @@ capture is issue **#14**.
       exchange; this criterion is the rehearsal of the whole script, crash injection
       included. **A recovery procedure that has never been executed is a paragraph** — and
       this one would otherwise execute for the first time during the emergency.
-- [ ] It exchanges **only** under the same conditional claim `07a` uses, so a VPS that turns
-      out to be alive cannot race it into a duplicate exchange.
+- [ ] **A fencing precondition that is real, because the shared claim is not.** An earlier
+      revision of this entry required the exchange to happen "under the same conditional
+      claim `07a` uses." It cannot. That claim is a conditional `UPDATE` against the VPS's
+      `link_flow` row, and this script runs precisely when that host and that database are
+      unreachable; a restored copy on a replacement host is a **different** SQLite file, and
+      two files can both win. What the local claim genuinely buys is serialisation of two
+      runs *on this host* — keep it for that, and stop calling it cross-host safety.
+      The fence is: **before the exchange, the script requires evidence that the old VPS
+      worker is not running** — the owner powers off or destroys the instance in the
+      provider control plane and the script takes an explicit typed confirmation naming
+      that instance, recorded with the recovery artifact. **Unreachable is not off**: a host
+      that fails a ping can still be mid-`/link/token/get`. State plainly in the
+      owner-facing text that this host is also his exit node (§15.1), so powering it off is
+      a real decision and not a formality.
+- [ ] **The losing branch is classified from a measurement, not a guess.** The
+      `public_token` is single-use, so Plaid — not our database — is what actually enforces
+      at-most-once on the wire. If both hosts reach the API, one exchange fails. `06a` (ii)
+      measured that error code **and whether the first `access_token` survives**; this
+      script's duplicate-exchange branch is written against that measurement. Losing the
+      race is **not** a stranded slot — it means the other host holds the credential — and
+      reporting it as a loss would send the owner to Plaid support over a working Item.
+- [ ] **The uncertain case is tested: the old VPS comes back after recovery exchanged.**
+      Assert the outcome is classified honestly, that `TokenStore` ends with one usable
+      credential rather than a silently preferred one, and that the budget (`26a`) counts
+      **one** Item and not two.
 - [ ] The owner-facing text states **30 minutes**, and the script is pre-staged as one
       command — this is a minutes procedure, not a six-hour one.
+- [ ] **The Plaid client credential comes from the owner at a TTY, never from this Mac's
+      disk.** §19 step 2a already specifies the prompt and §15 already says why: this
+      machine must not store the client secret. **Extend the command `06a` (iv) built and
+      the owner already ran once; do not write a second prompt.** That is the reason `06a`
+      is upstream of this task rather than merely adjacent to it.
 
 **Must not:**
 
@@ -773,8 +893,50 @@ capture is issue **#14**.
   Mac, or ask the owner to paste it somewhere an agent can read it (`AGENTS.md` rule 1).
 - Do not invent a new key. The emergency artifact uses the escrowed backup key, which is
   why this task depends on `03a` and `00a`.
+- **Do not present the local conditional claim as protection against the old VPS.** A lock
+  in a database the other host cannot open is a comment, and one that reads like a
+  guarantee is worse than none — it is the failure mode where the owner skips the power-off
+  because the script implied it was covered.
 - Do not touch Production while building it. It is written and tested against Sandbox; the
   first Production run is the owner's, in an emergency.
+
+### 26a — Item budget core: the remaining-slot count — **claude**
+
+**What to build.** One function, in one place, that answers *how many of the ten lifetime
+Item slots are left* — and the counting rules behind it. No surfacing: no `doctor` output,
+no app screen. Those are `26`.
+
+**Why this is split out and why it sits before `08`.** `08` must report remaining slots
+before it asks the owner to confirm, and `26` was declared the single source of that count
+while itself depending on `08`. That is a cycle in meaning even where it is not one in the
+graph: the first Production Link either duplicates the arithmetic `26` forbids duplicating,
+or it waits for a task that waits for it. Splitting the count from its display resolves it
+in the direction that keeps the single-source rule intact — **the core lands first, `08`
+consumes it, and the surfaces consume it later, when they exist.**
+
+**Normative:** §14, **F2**, **F2a**. Issue **#7**.
+
+**Acceptance:**
+
+- [ ] A single callable that returns the remaining count **and the facts behind it**, so a
+      caller can explain the number rather than just print it (`AGENTS.md` rule 4 in
+      spirit: no number without its provenance).
+- [ ] Reads `link_flow` as the single source for spent-but-unusable slots — a `URL_MINTED`
+      row whose URL expired is **not** counted. Only `TOKEN_EXPIRED` and
+      `EXCHANGE_UNCERTAIN` are spent-and-unusable; `URL_EXPIRED`, `SESSION_EXITED` and
+      `ABANDONED` spend nothing (**F2a**), and `07a` is where those states are produced.
+- [ ] Reads `replaces_item_id` so a replacement's cost is visible.
+- [ ] Counts an Item recovered by `07b` **once**, whichever host ended up holding the
+      credential.
+- [ ] Unit-tested against a fixture database. It has no dependency on a Production Item and
+      must not acquire one.
+
+**Must not:**
+
+- Do not derive the count from a second source. Two sources means two answers — that rule
+  is the reason for this split, not a casualty of it.
+- Do not print anything or add a CLI verb. If you are formatting for a human, you are in
+  `26`.
 
 ### 08 — `scripts/link.sh`, the owner-run Production Link — **claude** writes it, **owner** runs it
 
@@ -811,7 +973,10 @@ Mac. **Agents never run it.**
 - [ ] **`07b` is on disk, rehearsed, and its durable sink is verified before the link token
       is minted** (issue #13). The lost-VPS window opens the instant Link succeeds; a
       recovery script that first runs during the emergency is not a recovery path.
-- [ ] Reports remaining slots before asking for confirmation.
+- [ ] **Reports remaining slots before asking for confirmation, by calling `26a`** — not by
+      counting Items itself. The single-source rule (`26a`) applies to its first consumer
+      most of all: a second derivation written here is the one that runs while a lifetime
+      slot is about to be spent.
 
 **Must not:**
 
@@ -855,22 +1020,6 @@ across the seam.
 new both contributing) and a severed curve (history not carried across `lineage_id`).
 
 **Must not:** auto-confirm a mapping. The owner confirms.
-
-### 26 — Item budget tracking + remaining-slot surfacing — **claude**
-
-**What to build.** The remaining-slot count, surfaced where the owner sees it. Running out
-is invisible until it isn't (**F2**).
-
-**Normative:** §14, **F2**, **F2a**. Issue **#7**.
-
-**Acceptance:**
-
-- [ ] Reads `link_flow` as the single source for spent-but-unusable slots — a
-      `URL_MINTED` row whose URL expired is **not** counted.
-- [ ] Reads `replaces_item_id` so a replacement's cost is visible.
-- [ ] `doctor` and the app agree on the number.
-
-**Must not:** derive the count from a second source. Two sources means two answers.
 
 ---
 
@@ -996,11 +1145,24 @@ as of that time**.
 **Must not:** add an alert kind that watches a third party or a queue. Those were deleted
 because there is nothing left for them to observe.
 
-### 16 — systemd units + timer + due-ness engine + catch-up — **codex**
+### 16 — systemd units + timer + due-ness engine + catch-up + live install — **codex**
 
 **Normative:** §13, **F7**, **F2a**. Issues #3, **#10**, **#16**, **#17**.
 
+**This task owns the units end to end: it defines them, installs them on the host `28`
+provisioned, and verifies them running.** `28` prepares the base host and stops there.
+Before this revision, `28` promised to install "whatever unit set `16` settles on" without
+depending on `16`, and `16` required itself to be "installed and running" before `08`
+without depending on `28` — so the install existed in two entries and belonged to neither,
+and the verification that gates the only slot-spending task in the project had no owner.
+**Depends on `28`.**
+
 **Acceptance:**
+
+- [ ] **The units are installed and observed running on the provisioned host, and that
+      observation is what gates `08`** — `systemctl is-active` on each unit and the timer's
+      next elapse, captured, not assumed. A unit file merged into the repo is not a unit
+      that runs.
 
 - [ ] Due-ness is computed from **stored state**, not from "did the timer fire" — the
       catch-up predicate survives downtime.
@@ -1269,18 +1431,55 @@ delivered app has a real transport.
 
 **Must not:** deliver a debug-signed build.
 
+### 26 — Remaining-slot surfacing: `doctor` and the app agree — **claude**
+
+**What to build.** Display of `26a`'s count everywhere the owner looks: the `doctor`
+subcommand (`18`) and the app (`22`). Running out of slots is invisible until it isn't
+(**F2**), and a number nobody sees is not surfacing.
+
+**Why it is here and not in Phase 2.** Its consumers are here. This task used to hold both
+the arithmetic and the display and to depend on `08`, which needs the arithmetic — so it
+was upstream and downstream of the same task. The count moved to `26a`, before `08`; what
+is left is the presentation, and presentation lands with the surfaces that present it.
+
+**Normative:** §14, **F2**, **F2a**. Issue **#7**.
+
+**Acceptance:**
+
+- [ ] `doctor` and the app **agree on the number**, because both call `26a` — verified by a
+      test that changes the underlying state and asserts both surfaces move together, not
+      by two implementations that happen to match on the day they were written.
+- [ ] The number is shown with what it means: a remaining count of zero says the account is
+      at its lifetime ceiling and that `/item/remove` will not free one (**F2**), rather
+      than showing a bare `0`.
+- [ ] A slot spent-but-unusable (`TOKEN_EXPIRED`, `EXCHANGE_UNCERTAIN`) is **visible as
+      that**, not silently folded into "used".
+
+**Must not:**
+
+- Do not compute anything. If this task needs a rule about what counts, the rule belongs in
+  `26a` and this task calls it. Two sources means two answers.
+- Do not present the count without its provenance (`AGENTS.md` rule 4).
+
 ---
 
 ## Phase 5 — operations
 
 ### 28 — VPS provisioning + hardening — **codex**
 
-**What to build.** Idempotent provisioning of the owner's **existing** Vultr host
-(`tokyo-exit`, `100.102.245.37`): key-only SSH (`PasswordAuthentication no`), a firewall
-opening **only SSH**, unattended security upgrades, a **dedicated unprivileged service
-user**, the Python runtime, and **whatever unit set task `16` settles on** — two today,
-possibly three if `16` answers issue #17 with a dedicated pending-Link unit. Install what
-`16` defines; do not hardcode a count here.
+**What to build.** Idempotent provisioning of the **base host** — the owner's **existing**
+Vultr host (`tokyo-exit`, `100.102.245.37`): key-only SSH (`PasswordAuthentication no`), a
+firewall opening **only SSH**, unattended security upgrades, a **dedicated unprivileged
+service user**, `/etc/networth/` with the right ownership and modes, and the Python
+runtime.
+
+**This task installs no application unit.** Earlier it said it would install "whatever unit
+set task `16` settles on," which made it wait on `16` while `16` did not declare it — an
+ordering nobody could execute, and the live verification that gates `08` belonged to
+neither. **The boundary is now: `28` prepares the host; `16` owns the unit files, installs
+them, and verifies them running.** `16` therefore depends on `28`, and because `08` already
+depends on `16`, the Production Link is gated on a host that was provisioned *and* on units
+someone watched start. Nothing here needs to know how many units there are.
 
 **Normative:** §15.1, §13, §19 step 3. Issues **#6**, #17.
 
@@ -1307,10 +1506,13 @@ more than the hardening itself:**
   wrong does not degrade the product — it takes away the owner's exit node and his access
   to every credential.
 - Do not open a second port. There is no public inbound service of any kind (§8.4).
-- **Do not install a unit that listens.** The webhook receiver was removed in rev 15 and
-  does not come back through provisioning. (This rule used to read "no third unit" — a
-  count, which issue #17 may legitimately change. The thing being forbidden was always an
-  inbound listener, not arithmetic.)
+- **Do not install any application unit — that is `16`'s, and specifically the listening
+  one does not exist at all.** The webhook receiver was removed in rev 15 and does not come
+  back through provisioning. (This rule used to read "no third unit" — a count, which issue
+  #17 may legitimately change. The thing being forbidden was always an inbound listener,
+  not arithmetic.)
+- Do not wait on `16`. Nothing here reads what `16` decided; if you find yourself needing
+  to know the unit count, the boundary above has been crossed.
 - No agent asks the owner for a password (§15.1).
 
 ### 25 — ~~DB backup/restore~~ — **SUPERSEDED by `03a`**
