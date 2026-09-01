@@ -16,6 +16,13 @@ and the git log of PR #1 have it.
 - `BLOCKED (x)` — waiting on `x`.
 - `WIP` / `DONE` — claimed / merged.
 
+**A task with an open PR is `WIP` from the moment the PR exists, not from the moment it
+merges.** The row is the only thing a fresh session of an agent reads before deciding what
+to start, and this project's founding failure is a registry that keeps serving an entry
+after the thing it describes has changed. `05` sat at `READY` on `main` through two rounds
+of review on PR #29 (caught 2026-09-01, after a board PR that edited the same table twice
+without noticing).
+
 ## The rules that apply to every task
 
 1. **No task may create a Production Plaid Item unless its entry says so explicitly.**
@@ -61,7 +68,7 @@ that row. He caught it, not us.)
 | 02 | Project scaffold + secret scanner | — | **claude** | codex | **DONE** (#19, 2026-09-01) |
 | 03 | SQLite schema + migration runner | 02 | **codex** | claude | **DONE** (#22, 2026-09-01) |
 | 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **READY** |
-| 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **READY** |
+| 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **WIP** (PR #29) |
 | 05a | `TokenStore` | 02 | **claude** | codex | **WIP** (PR #21) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | BLOCKED (05a) |
 | 00a | Generate the constrained backup keypair; pin its `command=` | 03a | **codex** | claude | BLOCKED (03a) |
