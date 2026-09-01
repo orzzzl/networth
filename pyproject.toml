@@ -3,7 +3,9 @@ name = "networth"
 version = "0.0.0"
 description = "Personal net-worth aggregator — sync daemon and CLI"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "plaid-python>=43.0.0",
+]
 
 [project.scripts]
 networth = "networth.cli:main"
@@ -33,6 +35,15 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["networth", "tests"]
+
+# The official Plaid SDK (DESIGN.md section 16) ships no `py.typed`, so strict
+# mode cannot see into it. Narrowed to that one package rather than relaxed
+# globally: our own code stays strict, and the untyped surface is confined to
+# `networth/plaid/client.py`, which is why that module converts every SDK value
+# into our own types before returning it.
+[[tool.mypy.overrides]]
+module = ["plaid.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
