@@ -6,6 +6,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from importlib import resources
+from pathlib import Path
 
 import pytest
 
@@ -137,6 +138,22 @@ def test_migrations_run_from_empty_and_are_idempotent() -> None:
         assert after == before
     finally:
         connection.close()
+
+
+def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
+    database_path = tmp_path / "networth.db"
+    connection = sqlite3.connect(database_path)
+    try:
+        assert migrate(connection) == (1,)
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+    finally:
+        connection.close()
+
+    reopened = sqlite3.connect(database_path)
+    try:
+        assert reopened.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+    finally:
+        reopened.close()
 
 
 def test_migration_refuses_a_database_from_the_future() -> None:
@@ -446,6 +463,38 @@ def test_only_one_published_envelope_can_be_active(db: sqlite3.Connection) -> No
     )
 
 
+def test_pairing_rotation_can_activate_new_pairing_before_revoking_old(
+    db: sqlite3.Connection,
+) -> None:
+    db.execute(
+        "INSERT INTO pairing(id, created_at, key_ref, state) "
+        "VALUES ('pair-old', ?, 'payload-key/pair-old', 'ACTIVE')",
+        (NOW,),
+    )
+    db.commit()
+
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        db.execute(
+            "INSERT INTO pairing(id, created_at, key_ref, state) "
+            "VALUES ('pair-new', ?, 'payload-key/pair-new', 'ACTIVE')",
+            (NOW,),
+        )
+        db.execute(
+            "UPDATE pairing SET state = 'REVOKED', revoked_at = ? WHERE id = 'pair-old'",
+            (NOW,),
+        )
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+
+    assert db.execute("SELECT id, state FROM pairing ORDER BY id").fetchall() == [
+        ("pair-new", "ACTIVE"),
+        ("pair-old", "REVOKED"),
+    ]
+
+
 def test_publication_sequence_cannot_move_backwards(db: sqlite3.Connection) -> None:
     _insert_sync_run(db, "run-sequence")
     snapshot_id = _insert_snapshot(db, "run-sequence")
@@ -498,6 +547,28 @@ def test_link_identifiers_are_independently_storable_in_every_state(
     assert db.execute(
         "SELECT link_session_id, item_id FROM link_flow WHERE flow_id = ?", (item_flow,)
     ).fetchone() == (None, f"item-{state.lower()}")
+
+
+def test_link_flows_can_record_repeat_activity_for_the_same_item(
+    db: sqlite3.Connection,
+) -> None:
+    _insert_link_flow(
+        db,
+        flow_id="initial-link",
+        state="EXCHANGED",
+        item_id="reused-item",
+    )
+    _insert_link_flow(
+        db,
+        flow_id="update-mode-link",
+        state="EXCHANGED",
+        item_id="reused-item",
+    )
+
+    assert db.execute(
+        "SELECT flow_id FROM link_flow WHERE item_id = ? ORDER BY id",
+        ("reused-item",),
+    ).fetchall() == [("initial-link",), ("update-mode-link",)]
 
 
 def test_only_completed_link_failures_are_counted_as_stranded(db: sqlite3.Connection) -> None:

@@ -155,10 +155,6 @@ CREATE TABLE pairing (
     CHECK ((state = 'REVOKED') = (revoked_at IS NOT NULL))
 ) STRICT;
 
-CREATE UNIQUE INDEX one_active_pairing
-    ON pairing(state)
-    WHERE state = 'ACTIVE';
-
 CREATE TABLE publication (
     id INTEGER PRIMARY KEY,
     snapshot_id INTEGER NOT NULL REFERENCES snapshot(id),
@@ -259,7 +255,7 @@ CREATE TABLE link_flow (
     last_poll_at TEXT,
     poll_error TEXT,
     link_session_id TEXT UNIQUE,
-    item_id TEXT UNIQUE,
+    item_id TEXT,
     material_reaped_at TEXT,
     secret_ref_cleared_at TEXT,
     CHECK ((second_copy_verified_at IS NULL) = (second_copy_holder IS NULL)),

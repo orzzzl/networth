@@ -70,6 +70,27 @@ def _schema_version(connection: sqlite3.Connection) -> int:
     return int(row[0])
 
 
+def _enable_wal(connection: sqlite3.Connection) -> None:
+    """Persist WAL mode for a file-backed database.
+
+    SQLite cannot enable WAL for an in-memory database, which is useful for unit
+    tests but has no durable journal mode to configure. Any file-backed database
+    must report ``wal`` after the pragma or migration stops loudly.
+    """
+
+    row = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+    if row is None:
+        raise MigrationError("SQLite did not return PRAGMA journal_mode")
+
+    journal_mode = str(row[0]).lower()
+    database_rows = connection.execute("PRAGMA database_list").fetchall()
+    main_path = next((str(database[2]) for database in database_rows if database[1] == "main"), "")
+    if main_path and journal_mode != "wal":
+        raise MigrationError(
+            f"SQLite WAL mode could not be enabled for the main database; got {journal_mode!r}"
+        )
+
+
 def _statements(script: str, *, name: str) -> Iterator[str]:
     """Yield complete statements without giving ``executescript`` a hidden commit.
 
@@ -118,6 +139,10 @@ def migrate(connection: sqlite3.Connection) -> tuple[int, ...]:
         raise SchemaTooNewError(
             f"database schema version {current} is newer than supported version {newest}"
         )
+
+    # journal_mode is persistent database state and cannot be changed inside a
+    # transaction. Enforce it even when no schema migration remains to apply.
+    _enable_wal(connection)
 
     applied: list[int] = []
     for migration in migrations:
