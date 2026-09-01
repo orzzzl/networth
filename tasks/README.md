@@ -43,7 +43,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
-| 00b | Install the constrained backup key on the VPS; escrow the backup key | 00a | **owner** | — | BLOCKED (00a) |
+| 00b | Install the constrained backup key on the VPS; escrow the backup key | 00a, 28 | **owner** | — | BLOCKED (00a, 28) |
 | 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` | 00 | **owner** | — | **READY (owner)** |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
 
@@ -63,8 +63,9 @@ that row. He caught it, not us.)
 | 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **READY** |
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **READY** |
 | 05a | `TokenStore` | 02 | **claude** | codex | **WIP** (PR #21) |
-| 03a | Encrypted archive + Mac-initiated pull + restore drill | 03, 05a | **codex** | claude | BLOCKED (05a) |
+| 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | BLOCKED (05a) |
 | 00a | Generate the constrained backup keypair; pin its `command=` | 03a | **codex** | claude | BLOCKED (03a) |
+| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b | **codex** | claude | BLOCKED (03a, 00b) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | BLOCKED (05, 05a, 00c) |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half) | codex | BLOCKED (06) |
 
@@ -73,9 +74,9 @@ that row. He caught it, not us.)
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | BLOCKED (06a) |
-| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a | **claude** | codex | BLOCKED (07a) |
+| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b | **claude** | codex | BLOCKED (07a, 00b) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | BLOCKED (04) |
-| 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a, 16, 26a | **claude** (script) / **owner** (runs it) | codex | BLOCKED |
+| 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
 | 12b | Replacement-Item reconcile flow | 04, 09 | **claude** | codex | BLOCKED (09) |
 
@@ -114,9 +115,10 @@ that row. He caught it, not us.)
 | 28 | VPS provisioning + hardening (**base host only**) | — | **codex** | claude | **READY** |
 | 25 | ~~DB backup/restore~~ | — | — | — | **SUPERSEDED by 03a** |
 
-**Totals:** claude 17, codex 16, owner 2 (+1 answered, 1 superseded). Two of claude's are
-shared with the owner because he is the one who runs them: `08`, and `06a`'s measurement
-(iv). Agents write those commands; the owner executes them.
+**Totals:** claude 17, codex 18, owner 3 (+1 answered, 1 superseded) — counted off the rows
+above at this revision, which is the only way this line has ever been wrong. Two of
+claude's are shared with the owner because he is the one who runs them: `08`, and `06a`'s
+measurement (iv). Agents write those commands; the owner executes them.
 
 ## Why the split is shaped this way
 
@@ -265,17 +267,20 @@ bank access is **automatic on the Trial** — no per-institution request (**F4**
 
 ### 00b — Install the constrained backup key; escrow the backup key — **owner only**
 
-**Blocked on `00a`, which is ours.** This entry used to be `00a` and used to read
+**Blocked on `00a` and `28`, both ours.** `00a` produces the line; `28` creates the
+dedicated service user the design requires the key to be installed under, so a paste that
+happens before `28` puts the key on the wrong account. This entry used to be `00a` and used to read
 `BLOCKED (owner)`, which was false: it asked the owner to install a key that does not
 exist. Verified on the machines 2026-09-01 — `~/agents/secrets/` holds only
 `networth-vps.key(.pub)`, and `authorized_keys` on `tokyo-exit` holds exactly two entries,
 `tokyo-exit-tailscale` and `networth-daemon@claude-agents`. The interactive key is
 installed and working; the backup key is not, because there was never anything to install.
 
-**What the owner does, once `00a` hands him the finished line:** `DESIGN.md` §19 step 1c.
-Paste one `authorized_keys` entry for `networth-backup-ssh.key`, already carrying its
-`restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix. Then escrow the
-backup key that `03a`'s criterion 2 attests to.
+**What the owner does, once `00a` hands him the finished line and `28` has made the service
+account:** `DESIGN.md` §19 step 1c. Paste one `authorized_keys` entry for
+`networth-backup-ssh.key`, already carrying its
+`restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix, under the service
+user. Then escrow the backup key that `03a`'s criterion 2 attests to.
 
 **Already done and verified:** the tailnet half, and the interactive key.
 `zelengs-macbook-air-2` is Connected at `100.96.163.67`; the VPS host key matches across
@@ -294,7 +299,9 @@ peer observing `100.96.163.67`.
   are **four** MacBook Airs on this tailnet and they are four different computers,
   differing only by suffix. `zelengs-macbook-air` is a *different machine* that a prefix
   match silently selects. Write the full name or the IP (§19 step 1b).
-- Block foundation work on this. Nothing depends on it but `03a`'s criterion 2.
+- Block foundation work on this. What waits on it is `03a-live` (the live acceptance,
+  including `03a`'s criteria 2 and 3) and `07b`'s emergency artifact, which is encrypted
+  under the escrowed key. Everything through `03a` itself proceeds without it.
 
 ### 00c — Install the Plaid Sandbox secret — **owner only**, actionable today
 
@@ -519,6 +526,27 @@ trust relationships.
 
 **Normative:** `DESIGN.md` §14a and **§14a.1**, §9.3a, §15. Issues #8, #9, #11.
 
+**This task stops at the last thing provable without the installed key; `03a-live` is the
+rest.** The split is not tidiness — it is what makes the graph executable. Several criteria
+below are live properties of an `authorized_keys` line that `00a` has not generated and the
+owner has not installed: a real `ssh` refused a shell, a pull observed on battery, a drill
+against an archive that was actually transferred, an attestation of a key that is actually
+escrowed. Requiring those *here* while `00a` waits on this task is a cycle — the previous
+revision moved it rather than removed it, which is what the review caught.
+
+The rule for deciding where a criterion belongs: **if it can only be observed after the
+owner pastes the line, it is `03a-live`'s.** Everything else — the builder, the dispatcher
+and its allow-list, the puller, the drill logic, the manifest, the canary and its rate
+limit — is built and tested *here*, against local paths and a directly-invoked dispatcher
+with `SSH_ORIGINAL_COMMAND` set. The dispatcher is an ordinary program; nothing about
+testing it requires arriving over SSH. Concretely, these move to `03a-live` and are struck
+from this task's DONE gate: criteria **(2)** and **(3)** below, the drill's observed
+offline run, the over-the-wire negative tests, and the battery pull. Their build-side
+counterparts stay: the `attest-key` command exists and is tested against a synthetic
+escrow, the drill runs against a locally built archive, the dispatcher refuses every
+non-allow-listed verb when invoked directly, and the puller's write-back behaviour is
+proven against a fake transport.
+
 **Build-side requirements a naive `rsync` gets wrong:**
 
 - The database is WAL-mode: produce the archive with **`VACUUM INTO`** (or the online
@@ -559,13 +587,16 @@ a shell, validates every argument by pattern, and logs rejections.
       (another machine). The check runs on **every pull** and **fails closed**:
       `pulled_verified_at` stays `NULL` unless the Mac holds the archive, decrypted it,
       and reconciled it.
-- [ ] **(2)** `networth backup attest-key` records `key_escrow_confirmed_at` — an
-      **attestation, not a proof**. The runtime key is
-      `/etc/networth/networth-backup.key`; the owner's escrow copy is not a second runtime
-      location.
-- [ ] **(3)** `scripts/restore-drill.sh` runs **on `zelengs-macbook-air-2`**, against the
-      archive in its own destination directory — the copy a real recovery would reach for,
-      on the machine that would still exist.
+- [ ] **(2)** — **`03a-live`'s** (needs a key that is actually escrowed, which is `00b`).
+      `networth backup attest-key` records `key_escrow_confirmed_at` — an **attestation,
+      not a proof**. The runtime key is `/etc/networth/networth-backup.key`; the owner's
+      escrow copy is not a second runtime location. *Here:* the command exists and is
+      tested against a synthetic escrow.
+- [ ] **(3)** — **`03a-live`'s** (needs an archive that was actually pulled).
+      `scripts/restore-drill.sh` runs **on `zelengs-macbook-air-2`**, against the archive in
+      its own destination directory — the copy a real recovery would reach for, on the
+      machine that would still exist. *Here:* the drill runs against a locally built
+      archive, which proves the logic and not the transfer.
 
 **Acceptance — the drill checks the invariant, not the volume:**
 
@@ -576,9 +607,10 @@ a shell, validates every argument by pattern, and logs rejections.
       generation.
 - [ ] **Required negative test: build an archive, swap two `access_token`s between two
       Items, and the drill must FAIL.** Orphan tokens are reported and are not a failure.
-- [ ] **The drill runs on a machine with no network path to the VPS at all.** If it needs
-      the VPS, this criterion is not implemented whatever the code says. That splits the
-      drill: *verify* (decrypt, restore, manifest, token reconcile, the §9.3a `seq`
+- [ ] **The drill runs on a machine with no network path to the VPS at all** — the
+      *observed* run is **`03a-live`'s**; the structure it demands is built and tested here.
+      If it needs the VPS, this criterion is not implemented whatever the code says. That
+      splits the drill: *verify* (decrypt, restore, manifest, token reconcile, the §9.3a `seq`
       replay) completes **offline** and produces a verdict; *report* (`record-drill`)
       needs the VPS and, when it fails, the verdict is **kept locally and re-sent next
       run**.
@@ -602,9 +634,12 @@ a shell, validates every argument by pattern, and logs rejections.
 - [ ] **Burst test:** fifty sequential and ten concurrent `build-probe` → at most one build
       per minute, exactly one file, **zero** `backup_archive` rows, non-zero refusal count.
 - [ ] Refusals are **counted and surfaced by `doctor`**, never silently absorbed.
-- [ ] **Negative tests:** a bare `ssh`, `ssh … bash`, `ssh … 'networth show'`,
-      `ssh … 'build-archive current'` and a mangled `archive_id` must **each** fail. A
-      narrowing is only real if the removed verb is tested absent.
+- [ ] **Negative tests, dispatcher-level:** invoked directly with `SSH_ORIGINAL_COMMAND`
+      set to `bash`, `networth show`, `build-archive current` and a mangled `archive_id`,
+      the dispatcher must refuse **each**. A narrowing is only real if the removed verb is
+      tested absent. The same list **over the wire**, plus the bare `ssh` that must not
+      yield a shell, is **`03a-live`'s** — the bare-`ssh` case is a property of the
+      `authorized_keys` line, not of this program, and cannot be tested here at all.
 
 **Acceptance — the restore must resume publication** (§9.3a, issue #8). Assert these
 **five cases separately**; cases 2–4 carry the weight, because a change making acceptance
@@ -626,8 +661,9 @@ unconditional passes case 1 and fails them:
       forever.
 - [ ] The puller is a **`KeepAlive` LaunchAgent, never `StartInterval`** — launchd defers
       interval timers on battery, and the owner's standing rule is that things work on
-      battery with no plug-in prompt and no battery guard. **A pull observed while on
-      battery is an acceptance test.**
+      battery with no plug-in prompt and no battery guard. The unit shape is checked here;
+      **the pull observed while on battery is `03a-live`'s acceptance test**, because it
+      pulls over the restricted key.
 
 **Must not:**
 
@@ -646,7 +682,9 @@ unconditional passes case 1 and fails them:
   suffix.
 
 **Hard gate on task `08`:** a lost `access_token` cannot be recovered and strands a
-permanent Item slot (**F2**, **F2a**, **F6**). This cannot wait for Phase 5.
+permanent Item slot (**F2**, **F2a**, **F6**). This cannot wait for Phase 5. **The gate is
+`03a-live`, not this task** — `08` spends the irreversible resource, so what has to exist
+before it runs is a backup that was observed to work, not one that passes its own tests.
 
 ### 00a — Generate the constrained backup keypair; pin its `command=` — **codex**
 
@@ -671,8 +709,14 @@ by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked b
       procedure, not a key plus instructions to prepend something.
 - [ ] The `command=` string matches the dispatcher path `03a` actually installs, checked
       against `03a`'s implementation rather than against this sentence.
-- [ ] A test or a documented check shows the constrained key **cannot** obtain a shell —
-      the property the two-key split exists for, asserted rather than assumed.
+- [ ] The line is checked **as text**, here: it begins with `restrict`, it carries the
+      `command=`, and the command is the dispatcher path — asserted against `03a`'s
+      installed path, not against this sentence. That the key **cannot obtain a shell** is
+      the property the two-key split exists for and it is asserted rather than assumed —
+      but it is asserted in **`03a-live`**, by a real `ssh` against the installed line.
+      This task cannot make that check: nothing is installed yet when it runs, and a
+      generator that tested its own output by pasting it would be doing `00b`'s job on the
+      owner's host.
 
 **Must not:**
 
@@ -681,6 +725,46 @@ by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked b
   outright, because a compromised laptop would hold shell access to the host with the Plaid
   master credential for the whole window. One step, already constrained.
 - Ask the owner for a password, or install anything on the VPS on his behalf (§15.1).
+
+### 03a-live — `03a`'s acceptance over the installed restricted key — **codex**
+
+**What to do.** No new component. This is the half of `03a` that is a fact about the
+running system rather than about our code, and it can only be executed after the owner has
+pasted `00a`'s line (`00b`) onto a host that has the service account (`28`). It exists as
+its own row because the alternative — leaving these criteria inside `03a` — is the cycle
+this board has now had twice: `03a` blocked on a key that `00a` cannot generate until `03a`
+is done.
+
+**Deps:** `03a` (the code), `00b` (the installed key and the escrowed backup key), and
+through `00b`, `28` (the service user the key is installed under).
+
+**Acceptance — each one is an observation on the live host, not a test double:**
+
+- [ ] **The constrained key cannot obtain a shell.** A bare `ssh` with that key returns no
+      shell, and `ssh … bash`, `ssh … 'networth show'`, `ssh … 'build-archive current'` and
+      a mangled `archive_id` are each refused over the wire. The dispatcher-level versions
+      already passed in `03a`; this proves the `authorized_keys` line, which is a different
+      artifact and the one that actually protects the host.
+- [ ] **A pull observed while on battery**, by the `KeepAlive` LaunchAgent, over this key —
+      not a manual run, and not on power. This is the criterion the owner's standing
+      battery rule turns into a real check.
+- [ ] **`03a` criterion (3): the offline drill**, on `zelengs-macbook-air-2`
+      (`100.96.163.67`), against the archive **as pulled** into its own destination
+      directory, with no network path to the VPS. Verdict produced offline; `record-drill`
+      re-sent on a later run.
+- [ ] **`03a` criterion (2): `networth backup attest-key`** records
+      `key_escrow_confirmed_at` against the key the owner actually escrowed in `00b`.
+- [ ] **A verified pull writes back**, and a verified pull whose write-back fails leaves
+      `pulled_verified_at` `NULL` and re-records on the next run — observed here over the
+      real transport, having been proven against a fake one in `03a`.
+
+**Must not:**
+
+- **Fix code here.** A failure in this task is a defect in `03a` (or in `00a`'s line); the
+  repair lands there and this task re-runs. A task whose acceptance is "observe the system"
+  must not become the place where the system quietly changes.
+- Ask the owner to re-paste anything to make a check pass. If the installed line is wrong,
+  `00a` produced a wrong line — say so, regenerate, and hand him one corrected line.
 
 ### 06 — Sandbox end-to-end rehearsal of the Link flow — **claude**
 
