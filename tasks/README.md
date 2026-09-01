@@ -119,10 +119,10 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 28 | VPS provisioning + hardening (**base host only**) | — | **codex** | claude | **READY** |
+| 28 | VPS provisioning + hardening (**base host only**) | — | **claude** | codex | **READY** |
 | 25 | ~~DB backup/restore~~ | — | — | — | **SUPERSEDED by 03a** |
 
-**Totals:** claude 17, codex 18, owner 3 (+1 answered, 1 superseded) — counted off the rows
+**Totals:** claude 18, codex 17, owner 3 (+1 answered, 1 superseded) — counted off the rows
 above at this revision, which is the only way this line has ever been wrong. **Three agent
 rows are shared with the owner** because he is the one who runs part of them — two of
 claude's (`08`, and `06a`'s measurement (iv)) and one of codex's (`03a-live`, whose §19
@@ -174,6 +174,16 @@ agents working in parallel on disjoint files, both gating `08`.
 scheduling, the read/publish layer. Claude takes the Plaid client surface, the Sandbox
 measurement chain, and all of Flutter (`21`–`24`), where it has recent app experience on
 this machine.
+
+`28` (host provisioning) is the one row that does not follow from that split: it moved to
+claude on 2026-09-01 for load balancing, and it is named here so the exception is visible
+rather than looking like drift. It is the cheapest row to move because **nothing else of
+codex's reads its files** — its dependents (`16`, `20`, and the owner's `00b`) consume a
+provisioned host, not its code. One side effect worth recording without overselling it:
+`16` now installs and verifies units on a host a *different* agent provisioned, where
+before both were codex's. That is not the "not its sole implementer" rule above being
+satisfied — that rule is about the author of a contested design decision, and `28` invents
+no design — it is just a second pair of eyes on the host, for free.
 
 **File collisions.** Concurrent pairs and what they touch:
 
@@ -244,14 +254,24 @@ other agent must review first converts one quota outage into an outage for both:
 2026-09-01 Codex idled for hours across two Claude quota resets because `04` waited on `03`
 and `03` waited on a Claude review. When sequencing, check that each agent holds at least
 one `READY` task whose dependencies are all merged — and **say so explicitly** if the graph
-makes that impossible, rather than discovering it as idle time. **As of 2026-09-01, with
-`05` merged, it is no longer satisfied for Claude — saying so here is the point of the
-rule.** Codex holds `04` and `28`, both `READY`. Claude holds nothing `READY`: `05a` is
-with the owner (issue #28), and every other claude row is behind `04` (`26a`, `13`),
-behind `05a`+`00c` (`06`), or further down the chain. **Nothing was reassigned to fix
-this**, because the two `READY` tasks are Codex's own root work rather than tasks queued
-behind a stalled agent, and taking one would leave *him* idle instead. The three things
-that restore it, in the order they would land: `04` merges (frees `26a` and `13`), the
+makes that impossible, rather than discovering it as idle time.
+
+**2026-09-01, second occurrence, this time on the claude side — and the fix is a
+reassignment.** Merging `05` left claude with no `READY` row at all: `05a` is with the
+owner (issue #28) and every other claude row sits behind `04` (`26a`, `13`), behind
+`05a`+`00c` (`06`), or further down the chain. Codex held **two** `READY` roots, `04` and
+`28`, neither depending on the other. `28` therefore moved to claude and `04` stayed with
+codex: both agents hold one `READY` root, and nobody is idle.
+
+**Count the other agent's independent `READY` roots before concluding that a swap only
+relocates the problem.** The first version of this paragraph reassigned nothing and argued
+that taking one of codex's tasks "would leave *him* idle instead" — true when an agent has
+one root, false here, and codex rejected it on exactly that ground in review of PR #32.
+Note also what that argument leaned on: the quota-stall rule above is a *mandatory trigger*
+for reassignment, not a licence to reassign only when quota is the cause. Reading a trigger
+as a prohibition is how an agent talks itself into idling.
+
+Still outstanding, in the order they would land: `04` merges (frees `26a` and `13`), the
 owner answers `#28` (frees `05a`), the owner installs `00c` (with `05a`, frees `06`).
 
 **Owner-only work stays with the owner.** `00` (done), `00b` (installing the constrained
@@ -1724,7 +1744,11 @@ is left is the presentation, and presentation lands with the surfaces that prese
 
 ## Phase 5 — operations
 
-### 28 — VPS provisioning + hardening — **codex**
+### 28 — VPS provisioning + hardening — **claude**
+
+**Reassigned codex → claude on 2026-09-01**, in review of PR #32, to restore the
+one-`READY`-root-per-agent rule in *Why the split is shaped this way*. This is a
+load-balancing move, not a specialisation one; nothing about the work below changed.
 
 **Unblocked 2026-09-01, verified on the host rather than inferred from the board.** This
 entry read `BLOCKED (00a)` because it needed the agent SSH key installed. It is installed,
