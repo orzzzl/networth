@@ -119,14 +119,15 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 28 | VPS provisioning + hardening (**base host only**) | — | **claude** | codex | **READY** |
+| 28 | VPS provisioning + hardening (**base host only**) | — | **claude** (the script, criteria 1+3, and the records) / **owner** (runs §19 step 3.1 — criteria 2+4) | codex | **READY** |
 | 25 | ~~DB backup/restore~~ | — | — | — | **SUPERSEDED by 03a** |
 
 **Totals:** claude 18, codex 17, owner 3 (+1 answered, 1 superseded) — counted off the rows
-above at this revision, which is the only way this line has ever been wrong. **Three agent
-rows are shared with the owner** because he is the one who runs part of them — two of
-claude's (`08`, and `06a`'s measurement (iv)) and one of codex's (`03a-live`, whose §19
-step 1c half is his). Agents write those commands; the owner executes them.
+above at this revision, which is the only way this line has ever been wrong. **Four agent
+rows are shared with the owner** because he is the one who runs part of them — three of
+claude's (`06a`'s measurement (iv), `08`, and `28`'s live runs, which are §19 step 3.1) and
+one of codex's (`03a-live`, whose §19 step 1c half is his). Agents write those commands; the
+owner executes them.
 
 **A row is shared the moment any of its acceptance criteria is a `DESIGN.md` §19 step**,
 and the entry must say which criteria those are. §19's preamble — *"agents must never
@@ -262,6 +263,11 @@ owner (issue #28) and every other claude row sits behind `04` (`26a`, `13`), beh
 `05a`+`00c` (`06`), or further down the chain. Codex held **two** `READY` roots, `04` and
 `28`, neither depending on the other. `28` therefore moved to claude and `04` stayed with
 codex: both agents hold one `READY` root, and nobody is idle.
+
+`28` is a **shared** row — the owner runs `DESIGN.md` §19 step 3.1 — so what moved to claude
+is its script half plus criteria (1) and (3). That is real, startable-today work and it does
+what this paragraph needs it to do; it does not mean claude can *close* the row alone. See
+`28`'s entry for the split.
 
 **Count the other agent's independent `READY` roots before concluding that a swap only
 relocates the problem.** The first version of this paragraph reassigned nothing and argued
@@ -1744,11 +1750,42 @@ is left is the presentation, and presentation lands with the surfaces that prese
 
 ## Phase 5 — operations
 
-### 28 — VPS provisioning + hardening — **claude**
+### 28 — VPS provisioning + hardening — **claude** writes and checks it, **owner** runs §19 step 3.1
 
 **Reassigned codex → claude on 2026-09-01**, in review of PR #32, to restore the
 one-`READY`-root-per-agent rule in *Why the split is shaped this way*. This is a
-load-balancing move, not a specialisation one; nothing about the work below changed.
+load-balancing move, not a specialisation one; the work below is unchanged, but **which
+half of it an agent may execute is not** — see the next paragraph, which was missing from
+the first version of this reassignment and is the reason it was rejected in review.
+
+**Who executes what, because two of the four acceptance criteria are `DESIGN.md` §19
+step 3.1** *(added 2026-09-01; the reassignment first named claude alone, on the argument
+that step 3.1.3 already prints the `sshd` change for the owner to apply. That covers one
+`Must not`, not the owner half of the step — §19 step 3's preamble is "agents prepare
+everything, the owner runs it", and criteria (2) and (4) are observations of that run)*:
+
+| Act | Who | Why |
+|---|---|---|
+| Write the idempotent provisioning script; keep it off `PermitRootLogin`; keep `PLAID_ENV` out of the source — criteria **(1)** and **(3)** | **claude** | static facts about our code, checkable in the repo and in CI without touching the host |
+| Execute the script on `tokyo-exit`, twice — §19 step 3.1 | **owner** | §19 preamble: agents never perform these. It changes SSH config, the firewall and account ownership on his exit node |
+| Criteria **(2)** and **(4)** — the reported `chown`, and the host-state diff across two runs | **owner runs, claude inspects and records** | the observation is of *his* run. He brings back the two transcripts; claude captures the host state read-only over SSH before/after and takes the diff, then writes the result into this entry. All he does is run the script twice |
+
+The same rule as `03a-live`: an agent may prepare, read back and record; the run itself is
+his. **The line is host *state*, not the wire.** Read-only checks over SSH stay claude's —
+the `id` re-check two paragraphs down is one, and so is capturing host state for criterion
+(4)'s diff — because they change no config, create no account and touch no key. What no
+agent does is *run the provisioning script*, and that includes a "rehearsal" pass: criterion
+(4) has no dry mode, it is two real runs, and the first one is the one that edits `sshd`,
+the firewall and `/etc/networth/`.
+
+**Consequence to state rather than let someone discover: this row does not close without
+him.** Claude's half is startable today and is real work — the script plus criteria (1) and
+(3) — so `28` is a genuine `READY` root for the load-balancing purpose it was moved for. But
+`16`, `20` and the owner's `00b` all consume a *provisioned host*, so they wait on the owner
+executing step 3.1. It is deliberately **not** added to the "still outstanding" list of
+owner actions above, by that section's own rule — *an owner row is a row he can act on
+today* — because the script he would run does not exist yet. It becomes his the moment
+claude's half merges, and the agent handing it over says so then.
 
 **Unblocked 2026-09-01, verified on the host rather than inferred from the board.** This
 entry read `BLOCKED (00a)` because it needed the agent SSH key installed. It is installed,
@@ -1780,19 +1817,21 @@ someone watched start. Nothing here needs to know how many units there are.
 **Four acceptance criteria that are about not breaking the owner's machine — they matter
 more than the hardening itself:**
 
-- [ ] **(1) The provisioning script must not modify `PermitRootLogin` at all.** This host
+- [ ] **(1) claude — The provisioning script must not modify `PermitRootLogin` at all.** This host
       is **not fresh** — the owner administers it as `root`, and this design does not get
       to lock him out of his own exit node. **The fix must land in `DESIGN.md` §19 step 3,
       the procedure he actually executes**, not only in §15.1's rationale. (Rev 12
       identified this and corrected only the rationale; rev 14 had to re-fix it. A
       correction that lands where nobody reads it during the procedure is not a
       correction.)
-- [ ] **(2)** `/etc/networth/` is root-owned today, so the `chown` is **reported**, never
-      silent.
-- [ ] **(3)** Config is read from `/etc/networth/plaid.env`, with `PLAID_ENV` **never
-      hardcoded**.
-- [ ] **(4)** Re-running the script changes nothing. Idempotence is testable: run twice,
-      diff the host state.
+- [ ] **(2) owner runs, claude records** — `/etc/networth/` is root-owned today, so the
+      `chown` is **reported**, never silent. Claude's half is that the script *can* report
+      it; the criterion is met by what his run actually printed.
+- [ ] **(3) claude** — Config is read from `/etc/networth/plaid.env`, with `PLAID_ENV`
+      **never hardcoded**.
+- [ ] **(4) owner runs, claude records** — Re-running the script changes nothing.
+      Idempotence is testable: run twice, diff the host state. Both runs are his, and so is
+      the machine the diff is taken on.
 
 **Must not:**
 
