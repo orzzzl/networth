@@ -40,9 +40,50 @@ def plaid_client_id_and_secret() -> str:
     )
 
 
+def plaid_secret_split_across_lines() -> str:
+    """A `secret` assignment whose key and value sit on different lines.
+
+    This is valid JSON — `json.loads` accepts it — and it is precisely what a
+    line-oriented matcher cannot see, because no single line holds both the key
+    and the value. Assembled from parts for the usual reason, and also so this
+    file does not contain the shape it describes.
+    """
+    key = '"' + "secret" + '"'
+    return "\n".join(("{", f"  {key}:", '    "' + "0" * 30 + '"', "}"))
+
+
 def private_key_header() -> str:
     """The first line of a PEM private key."""
     return "-" * 5 + "BEGIN OPENSSH PRIVATE KEY" + "-" * 5
+
+
+def git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603
+        ["git", *args], cwd=cwd, capture_output=True, text=True
+    )
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A real git repo wired to this project's hook and scanner.
+
+    Shared by the hook tests and the scanner's tracked-mode tests: both need a
+    repository whose index and working tree can be made to disagree.
+    """
+    work = tmp_path / "repo"
+    (work / "scripts").mkdir(parents=True)
+    (work / ".githooks").mkdir()
+
+    for src in (SCANNER, REPO_ROOT / ".githooks" / "pre-commit"):
+        dst = work / src.relative_to(REPO_ROOT)
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        dst.chmod(0o755)
+
+    git("init", "-q", "-b", "main", cwd=work)
+    git("config", "user.email", "test@example.invalid", cwd=work)
+    git("config", "user.name", "test", cwd=work)
+    git("config", "core.hooksPath", ".githooks", cwd=work)
+    return work
 
 
 def run_scanner(*args: str | Path, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:

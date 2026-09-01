@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import pkgutil
+import sys
 from collections.abc import Sequence
 from types import ModuleType
 
@@ -31,18 +32,54 @@ from networth import commands
 _REQUIRED = ("SUMMARY", "run")
 
 
-def discover() -> list[str]:
-    """Return the available verb names, sorted.
+def _verbs() -> dict[str, str]:
+    """Map each verb to the module implementing it.
 
-    A module named ``foo_bar.py`` is the verb ``foo-bar``: underscores are not
-    typeable-looking in a CLI, and the mapping is one-way so two modules can
-    never claim the same verb.
+    A module named ``foo_bar.py`` is the verb ``foo-bar``: underscores do not
+    look typeable in a CLI.
+
+    Two filters keep that mapping total and injective, and both are here because
+    the discovery is a *directory listing* — anyone can drop a file in, and a
+    file that cannot become a verb must not be able to break the verbs that can:
+
+    - A name that is not a Python identifier is skipped with a warning.
+      ``foo-bar.py`` is such a name: :func:`pkgutil.iter_modules` lists it, but
+      ``import networth.commands.foo-bar`` is not expressible, so it could only
+      ever have produced a verb that fails to load. Skipping is loud rather than
+      silent because the alternative is a command file that mysteriously does
+      nothing.
+    - A verb claimed twice is an error naming both modules. Filtering to
+      identifiers already makes a collision unreachable — no identifier contains
+      ``-``, so underscore-to-hyphen cannot merge two of them — but this is the
+      invariant the parser depends on, and an invariant worth depending on is
+      worth checking. Unchecked, the failure surfaced as
+      ``argparse.ArgumentError: conflicting subparser`` on *every* invocation,
+      including ``--help``: one stray file and the whole CLI is unusable.
     """
-    return sorted(
-        name.replace("_", "-")
-        for _, name, ispkg in pkgutil.iter_modules(commands.__path__)
-        if not ispkg and not name.startswith("_")
-    )
+    verbs: dict[str, str] = {}
+    for _, name, ispkg in pkgutil.iter_modules(commands.__path__):
+        if ispkg or name.startswith("_"):
+            continue
+        if not name.isidentifier():
+            print(
+                f"networth: ignoring {name!r} in networth/commands — not an importable "
+                f"module name, so it cannot be a verb; rename it to use underscores",
+                file=sys.stderr,
+            )
+            continue
+        verb = name.replace("_", "-")
+        if verb in verbs:
+            raise RuntimeError(
+                f"two command modules claim the verb {verb!r}: "
+                f"{verbs[verb]!r} and {name!r} — rename one"
+            )
+        verbs[verb] = name
+    return verbs
+
+
+def discover() -> list[str]:
+    """Return the available verb names, sorted."""
+    return sorted(_verbs())
 
 
 def load(verb: str) -> ModuleType:

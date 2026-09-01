@@ -7,40 +7,10 @@ hook that can be broken by a wrong `core.hooksPath` and still look installed.
 
 from __future__ import annotations
 
-import subprocess
+import json
 from pathlib import Path
 
-import pytest
-
-from tests.conftest import REPO_ROOT, plaid_access_token
-
-
-def git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603
-        ["git", *args], cwd=cwd, capture_output=True, text=True
-    )
-
-
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """A real git repo wired to this project's hook and scanner."""
-    work = tmp_path / "repo"
-    (work / "scripts").mkdir(parents=True)
-    (work / ".githooks").mkdir()
-
-    for src in (
-        REPO_ROOT / "scripts" / "check-no-secrets.sh",
-        REPO_ROOT / ".githooks" / "pre-commit",
-    ):
-        dst = work / src.relative_to(REPO_ROOT)
-        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-        dst.chmod(0o755)
-
-    git("init", "-q", "-b", "main", cwd=work)
-    git("config", "user.email", "test@example.invalid", cwd=work)
-    git("config", "user.name", "test", cwd=work)
-    git("config", "core.hooksPath", ".githooks", cwd=work)
-    return work
+from tests.conftest import git, plaid_access_token, plaid_secret_split_across_lines
 
 
 def test_hook_blocks_a_commit_carrying_a_secret(repo: Path) -> None:
@@ -78,3 +48,28 @@ def test_hook_reads_the_index_not_the_working_tree(repo: Path) -> None:
 
     assert result.returncode != 0, "the hook scanned the working tree instead of the index"
     assert "SECRET-SHAPED" in result.stderr
+
+
+def test_hook_blocks_a_credential_assignment_split_across_lines(repo: Path) -> None:
+    """The regression: a real `git commit`, no `--no-verify`, and it went through.
+
+    `{"secret":\\n  "…"}` is valid JSON that any formatter may produce, and every
+    match was line-oriented, so no single line ever held both the key and the
+    value. This drives the hook rather than the scanner because the hook is what
+    the defect was reported against.
+    """
+    payload = plaid_secret_split_across_lines()
+    assert json.loads(payload), "the probe must be valid JSON, not a contrived string"
+    assert not any(  # the point of the test: no line carries the whole shape
+        line.lstrip().startswith('"secret"') and any(c.isdigit() for c in line)
+        for line in payload.splitlines()
+    )
+
+    (repo / "cfg.json").write_text(payload + "\n", encoding="utf-8")
+    git("add", "cfg.json", cwd=repo)
+
+    result = git("commit", "-m", "add config", cwd=repo)
+
+    assert result.returncode != 0, "the hook let a multiline credential assignment through"
+    assert "SECRET-SHAPED" in result.stderr
+    assert git("log", "--oneline", cwd=repo).returncode != 0  # no commit exists
