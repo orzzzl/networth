@@ -20,9 +20,25 @@ a real authentication-breaking edit went through:
 - it resolves through **only the assignments a shell would already have made**
   when that command runs — a `vps_key=` line moved below its uses expands to
   nothing in the real shell, so it must resolve to nothing here;
-- and the command carries `IdentitiesOnly=yes`, without which a loaded agent
-  can authenticate a command whose `-i` is wrong, which is what makes the first
-  two clauses mean anything at all.
+- that key is the **only** credential the command can offer, counting both
+  spellings of an identity and refusing anything this module cannot read;
+- and the command is pinned to it by the `IdentitiesOnly` value OpenSSH would
+  *use*, without which a loaded agent can authenticate a command whose `-i` is
+  wrong, which is what makes the clauses above mean anything at all.
+
+The last two clauses are here because round 2 asked for *tokens* instead of the
+effective policy, and two edits that keep every token went through. Both were
+measured on `zelengs-macbook-air-2` with `ssh -G`, OpenSSH 10.2, rather than
+reasoned about:
+
+- command-line settings are **first-value-wins**, so
+  `-o IdentitiesOnly=no -o IdentitiesOnly=yes` reports `identitiesonly no`.
+  A predicate asking whether `=yes` is *present* says "pinned" about a command
+  that is not;
+- identities **accumulate** and have two spellings: `ssh -G -i A
+  -o IdentityFile=B` reports both, as does `-F` naming a file that sets
+  `IdentityFile`. Reading only the first `-i` reports A while B can
+  authenticate.
 
 This is a shape check, with the usual limits: it cannot prove the key is on the
 host, which only the host can answer, and it reads a block as a flat sequence,
@@ -73,10 +89,26 @@ _STEP_1A = re.compile(r"^\*\*Step 1a\b.*?(?=^\*\*Step 1b\b)", re.MULTILINE | re.
 #: keeps this constant and that step from drifting apart.
 KEY = "~/agents/secrets/networth-vps.key"
 
-#: Normalised the way `_options` normalises, so that `-o IdentitiesOnly=yes`,
+#: Normalised the way `_setting` normalises, so that `-o IdentitiesOnly=yes`,
 #: `-oIdentitiesOnly=yes` and `-o "IdentitiesOnly yes"` — one instruction to
-#: `ssh`, three spellings — are one string here too.
-IDENTITIES_ONLY = "identitiesonly=yes"
+#: `ssh`, three spellings — are one setting here too. `ssh` reads option names
+#: case-insensitively (`-o identitiesonly=yes` is accepted), and reports the
+#: value lowercased (`-o IdentitiesOnly=YES` reports `yes`).
+IDENTITIES_ONLY = "identitiesonly"
+
+#: The value of that setting which pins the command to its own `-i`.
+PINNED = "yes"
+
+#: An identity, spelled the long way. `-i path` and `-o IdentityFile=path` are
+#: the same instruction, and they accumulate rather than replace.
+IDENTITY_FILE = "identityfile"
+
+#: The only option spellings this module reads: `-i x`, `-ix`, `-o x`, `-ox`.
+#: Anything else that looks like an option is refused — see `unreadable`.
+KNOWN_FLAGS = ("-i", "-o")
+
+#: The only `-o` setting names it reads.
+KNOWN_SETTINGS = frozenset({IDENTITIES_ONLY, IDENTITY_FILE})
 
 
 def runbook_blocks(document: str) -> list[str]:
@@ -112,45 +144,137 @@ def remote_commands(block: str) -> list[str]:
     return [command for command, _ in _resolved(block)]
 
 
-def _setting(option: str) -> str:
-    """`IdentitiesOnly=yes` and `identitiesonly yes` are one setting to `ssh`."""
-    return re.sub(r"\s*=\s*|\s+", "=", option.strip()).lower()
+def _setting(option: str) -> tuple[str, str]:
+    """One `-o` argument as `(name, value)`, the way `ssh` reads it.
+
+    The name is lowered because `ssh` matches it case-insensitively. The value
+    is **not**: it can be a path, and `~/A.key` and `~/a.key` are two files.
+    Lowering the whole string is what the previous version did, which was
+    harmless only for as long as no value was a path.
+    """
+    name, _, value = re.sub(r"\s*=\s*|\s+", "=", option.strip()).partition("=")
+    return name.lower(), value
 
 
-def _options(tokens: list[str]) -> set[str]:
-    """Every `-o` setting a command carries, in either spelling, normalised."""
-    values = []
+def _settings(tokens: list[str]) -> list[tuple[str, str]]:
+    """Every `-o` setting a command carries, in the order `ssh` reads them.
+
+    A list, not a set. Order *is* the question for `IdentitiesOnly`: the set
+    this used to return held `no` and `yes` at once and still answered "yes,
+    it is pinned" about a command OpenSSH pins to nothing.
+    """
+    settings = []
     for index, token in enumerate(tokens):
         if token == "-o" and index + 1 < len(tokens):
-            values.append(tokens[index + 1])
+            settings.append(_setting(tokens[index + 1]))
         elif token.startswith("-o") and token != "-o":
-            values.append(token[2:])
-    return {_setting(value) for value in values}
+            settings.append(_setting(token[2:]))
+    return settings
 
 
-def identity_of(command: str, variables: dict[str, str]) -> str | None:
-    """The `-i` argument of one remote command, with `"$name"` resolved.
+def _resolve(argument: str, variables: dict[str, str]) -> str | None:
+    """One path as written, with `$name` / `${name}` expanded — or `None`.
 
-    `None` means the command names no identity, or names a variable nothing has
-    assigned yet — both of which are the failure this module exists for, not an
-    absence of information.
+    `None` is a name no assignment above this command has set: in the real
+    shell it expands to nothing, so it must never compare equal to `KEY`.
     """
-    tokens = shlex.split(command)
-    if "-i" not in tokens or tokens.index("-i") + 1 == len(tokens):
-        return None
-    argument = tokens[tokens.index("-i") + 1]
     if reference := _REFERENCE.match(argument):
         return variables.get(reference.group(1))
     return argument
 
 
+def identities_of(command: str, variables: dict[str, str]) -> list[str | None]:
+    """Every identity one remote command offers, both spellings, resolved.
+
+    `-i path` and `-o IdentityFile=path` are one instruction to `ssh` and they
+    accumulate: `ssh -G -i A -o IdentityFile=B` reports both. Returning only
+    the first `-i` — which is what this did — described A while B could
+    authenticate just as well.
+
+    An empty list is a command that offers nothing, which is the original
+    defect; it fails the caller's test for the same reason a wrong path does.
+    """
+    tokens = shlex.split(command)
+    identities: list[str | None] = []
+    for index, token in enumerate(tokens):
+        if token == "-i":
+            argument = tokens[index + 1] if index + 1 < len(tokens) else None
+            identities.append(_resolve(argument, variables) if argument is not None else None)
+        elif token.startswith("-i") and len(token) > 2:
+            identities.append(_resolve(token[2:], variables))
+    identities += [
+        _resolve(value, variables) for name, value in _settings(tokens) if name == IDENTITY_FILE
+    ]
+    return identities
+
+
+def identities_only(command: str) -> str | None:
+    """The `IdentitiesOnly` value OpenSSH would *use*, or `None` if unset.
+
+    First value wins among command-line settings — measured here, not assumed:
+    `ssh -G -o IdentitiesOnly=no -o IdentitiesOnly=yes` reports `no`, and the
+    same pair in the other order reports `yes`. So asking whether the command
+    *contains* `=yes` answers a different question than "is it pinned", and
+    the two disagree exactly when someone has put a `no` in front.
+    """
+    for name, value in _settings(shlex.split(command)):
+        if name == IDENTITIES_ONLY:
+            return value.lower()
+    return None
+
+
+def unreadable(command: str) -> list[str]:
+    """Everything on this command this module cannot read, and so will not vouch for.
+
+    Fail **closed**, and that is the lesson of the round rather than a detail
+    of it. Round 2 asked "does it carry the tokens I like". The first draft of
+    round 3 asked "does it carry one of the tokens I know are dangerous" — and
+    that list was already incomplete the moment it was written. Measured here
+    with `ssh -G`, all of these widen what may authenticate and none is an
+    `-i`: `-o IdentityFile=k`, `-F file`, `-Ffile`, `-4F file`, `-4i k`, and
+    `-o PreferredAuthentications=password`, which leaves keys out of it
+    entirely. Enumerating the ways to widen a command is the losing side of
+    that exchange; enumerating what this module actually understands is finite,
+    short, and is the whole of what it claims.
+
+    So an option-looking token must be a spelling of `-i` or `-o`, and an `-o`
+    setting must be one of the two names read above. A sequence that grows a
+    new flag fails until this module is taught it — one reviewed line, against
+    the alternative of a token nothing read at all.
+    """
+    tokens = shlex.split(command)
+    unread = [name for name, _ in _settings(tokens) if name not in KNOWN_SETTINGS]
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in KNOWN_FLAGS:
+            index += 2  # the flag, and the argument it takes from the next token
+            continue
+        if token.startswith("-") and not token.startswith(KNOWN_FLAGS):
+            unread.append(token)
+        index += 1
+    return unread
+
+
 def unauthenticated(block: str) -> list[str]:
-    """Commands in `block` that would not reach the host as step 1a's key."""
+    """Commands in `block` that could reach the host as anything but step 1a's key.
+
+    Three questions, and a command has to answer all three: the only identity
+    it can offer is step 1a's key; it is pinned to it by the setting OpenSSH
+    would actually use, so a loaded agent cannot substitute; and it carries
+    nothing whose effect on that this module cannot read.
+
+    Comparing the identities as a **set** is deliberate. The property is "the
+    only key this can offer is step 1a's", and naming the same key twice does
+    not widen it — `ssh -G -i A -i A` reports one `A`. Naming a second, and
+    naming none, both fail here.
+    """
     return [
         command
         for command, variables in _resolved(block)
-        if identity_of(command, variables) != KEY
-        or IDENTITIES_ONLY not in _options(shlex.split(command))
+        if set(identities_of(command, variables)) != {KEY}
+        or identities_only(command) != PINNED
+        or unreadable(command)
     ]
 
 
@@ -186,15 +310,30 @@ def _without_identities_only(command: str) -> str:
     index = 0
     while index < len(tokens):
         token, following = tokens[index], tokens[index + 1] if index + 1 < len(tokens) else ""
-        if token == "-o" and _setting(following) == IDENTITIES_ONLY:
+        if token == "-o" and _setting(following)[0] == IDENTITIES_ONLY:
             index += 2
-        elif token.startswith("-o") and token != "-o" and _setting(token[2:]) == IDENTITIES_ONLY:
+        elif token.startswith("-o") and token != "-o" and _setting(token[2:])[0] == IDENTITIES_ONLY:
             index += 1
         else:
             kept.append(token)
             index += 1
     assert len(kept) < len(tokens), f"nothing to drop, this command does not set it: {command}"
     return shlex.join(kept)
+
+
+def _carrying(*extra: str) -> Callable[[str], str]:
+    """An edit that inserts `extra` immediately after the command name.
+
+    First position, because that is where a setting has to be to win: these
+    build the two mutations round 2 passed, and the redundant-but-effective
+    spellings that must keep passing, out of the same one-line helper.
+    """
+
+    def edit(command: str) -> str:
+        tokens = shlex.split(command)
+        return shlex.join(tokens[:1] + list(extra) + tokens[1:])
+
+    return edit
 
 
 def _rewrite(block: str, edit: Callable[[str], str], limit: int | None = None) -> str:
@@ -293,6 +432,123 @@ def test_dropping_identities_only_from_one_command_is_caught() -> None:
     """
     weakened = _rewrite(the_provisioning_sequence(), _without_identities_only, limit=1)
     assert [command.split()[0] for command in unauthenticated(weakened)] == ["scp"]
+
+
+def test_a_leading_identities_only_no_authenticates_nothing() -> None:
+    """Control: round 2's first escape — `=no` in front of the shipped `=yes`.
+
+    Every token the shipped block had is still there, including the `=yes`
+    this used to look for. OpenSSH 10.2 on `zelengs-macbook-air-2` reports the
+    effective setting as `no`, so a loaded agent may authenticate these
+    commands: the block is unpinned and the old predicate called it pinned.
+
+    The second form carries the `no` and a `yes` behind it, which is the exact
+    mirror of the pair `test_spellings_that_still_authenticate_are_not_rejected`
+    requires to pass. Same two settings, same place, opposite order, opposite
+    verdict — that pair is the whole claim that precedence is modelled here.
+    """
+    for extra in (
+        ("-o", "IdentitiesOnly=no"),
+        ("-o", "IdentitiesOnly=no", "-o", "IdentitiesOnly=yes"),
+    ):
+        _assert_nothing_authenticates(_rewrite(the_provisioning_sequence(), _carrying(*extra)))
+
+
+def test_a_second_identity_authenticates_nothing() -> None:
+    """Control: round 2's second escape — another `-i` beside the canonical one.
+
+    `ssh` keeps both, so the sequence no longer shows that step 1a's key is
+    what authenticated. Reading only the first `-i` reported that it was.
+    """
+    _assert_nothing_authenticates(
+        _rewrite(the_provisioning_sequence(), _carrying("-i", "~/.ssh/id_ed25519"))
+    )
+
+
+def test_a_second_identity_spelled_as_an_option_authenticates_nothing() -> None:
+    """Control: the same widening through `-o IdentityFile=`, which `-i` misses.
+
+    Not one of the two mutations that came back, and it defeated the round-2
+    predicate the same way: identities were read from `-i` only, so this one
+    was invisible to it rather than merely mis-ordered.
+    """
+    _assert_nothing_authenticates(
+        _rewrite(the_provisioning_sequence(), _carrying("-o", "IdentityFile=~/.ssh/id_ed25519"))
+    )
+
+
+def test_anything_this_module_cannot_read_authenticates_nothing() -> None:
+    """Control: the fail-closed rule, one addition at a time.
+
+    Each of these was measured with `ssh -G` on this machine and each widens
+    what may authenticate past step 1a's key, by a route that is not an `-i`:
+    a config file nothing reviewed, in three spellings including one bundled
+    with another flag; an identity bundled the same way; credentials from an
+    agent, a token or a certificate; and an authentication method that skips
+    keys altogether. **None of them is named in the module.** They are refused
+    because they are not among the four spellings it reads, which is the point
+    — the list below is a sample of an open set, and the guard does not depend
+    on it being complete.
+
+    One at a time, so this cannot pass because some other entry did the work.
+    """
+    additions = [
+        ("-F", "/tmp/ssh.conf"),
+        ("-F/tmp/ssh.conf",),
+        ("-4F", "/tmp/ssh.conf"),
+        ("-4i", "~/.ssh/id_ed25519"),
+        ("-o", "Include=/tmp/ssh.conf"),
+        ("-o", "CertificateFile=/tmp/id.pub"),
+        ("-o", "IdentityAgent=/tmp/agent.sock"),
+        ("-o", "PKCS11Provider=/tmp/p11.so"),
+        ("-o", "SecurityKeyProvider=/tmp/sk.so"),
+        ("-o", "PreferredAuthentications=password"),
+        ("-o", "PasswordAuthentication=yes"),
+    ]
+    for addition in additions:
+        mutated = _rewrite(the_provisioning_sequence(), _carrying(*addition))
+        _assert_nothing_authenticates(mutated)
+
+
+def test_spellings_that_still_authenticate_are_not_rejected() -> None:
+    """The other half of the two clauses above: what must stay *green*.
+
+    A guard that answers "no" to everything is as useless as one that answers
+    "yes", and it is worse than useless when the "no" lands on a sequence that
+    works — the next author's cheapest fix is then to weaken the guard. Each
+    of these is a command OpenSSH treats exactly as the shipped one, and each
+    is rejected by the stricter rule of counting occurrences rather than
+    modelling them:
+
+    - the identity spelled as `-o IdentityFile=`, which is what `-i` means;
+    - that identity named twice, which `ssh -G -i A -i A` collapses to one;
+    - a redundant second `IdentitiesOnly=yes`, still effectively `yes`;
+    - and a `=yes` with a `=no` *behind* it, which first-value-wins makes
+      `yes`. This one is the sharpest: it is the same two settings in the same
+      position as the second mutation in
+      `test_a_leading_identities_only_no_authenticates_nothing`, in the other
+      order. Passing here and failing there is precisely the claim that
+      precedence is modelled rather than occurrences counted — and a rule of
+      "exactly one `IdentitiesOnly` setting" would fail this one.
+    """
+    sequence = the_provisioning_sequence()
+    respellings = {
+        "identity as an option": lambda c: _carrying("-o", "IdentityFile=$vps_key")(
+            _with_identity(c, None)
+        ),
+        "the same identity twice": _carrying("-i", "$vps_key"),
+        "a redundant identities-only": _carrying("-o", "IdentitiesOnly=yes"),
+        "an overridden identities-only": _carrying(
+            "-o", "IdentitiesOnly=yes", "-o", "IdentitiesOnly=no"
+        ),
+    }
+    for description, edit in respellings.items():
+        rewritten = _rewrite(sequence, edit)
+        assert len(remote_commands(rewritten)) == len(remote_commands(sequence))
+        assert unauthenticated(rewritten) == [], (
+            f"{description}: this authenticates as step 1a's key exactly as the shipped"
+            " block does, and a guard that fails it teaches the next author to delete it"
+        )
 
 
 def test_the_sequence_as_rev_21_shipped_it_authenticates_nothing() -> None:

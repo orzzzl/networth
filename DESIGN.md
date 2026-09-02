@@ -5,6 +5,40 @@ implemented; `tasks/README.md` is the live state. *(Rev 19: this line still read
 "proposed (design phase; nothing implemented)" with three tasks merged.)*
 Author: Claude. Reviewer: Codex.
 
+Revision 23 — **The guard asked which tokens were present; `ssh` asks a
+different question, and the two disagree.**
+
+- **Two edits kept every token rev 22 looked for and unpinned the sequence
+  anyway** (Codex, round 2). Command-line settings are *first-value-wins*, so
+  `-o IdentitiesOnly=no` placed in front of the shipped `-o IdentitiesOnly=yes`
+  leaves the effective setting `no` — a loaded agent may then authenticate a
+  command whose `-i` is wrong, which is the entire thing that `-i` was made
+  load-bearing for. And identities *accumulate*, so a second `-i` rides along
+  while a guard reading only the first `-i` reports that step 1a's key is what
+  authenticated. Both measured with `ssh -G`, OpenSSH 10.2, on the machine §19
+  names, rather than reasoned about.
+- **Probing that fix turned up three more of the same class, none of them
+  reported.** `-o IdentityFile=k` is an identity spelled the long way and was
+  invisible to a check that read `-i`; `-F file`, `-Ffile` and `-4F file` each
+  carry in an identity from a file nothing reviews; `-4i k` is an identity in a
+  flag bundle. Enumerating the ways to widen a command is the losing side of
+  this exchange — `-o PreferredAuthentications=password` leaves keys out of it
+  altogether — so the rule is **inverted rather than extended**. The module
+  reads four spellings, `-i x`, `-ix`, `-o x`, `-ox`, and two setting names;
+  any other option-looking token on a remote command **fails** until the module
+  is taught it. That is one reviewed line to add, against the alternative of
+  trusting a token nothing read.
+- **What must stay green is asserted beside it, and is the harder half.** The
+  identity written as `-o IdentityFile=`, the same key named twice, a redundant
+  second `IdentitiesOnly=yes`, and a `=no` *behind* the shipped `=yes` are all
+  commands OpenSSH treats exactly as the shipped one, and all still pass. The
+  last is the same pair of settings as the mutation above with the order
+  swapped, so the opposite verdicts are the claim that precedence is modelled
+  and not occurrences counted. A guard that reddens a sequence which
+  authenticates correctly teaches the next author that the guard is the thing
+  to delete — rev 22 shipped exactly that defect in its controls and it was
+  caught before review.
+
 Revision 22 — **Found by walking rev 21's own procedure on the machine it names,
 in the minute after task `28` merged and before handing it to the owner.**
 
@@ -4785,7 +4819,11 @@ device. All of it is gone with the third party it protected.)*
      shows: with no agent loaded it changes nothing, which is exactly why it is
      here — it keeps the `-i` above load-bearing on the day an agent *is*
      loaded, so that "this key authenticated" cannot quietly become "some key
-     did". Only `tests/test_owner_runbook.py` holds that one.
+     did". Only `tests/test_owner_runbook.py` holds that one. It reads the
+     `IdentitiesOnly` value `ssh` would *use* rather than the one it can find,
+     counts identities in both spellings, and fails on any other option-looking
+     token in these six commands *(rev 23)* — a new flag here is a review, not
+     a silent pass.
 
    **The second transcript must end in `changed: 0`**, and the first one's
    `[changed]` lines are criterion (2). Each transcript prints the script's own

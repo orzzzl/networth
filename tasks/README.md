@@ -1825,8 +1825,17 @@ is recorded here because it is the second time this row's *procedure* — not it
 was the broken part: §19 step 3.1's six remote commands named no key, and
 `zelengs-macbook-air-2` has no `~/.ssh/config`, no default identity file and an empty
 `ssh-agent`, so the paste would have failed at its first `scp`. Rev 22 passes the step-1a
-key explicitly and `tests/test_owner_runbook.py` fails a PR that drops it. Nothing was
-handed to him before that landed.
+key explicitly and `tests/test_owner_runbook.py` fails a PR that drops it from even one of
+the six commands. Nothing was handed to him before that landed.
+
+That guard then took two review rounds of its own, and both findings were the same shape as
+the defect it was written for: it checked that the *text* said the right thing rather than
+what `ssh` would *do*. Round 2 kept every token it looked for and unpinned the sequence
+(`IdentitiesOnly` is first-value-wins; identities accumulate); probing that fix found three
+more routes it did not read at all. Rev 23 stops enumerating the bad spellings and fails
+closed on any option it does not model. Recorded here because the row's lesson is now
+three-for-three: **on this task, every defect has been in the procedure or its checks, and
+none in `provision-host.sh`.**
 
 **Unblocked 2026-09-01, verified on the host rather than inferred from the board.** This
 entry read `BLOCKED (00a)` because it needed the agent SSH key installed. It is installed,
