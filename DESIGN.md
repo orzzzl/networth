@@ -16,9 +16,22 @@ in the minute after task `28` merged and before handing it to the owner.**
   paste would have died on its first `scp`, having proved only that the
   extraction works. §19 step 3.1 now passes
   `-i ~/agents/secrets/networth-vps.key -o IdentitiesOnly=yes` on all six remote
-  commands, and `tests/test_owner_runbook.py` fails a PR that drops one. *(The
-  refusal and the fix were both verified against the host, read-only, before
-  `S0` was captured.)*
+  commands. *(The refusal, and the `-i` that cures it, were both verified
+  against the host itself, read-only, before `S0` was captured.)*
+- **The guard shipped with this fix did not enforce what it said it did** —
+  Codex's review of the fix, and the same defect class one level in. It read
+  assignments from the whole block regardless of order, matched the key by
+  basename, and never looked at `IdentitiesOnly` at all, so it stayed green
+  under three edits that each break authentication: the `vps_key=` line moved
+  below its six uses, the path changed to `/tmp/networth-vps.key`, and
+  `IdentitiesOnly=yes` dropped from the `scp`. `tests/test_owner_runbook.py`
+  now resolves variables **in order**, compares against step 1a's **exact**
+  path (and checks step 1a still names it), and requires `IdentitiesOnly=yes`
+  on every remote command; each of those three edits, plus a seventh bare
+  `ssh`, an unassigned variable and `IdentitiesOnly=no`, was re-run against it
+  and fails. It remains a shape check: it cannot prove the key is on the host,
+  and it reads a block as a flat sequence, so an assignment nested in its own
+  subshell would read as in scope.
 - **The check that found it is the one this document keeps prescribing.** Rev 21
   closed with "a fix is where the next defect lives, and the check that finds it
   is walking the fixed procedure one command further than the finding did." The
@@ -4765,10 +4778,14 @@ device. All of it is gone with the third party it protected.)*
      died on its first `scp` — after the extraction, before any capture. The key
      is the administration key from step 1a, `~/agents/secrets/networth-vps.key`,
      which is what step 1a already says it is *for* ("the interactive key stays
-     for `link.sh` and administration"); `IdentitiesOnly=yes` keeps that true if
-     an agent is ever loaded. *(Both halves verified on the host itself on
-     2026-09-02, read-only and before `S0`: without the flag the login is
-     refused, with it `id` returns `uid=0(root)`.)*
+     for `link.sh` and administration"). *(Verified on the host itself on
+     2026-09-02, read-only and before `S0`: with no `-i` the login is refused,
+     and with `-i ~/agents/secrets/networth-vps.key` it returns `uid=0(root)`.)*
+     `IdentitiesOnly=yes` is the other half and is **not** what that check
+     shows: with no agent loaded it changes nothing, which is exactly why it is
+     here — it keeps the `-i` above load-bearing on the day an agent *is*
+     loaded, so that "this key authenticated" cannot quietly become "some key
+     did". Only `tests/test_owner_runbook.py` holds that one.
 
    **The second transcript must end in `changed: 0`**, and the first one's
    `[changed]` lines are criterion (2). Each transcript prints the script's own
