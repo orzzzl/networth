@@ -7,6 +7,7 @@ from datetime import datetime
 
 from networth.model.figure import (
     SnapshotAge,
+    SnapshotAgeState,
     SourcedFigure,
     require_nonempty,
     require_nonnegative_int,
@@ -36,6 +37,16 @@ class SnapshotCounts:
         ):
             require_nonnegative_int(getattr(self, name), field=name)
 
+        for name in (
+            "stale_account_count",
+            "unknown_freshness_account_count",
+            "static_account_count",
+            "reauth_account_count",
+            "unreconciled_account_count",
+        ):
+            if getattr(self, name) > self.account_count:
+                raise ValueError(f"{name} must not exceed account_count")
+
 
 @dataclass(frozen=True, slots=True)
 class SnapshotDraft:
@@ -59,6 +70,20 @@ class SnapshotDraft:
             raise TypeError("is_complete must be a bool")
         if not isinstance(self.age, SnapshotAge):
             raise TypeError("age must be a SnapshotAge")
+
+        if self.is_complete and (
+            self.counts.stale_account_count > 0 or self.counts.unreconciled_account_count > 0
+        ):
+            raise ValueError("a snapshot with stale or unreconciled accounts cannot be complete")
+
+        # This count describes UNKNOWN members of the contributing age basis.
+        # Unreconciled non-contributors have their own count and do not affect age.
+        has_unknown_contributor = self.counts.unknown_freshness_account_count > 0
+        if has_unknown_contributor != (self.age.state is SnapshotAgeState.UNKNOWN):
+            raise ValueError(
+                "unknown_freshness_account_count must be positive exactly when "
+                "snapshot age is UNKNOWN"
+            )
 
         for name, figure in (
             ("net_worth", self.net_worth),

@@ -29,6 +29,10 @@ class StoreError(RuntimeError):
     """Base class for repository contract failures."""
 
 
+class StoreConfigurationError(StoreError):
+    """The caller-owned SQLite connection cannot preserve repository integrity."""
+
+
 class StoredDataError(StoreError):
     """A row cannot satisfy the domain contract."""
 
@@ -264,7 +268,7 @@ class ObservationRepository:
                 SELECT {_OBSERVATION_COLUMNS}
                 FROM observation AS o
                 WHERE o.account_id = ?
-                ORDER BY julianday(o.observed_at) DESC, o.id DESC
+                ORDER BY o.observed_at DESC, o.id DESC
                 LIMIT 1
                 """,
                 (account_id,),
@@ -284,7 +288,7 @@ class ObservationRepository:
                     SELECT candidate.id
                     FROM observation AS candidate
                     WHERE candidate.account_id = o.account_id
-                    ORDER BY julianday(candidate.observed_at) DESC, candidate.id DESC
+                    ORDER BY candidate.observed_at DESC, candidate.id DESC
                     LIMIT 1
                 )
                 ORDER BY o.account_id
@@ -293,19 +297,25 @@ class ObservationRepository:
         )
         return tuple(_observation_from_row(row) for row in rows)
 
-    def history_for_lineage(self, lineage_id: int) -> tuple[Observation, ...]:
-        """Read one logical account's append-only history across replacement Items."""
+    def history_for_lineage(self, account_id: int) -> tuple[Observation, ...]:
+        """Resolve an account's lineage and read its history across replacement Items."""
 
         rows = _rows(
             self._connection.execute(
                 f"""
+                WITH requested_lineage AS (
+                    SELECT lineage_id
+                    FROM account
+                    WHERE id = ?
+                )
                 SELECT {_OBSERVATION_COLUMNS}
                 FROM observation AS o
                 JOIN account AS a ON a.id = o.account_id
-                WHERE a.lineage_id = ?
-                ORDER BY julianday(o.observed_at), o.id
+                JOIN requested_lineage AS requested
+                  ON requested.lineage_id = a.lineage_id
+                ORDER BY o.observed_at, o.id
                 """,
-                (lineage_id,),
+                (account_id,),
             )
         )
         return tuple(_observation_from_row(row) for row in rows)
@@ -329,6 +339,8 @@ class SnapshotRepository:
 
         if not isinstance(draft, SnapshotDraft):
             raise TypeError("draft must be a SnapshotDraft")
+        if isinstance(draft, Snapshot):
+            draft = draft.as_draft()
         self._require_successful_run(draft.sync_run_id)
 
         existing = self.for_sync_run(draft.sync_run_id)
@@ -443,7 +455,7 @@ class SnapshotRepository:
                 f"""
                 SELECT {_SNAPSHOT_COLUMNS}
                 FROM snapshot AS s
-                ORDER BY julianday(s.taken_at) DESC, s.id DESC
+                ORDER BY s.taken_at DESC, s.id DESC
                 LIMIT 1
                 """
             )
@@ -456,7 +468,7 @@ class SnapshotRepository:
                 f"""
                 SELECT {_SNAPSHOT_COLUMNS}
                 FROM snapshot AS s
-                ORDER BY julianday(s.taken_at), s.id
+                ORDER BY s.taken_at, s.id
                 """
             )
         )
@@ -464,7 +476,13 @@ class SnapshotRepository:
 
 
 class Store:
-    """The SQLite-only repository seam used by later components."""
+    """The SQLite-only repository seam used by later components.
+
+    The caller owns transaction boundaries and must enable ``foreign_keys`` on
+    its connection before constructing this facade. The setting is per
+    connection and cannot be enabled reliably from inside an open transaction,
+    so the Store asserts it instead of mutating caller-owned connection state.
+    """
 
     __slots__ = ("observations", "snapshots")
 
@@ -474,5 +492,10 @@ class Store:
     def __init__(self, connection: sqlite3.Connection) -> None:
         if not isinstance(connection, sqlite3.Connection):
             raise TypeError("connection must be a sqlite3.Connection")
+        foreign_keys = _row(connection.execute("PRAGMA foreign_keys"))
+        if foreign_keys is None or foreign_keys[0] != 1:
+            raise StoreConfigurationError(
+                "connection must enable PRAGMA foreign_keys before Store is created"
+            )
         self.observations = ObservationRepository(connection)
         self.snapshots = SnapshotRepository(connection)

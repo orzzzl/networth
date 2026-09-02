@@ -6,6 +6,7 @@ import sqlite3
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +28,7 @@ from networth.store import (
     SnapshotConflictError,
     SnapshotRunNotSuccessfulError,
     Store,
+    StoreConfigurationError,
 )
 
 NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
@@ -123,13 +125,15 @@ def snapshot(
         SOURCE_AS_OF,
         SOURCE_AS_OF,
     )
+    unknown_count = int(snapshot_age.state is SnapshotAgeState.UNKNOWN)
+    static_count = account_count if snapshot_age.state is SnapshotAgeState.STATIC_ONLY else 0
     return SnapshotDraft(
         sync_run_id=run_id,
         taken_at=taken_at,
         net_worth=snapshot_age.figure(value_minor),
         assets=snapshot_age.figure(value_minor),
         liabilities=snapshot_age.figure(0),
-        counts=SnapshotCounts(account_count, 0, 0, 0, 0, 0),
+        counts=SnapshotCounts(account_count, 0, unknown_count, static_count, 0, 0),
         is_complete=True,
         age=snapshot_age,
     )
@@ -240,6 +244,19 @@ def test_snapshot_retry_is_idempotent_on_sync_run_id(
     assert db.execute("SELECT count(*) FROM snapshot").fetchone() == (1,)
 
 
+def test_snapshot_retry_accepts_the_returned_snapshot(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    add_sync_run(db, "run-returned-retry")
+    first = store.snapshots.append(snapshot("run-returned-retry", 34_567))
+
+    retried = store.snapshots.append(first)
+
+    assert retried == first
+    assert db.execute("SELECT count(*) FROM snapshot").fetchone() == (1,)
+
+
 def test_snapshot_retry_with_different_data_refuses_to_hide_a_correction(
     db: sqlite3.Connection,
     store: Store,
@@ -333,6 +350,8 @@ def test_lineage_history_crosses_replacement_account_ids(
     )
 
     assert store.observations.history_for_lineage(original_account) == (before, after)
+    assert store.observations.history_for_lineage(replacement_account) == (before, after)
+    assert store.observations.history_for_lineage(9999) == ()
 
 
 @pytest.mark.parametrize(
@@ -388,6 +407,66 @@ def test_latest_uses_observation_time_not_insertion_order(
     store.observations.append(observation("run-older", account_id, 10_000, observed_at=NOW))
 
     assert store.observations.latest_for_account(account_id) == newer
+
+
+def test_observation_ordering_preserves_microseconds(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    account_id = add_account(db, "Synthetic microsecond account")
+    add_sync_run(db, "run-microsecond-newer")
+    newer = store.observations.append(
+        observation(
+            "run-microsecond-newer",
+            account_id,
+            20_000,
+            observed_at=NOW + timedelta(microseconds=10),
+        )
+    )
+    add_sync_run(db, "run-microsecond-older")
+    older = store.observations.append(
+        observation("run-microsecond-older", account_id, 10_000, observed_at=NOW)
+    )
+
+    assert store.observations.latest_for_account(account_id) == newer
+    assert store.observations.latest_by_account() == (newer,)
+    assert store.observations.history_for_lineage(account_id) == (older, newer)
+
+
+def test_snapshot_ordering_preserves_microseconds(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    add_sync_run(db, "run-snapshot-newer")
+    newer = store.snapshots.append(
+        snapshot("run-snapshot-newer", 20_000, taken_at=NOW + timedelta(microseconds=10))
+    )
+    add_sync_run(db, "run-snapshot-older")
+    older = store.snapshots.append(snapshot("run-snapshot-older", 10_000, taken_at=NOW))
+
+    assert store.snapshots.latest() == newer
+    assert store.snapshots.history() == (older, newer)
+
+
+def test_store_requires_foreign_keys_on_each_callers_connection(tmp_path: Path) -> None:
+    database = tmp_path / "store.sqlite"
+    migration_connection = sqlite3.connect(database)
+    try:
+        migrate(migration_connection)
+    finally:
+        migration_connection.close()
+
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        with pytest.raises(StoreConfigurationError, match="PRAGMA foreign_keys"):
+            Store(connection)
+
+        assert connection.in_transaction
+        assert connection.execute("PRAGMA foreign_keys").fetchone() == (0,)
+    finally:
+        connection.close()
 
 
 def test_store_leaves_transaction_commit_and_rollback_to_its_caller(

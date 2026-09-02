@@ -7,6 +7,7 @@ from networth.store.sqlite import (
     SnapshotRepository,
     SnapshotRunNotSuccessfulError,
     Store,
+    StoreConfigurationError,
     StoredDataError,
     StoreError,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "SnapshotRepository",
     "SnapshotRunNotSuccessfulError",
     "Store",
+    "StoreConfigurationError",
     "StoreError",
     "StoredDataError",
 ]
