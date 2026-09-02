@@ -67,7 +67,7 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 02 | Project scaffold + secret scanner | — | **claude** | codex | **DONE** (#19, 2026-09-01) |
 | 03 | SQLite schema + migration runner | 02 | **codex** | claude | **DONE** (#22, 2026-09-01) |
-| 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **READY** |
+| 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **WIP** (#36) |
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **DONE** (#29, 2026-09-01) |
 | 05a | `TokenStore` | 02 | **claude** | codex | **WIP** (PR #21) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | BLOCKED (05a) |
