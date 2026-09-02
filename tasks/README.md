@@ -278,7 +278,14 @@ for reassignment, not a licence to reassign only when quota is the cause. Readin
 as a prohibition is how an agent talks itself into idling.
 
 Still outstanding, in the order they would land: `04` merges (frees `26a` and `13`), the
-owner answers `#28` (frees `05a`), the owner installs `00c` (with `05a`, frees `06`).
+owner answers `#28` (frees `05a`), the owner installs `00c` (with `05a`, frees `06`), and
+the owner runs `scripts/provision-host.sh` twice on `tokyo-exit` — `28`'s criteria (2) and
+(4), which free `16`, `20` and `00b`.
+
+That last one is new, and it is here because it just became true rather than because it was
+forgotten: `28`'s entry promised the owner would be asked *only* once the script existed —
+"an owner row is a row he can act on today" — and the PR that adds `scripts/provision-host.sh`
+is the handover. Before it merged, there was nothing for him to run.
 
 **Owner-only work stays with the owner.** `00` (done), `00b` (installing the constrained
 backup key, and escrowing it) and `00c` (installing the Sandbox secret) are not assignable
@@ -1813,6 +1820,51 @@ depends on `16`, the Production Link is gated on a host that was provisioned *an
 someone watched start. Nothing here needs to know how many units there are.
 
 **Normative:** §15.1, §13, §19 step 3. Issues **#6**, #17.
+
+**What claude's half delivered, and what it deliberately did not.** Two files, both
+standalone so the host never needs a checkout of this repository:
+
+| File | Who may run it | What it does |
+|---|---|---|
+| `scripts/provision-host.sh` | **the owner only** | the whole of *What to build* above, comparing before it acts and ending in a `changed:` count |
+| `scripts/host-state.sh` | anyone, including an agent | reads and prints exactly what the other script can change — no writes, no clock, no pids, so two captures diff cleanly |
+
+`tests/test_provision_script.py` pins criteria (1) and (3) as facts about the repository:
+the only sshd setting the script can write is `PasswordAuthentication no`; every
+`PermitRootLogin` mention is a comment, a read, or the proposal it prints; the set of files
+it writes is two, neither under `/etc/networth/`; no `PLAID_ENV` value is assigned anywhere
+in `networth/` or `scripts/`; no second port, no rule deletion, no unit, no password
+prompt. These are shape checks on shell source and cannot prove runtime behaviour — what
+they buy is that the edit which would break the owner's exit node fails a PR instead.
+
+**Verified read-only on the host on 2026-09-01, before the script was written**, because
+half of what this task was specified to change is already the way it should be, and a
+script that "hardens" what is already hardened reports work it did not do:
+
+| Fact on `tokyo-exit` | State found | What the script does about it |
+|---|---|---|
+| `PasswordAuthentication` | already `no` (a drop-in the owner installed) | verifies via `sshd -T`, writes nothing |
+| `PermitRootLogin` | `prohibit-password` — already key-only | reports it; **proposes nothing**, because the only value §15.1 argues against is `yes` |
+| `ufw` | active, deny incoming, `22/tcp` + `41641/udp` (Tailscale) | verifies `22/tcp`; leaves the Tailscale rule alone |
+| unattended upgrades | installed, enabled, both periodic jobs on | verifies through `apt-config`, writes nothing |
+| service user | **absent** | creates it, home `/var/lib/networth`, `nologin` |
+| `/etc/networth/` | `root:root 700`, one credential file `600` | `chown`s both to the service user and **reports each one** — criterion (2) |
+| `python3` | **3.14.4**; `python3-venv` **absent**, so `python3 -m venv` fails today | installs `python3-venv` and proves a venv can be built |
+| public listeners | `sshd` on `0.0.0.0:22` and `[::]:22` — exactly §19 step 3.4's baseline | records them |
+
+Two of those are findings rather than confirmations. **The one sudo account on the host has
+zero authorized keys**, so §19 step 3.1's precondition for restricting root login does not
+hold today — the script prints the key counts next to the proposal so that is visible at
+the moment it matters. And **`python3` is 3.14 while CI runs 3.12** (issue **#33**); this
+task installs the distribution interpreter on purpose, because one outside
+`unattended-upgrades` on the host holding the master credential is the worse trade.
+
+**How criterion (4) is measured, so it can fail.** Capture `scripts/host-state.sh` before
+the owner's first run and after his second, and diff. The expected diff is the service user
+appearing, `/etc/networth/` changing owner, `python3-venv` becoming installed — and nothing
+else. One known benign line: `tailscaled`'s ephemeral source port changes if it restarts
+between captures. Anything else in the diff is either a defect or something to explain in
+this entry, not to wave through.
 
 **Four acceptance criteria that are about not breaking the owner's machine — they matter
 more than the hardening itself:**

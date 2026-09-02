@@ -1,7 +1,25 @@
 # DESIGN — networth
 
-Status: **proposed** (design phase; nothing implemented).
+Status: **building** — the design phase closed on 2026-08-31 and tasks are being
+implemented; `tasks/README.md` is the live state. *(Rev 19: this line still read
+"proposed (design phase; nothing implemented)" with three tasks merged.)*
 Author: Claude. Reviewer: Codex.
+
+Revision 19 — **not review-driven, and small: two claims this document made
+about things outside it, corrected from the things themselves while task `28`
+was being written.**
+
+- **§19 step 3.1 named no script.** The step the owner executes said "from the
+  provided script" through eighteen revisions, and there was no script — so the
+  procedure could not be followed even in principle. It now names
+  `scripts/provision-host.sh`, gives the exact commands, says the run happens
+  **twice** because that is acceptance criterion (4), and states what an agent
+  may do either side of it (`scripts/host-state.sh`, which only reads).
+- **§16's "Python 3.12" was a fact about a host that runs 3.14.** Ubuntu 26.04.1
+  on `tokyo-exit` ships CPython **3.14.4** and has no 3.12; CI resolves 3.12.3.
+  The version is now stated as the floor it always was in `pyproject.toml`, and
+  the gap between what CI tests and what the daemon will run is **issue #33**
+  rather than a sentence nobody would have re-read.
 
 Revision 18 — **Codex's seven blockers against rev 17. The theme of this round
 is that rev 17's new mechanisms each read correctly in isolation and then failed
@@ -4046,8 +4064,18 @@ never a reason for the agent to see it.
 
 ## 16. Stack
 
-**Host side: Python 3.12 + SQLite + the official `plaid-python` SDK**, on Ubuntu
-26.04. **Phone side: Flutter** (decided by the owner), Android only (O6).
+**Host side: Python 3.12 *or newer* + SQLite + the official `plaid-python`
+SDK**, on Ubuntu 26.04. **Phone side: Flutter** (decided by the owner), Android
+only (O6).
+
+*(Rev 19 turns "Python 3.12" into a floor, from the host itself rather than from
+this document: `tokyo-exit` runs Ubuntu 26.04.1, whose `python3` is **3.14.4**,
+and 3.12 is not in that archive at all. `pyproject.toml` has said `>=3.12`
+throughout, so the code is in range — but CI resolves 3.12.3 while the
+provisioned host will run 3.14, a version this project has never run a test on.
+Task `28` installs the **distribution** interpreter deliberately: one that sits
+outside `unattended-upgrades`, on the host holding the Plaid master credential,
+is the worse trade. Closing the testing gap is **issue #33**.)*
 
 | Option for the host side | For | Against | Verdict |
 |---|---|---|---|
@@ -4566,6 +4594,35 @@ device. All of it is gone with the third party it protected.)*
    public inbound service at all (§8.4) — unattended
    security upgrades, and a dedicated unprivileged service user that owns the
    database and the secrets.
+
+   **The script is `scripts/provision-host.sh`** *(rev 19, task `28`)* — one
+   file, no dependency beyond the base system, so no checkout of this repository
+   ever lands on the host that holds the credentials. From
+   `zelengs-macbook-air-2`, copy it over and run it **twice**:
+
+   ```
+   scp ~/networth/scripts/provision-host.sh root@100.102.245.37:/root/
+   ssh root@100.102.245.37 'bash /root/provision-host.sh' | tee ~/provision-run-1.log
+   ssh root@100.102.245.37 'bash /root/provision-host.sh' | tee ~/provision-run-2.log
+   ```
+
+   Keep both transcripts. **The second must end in `changed: 0`** — that, plus a
+   diff of the host state either side of the two runs, is acceptance criterion
+   (4), and the first transcript's `chown` lines are criterion (2). The
+   transcript prints the script's own `sha256`, so which version ran is a fact in
+   the record rather than an assumption; compare it against `shasum -a 256` on
+   the copy in the repo.
+
+   **Both runs are yours and neither is an agent's** — the script edits `sshd`,
+   the firewall and ownership under `/etc/networth/`. What an agent does either
+   side of them is `scripts/host-state.sh`, which only reads. There is no
+   rehearsal mode: the first run is the one that changes the host.
+
+   Two things the script will **not** do on its own, and both print as a proposal
+   for you instead: restricting root login (below), and enabling `ufw` if it is
+   ever found switched off — `ufw enable` rebuilds netfilter, and this host's
+   Tailscale exit-node forwarding rides on rules `tailscaled` inserts rather than
+   on anything `ufw` stores.
 
    **The script does not touch `PermitRootLogin`, at all.** *(Rev 14. Rev 12
    identified this defect and fixed it in §15.1, then left this step — the part
