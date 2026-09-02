@@ -1828,14 +1828,16 @@ was the broken part: §19 step 3.1's six remote commands named no key, and
 key explicitly and `tests/test_owner_runbook.py` fails a PR that drops it from even one of
 the six commands. Nothing was handed to him before that landed.
 
-That guard then took two review rounds of its own, and both findings were the same shape as
+That guard then took three review rounds of its own, and every finding was the same shape as
 the defect it was written for: it checked that the *text* said the right thing rather than
 what `ssh` would *do*. Round 2 kept every token it looked for and unpinned the sequence
 (`IdentitiesOnly` is first-value-wins; identities accumulate); probing that fix found three
-more routes it did not read at all. Rev 23 stops enumerating the bad spellings and fails
-closed on any option it does not model. Recorded here because the row's lesson is now
-three-for-three: **on this task, every defect has been in the procedure or its checks, and
-none in `provision-host.sh`.**
+more routes it did not read at all; round 3 kept the tokens **and** their order, and moved
+them past the position where each program stops reading options at all. Rev 23 stops
+enumerating the bad spellings, fails closed on any option it does not model, and models that
+boundary per program — `ssh` resumes after its destination, `scp` does not. Recorded here
+because the row's lesson is now four-for-four: **on this task, every defect has been in the
+procedure or its checks, and none in `provision-host.sh`.**
 
 **Unblocked 2026-09-01, verified on the host rather than inferred from the board.** This
 entry read `BLOCKED (00a)` because it needed the agent SSH key installed. It is installed,

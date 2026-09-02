@@ -28,6 +28,25 @@ different question, and the two disagree.**
   any other option-looking token on a remote command **fails** until the module
   is taught it. That is one reviewed line to add, against the alternative of
   trusting a token nothing read.
+- **Round 3 found that same sentence one word further along: *which* tokens,
+  never *where*.** Option parsing stops at a position, and the two programs stop
+  in different places. Moving the shipped `-i` and `-o` behind
+  `'bash /root/host-state.sh'` — every token still present, in the same order
+  relative to each other — leaves `ssh` authenticating with whatever an agent
+  holds, and the guard called that pinned. The boundary is now modelled per
+  program, measured rather than assumed: **`ssh` resumes after its destination**
+  (`-i` before the host and `-i` after it accumulate) and stops at the remote
+  command; **`scp` stops at its first path operand** (`scp a -i k dst/` copies a
+  file literally named `-i`). The fix was then run against `ssh -G` itself over
+  **2 532 mutants** of the six commands — the shipped options moved to every
+  position, and six widening edits injected at every index — with **no case
+  where the guard says pinned and `ssh` disagrees**. The 55 where it is
+  *stricter* than `ssh` are all `-o Compression=yes` and `--`: the fail-closed
+  rule above, doing what it says. *(Two of the three anomalies that sweep threw
+  up were defects in the **oracle**, not the guard — `ssh -G` omits identity
+  files that do not exist, so a differential probe using an absent key cannot
+  see the widening it just injected. Written down because a check that cannot
+  fail is the failure mode this row keeps producing.)*
 - **What must stay green is asserted beside it, and is the harder half.** The
   identity written as `-o IdentityFile=`, the same key named twice, a redundant
   second `IdentitiesOnly=yes`, and a `=no` *behind* the shipped `=yes` are all
@@ -4821,9 +4840,11 @@ device. All of it is gone with the third party it protected.)*
      loaded, so that "this key authenticated" cannot quietly become "some key
      did". Only `tests/test_owner_runbook.py` holds that one. It reads the
      `IdentitiesOnly` value `ssh` would *use* rather than the one it can find,
-     counts identities in both spellings, and fails on any other option-looking
-     token in these six commands *(rev 23)* — a new flag here is a review, not
-     a silent pass.
+     counts identities in both spellings, reads only the tokens each program
+     actually parses as options — `ssh` stops at the remote command, `scp` at
+     its first path operand — and fails on any other option-looking token there
+     *(rev 23)*. A new flag here is a review rather than a silent pass, and a
+     credential moved past that boundary is a failure rather than a pass.
 
    **The second transcript must end in `changed: 0`**, and the first one's
    `[changed]` lines are criterion (2). Each transcript prints the script's own

@@ -40,11 +40,33 @@ reasoned about:
   `IdentityFile`. Reading only the first `-i` reports A while B can
   authenticate.
 
+Round 3 returned the same sentence one word further along: the module asked
+*which* tokens a command carried without asking *where* they sat. Option
+parsing stops at a position, and `ssh` and `scp` stop in different places —
+measured here with `ssh -G` and a local `scp`, not read off a manual page:
+
+- **`ssh` resumes after its destination** and stops at the remote command.
+  `ssh -G host -i A -o IdentitiesOnly=yes` reports both, and `-i` before the
+  host and `-i` after it accumulate; the same two options moved behind a
+  command token report `identitiesonly no` and the default identity list;
+- **`scp` stops at its first path operand.** `scp a -i k dst/` copies a file
+  literally named `-i`.
+
+So the shipped options moved behind `'bash /root/host-state.sh'` — every token
+still present, in the same command, in the same order relative to each other —
+leave `ssh` authenticating as whatever an agent offers, and a predicate reading
+the flat token list called that pinned. `_option_tokens` is where the boundary
+now lives, and it is the reason the two controls anchored on the shipped text
+give **opposite verdicts for the two programs** from one edit.
+
 This is a shape check, with the usual limits: it cannot prove the key is on the
 host, which only the host can answer, and it reads a block as a flat sequence,
 so an assignment nested inside its own subshell would count as in scope here
-while the real shell discarded it. The case it buys is the one that happened —
-a remote command added or edited without a usable identity.
+while the real shell discarded it. It also says nothing about *which* host a
+command reaches — the operand region is where destinations live, and stating
+that limit is cheaper than implying a guarantee that was never written. The
+case it buys is the one that happened — a remote command added or edited
+without a usable identity.
 
 The vacuity guard and the four controls are not decoration. Every assertion
 about the shipped block is "no command is missing something", which is equally
@@ -110,6 +132,15 @@ KNOWN_FLAGS = ("-i", "-o")
 #: The only `-o` setting names it reads.
 KNOWN_SETTINGS = frozenset({IDENTITIES_ONLY, IDENTITY_FILE})
 
+#: How many positional operands option parsing survives, per program — where
+#: each program stops reading options at all. Measured on this machine, because
+#: the obvious model is wrong for one of the two: `ssh` does **not** stop at its
+#: first operand, it resumes after the destination and stops at the remote
+#: command (`ssh -G host -i A -o IdentitiesOnly=yes` reports both; behind a
+#: command token it reports neither). `scp` does stop at the first operand
+#: (`scp a -i k dst/` reports `cp: -i: No such file or directory`).
+OPTIONS_SURVIVE = {"ssh": 1, "scp": 0}
+
 
 def runbook_blocks(document: str) -> list[str]:
     """Every fenced block that reaches a host — the ones the owner pastes."""
@@ -144,6 +175,49 @@ def remote_commands(block: str) -> list[str]:
     return [command for command, _ in _resolved(block)]
 
 
+def _option_tokens(command: str) -> list[str]:
+    """The tokens this command's program reads as options — and no others.
+
+    Everything below asks what a command's options *say*; this is the one place
+    that decides which tokens are options at all, and getting that wrong was
+    round 3. Scanning the whole token list counts `-i` and `-o` that sit past
+    the boundary, where `ssh` hands them to the remote shell and `scp` treats
+    them as paths. The shipped block with its two options moved behind
+    `'bash /root/host-state.sh'` keeps every token a flat scan looks for and
+    authenticates with whatever the agent has.
+
+    Operands are counted rather than stopped at, because `ssh` resumes: the
+    destination is an operand that option parsing survives, and the remote
+    command is the one it does not. `OPTIONS_SURVIVE` is that number, measured
+    per program.
+
+    An option-looking token this module does not know is taken to consume no
+    argument, which can end the region early and hide real options behind it.
+    That is safe in the only direction that matters: `unreadable` reports the
+    unknown token itself, so such a command fails before the hidden options
+    could have excused it. The reverse — modelling an unknown flag as taking an
+    argument — would swallow a real operand and read the remote command as
+    options.
+    """
+    tokens = shlex.split(command)
+    survives = OPTIONS_SURVIVE[tokens[0]]
+    options: list[str] = []
+    operands = 0
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("-"):
+            operands += 1
+            if operands > survives:
+                break
+            index += 1
+            continue
+        width = 2 if token in KNOWN_FLAGS else 1
+        options += tokens[index : index + width]
+        index += width
+    return options
+
+
 def _setting(option: str) -> tuple[str, str]:
     """One `-o` argument as `(name, value)`, the way `ssh` reads it.
 
@@ -157,7 +231,11 @@ def _setting(option: str) -> tuple[str, str]:
 
 
 def _settings(tokens: list[str]) -> list[tuple[str, str]]:
-    """Every `-o` setting a command carries, in the order `ssh` reads them.
+    """Every `-o` setting in an option region, in the order `ssh` reads them.
+
+    Takes the region rather than the command: a `-o` past the option boundary
+    is not a setting at all, and every caller here gets its tokens from
+    `_option_tokens`.
 
     A list, not a set. Order *is* the question for `IdentitiesOnly`: the set
     this used to return held `no` and `yes` at once and still answered "yes,
@@ -192,9 +270,11 @@ def identities_of(command: str, variables: dict[str, str]) -> list[str | None]:
     authenticate just as well.
 
     An empty list is a command that offers nothing, which is the original
-    defect; it fails the caller's test for the same reason a wrong path does.
+    defect; it fails the caller's test for the same reason a wrong path does —
+    and it is also what a command whose `-i` sits past the option boundary
+    offers, which is the round-3 mutation.
     """
-    tokens = shlex.split(command)
+    tokens = _option_tokens(command)
     identities: list[str | None] = []
     for index, token in enumerate(tokens):
         if token == "-i":
@@ -217,7 +297,7 @@ def identities_only(command: str) -> str | None:
     *contains* `=yes` answers a different question than "is it pinned", and
     the two disagree exactly when someone has put a `no` in front.
     """
-    for name, value in _settings(shlex.split(command)):
+    for name, value in _settings(_option_tokens(command)):
         if name == IDENTITIES_ONLY:
             return value.lower()
     return None
@@ -241,8 +321,13 @@ def unreadable(command: str) -> list[str]:
     setting must be one of the two names read above. A sequence that grows a
     new flag fails until this module is taught it — one reviewed line, against
     the alternative of a token nothing read at all.
+
+    Scoped to the option region, like everything else here. An option-looking
+    token past the boundary is a remote-command argument or a path, and
+    reddening the block for one would be a false alarm of exactly the kind the
+    green controls exist to prevent.
     """
-    tokens = shlex.split(command)
+    tokens = _option_tokens(command)
     unread = [name for name, _ in _settings(tokens) if name not in KNOWN_SETTINGS]
     index = 0
     while index < len(tokens):
@@ -332,6 +417,83 @@ def _carrying(*extra: str) -> Callable[[str], str]:
     def edit(command: str) -> str:
         tokens = shlex.split(command)
         return shlex.join(tokens[:1] + list(extra) + tokens[1:])
+
+    return edit
+
+
+#: Two markers out of the shipped block's own text, used to place the positional
+#: controls below. The destination is in every one of the six commands; the
+#: remote command is in the five `ssh` ones and in no `scp`, which is what lets
+#: one edit ask the two programs different questions.
+DESTINATION = "root@"
+REMOTE_COMMAND = "bash /root/"
+
+
+def _split_options(command: str) -> tuple[list[str], list[str]]:
+    """A command's `-i`/`-o` tokens and everything else, ignoring position.
+
+    Deliberately **not** `_option_tokens`. A control that asked the parser under
+    test where the option boundary is would move the options to wherever that
+    parser believed it was, and then agree with itself whatever it believed —
+    an edit that cannot fail. This one knows only that `-i` and `-o` take an
+    argument; where the result lands is then decided by a marker out of the
+    block's own text, and what the two programs do with tokens there was
+    measured separately.
+    """
+    tokens = shlex.split(command)
+    options: list[str] = []
+    rest: list[str] = []
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in KNOWN_FLAGS:
+            options += tokens[index : index + 2]
+            index += 2
+        elif token.startswith(KNOWN_FLAGS):
+            options.append(token)
+            index += 1
+        else:
+            rest.append(token)
+            index += 1
+    return options, rest
+
+
+def _moved_behind(marker: str) -> Callable[[str], str]:
+    """An edit that moves a command's `-i`/`-o` options behind `marker`'s token.
+
+    Not an insertion: the options that were there are the ones that move, so
+    every token the shipped command had is still present and only its position
+    changed — which is the whole of what round 3 found. A command with no such
+    token is returned unmodified, so a marker only the `ssh` lines carry leaves
+    the `scp` line alone and the caller can assert *which* commands fail.
+    """
+
+    def edit(command: str) -> str:
+        tokens = shlex.split(command)
+        options, rest = _split_options(command)
+        assert options, f"nothing to move, this command names no options: {command}"
+        positions = [index for index, token in enumerate(rest) if marker in token]
+        if not positions:
+            return command
+        at = positions[0]
+        moved = tokens[:1] + rest[: at + 1] + options + rest[at + 1 :]
+        assert len(moved) == len(tokens), f"the edit changed the token count: {command}"
+        assert moved.index(options[0]) > moved.index(rest[at]), "the options did not move"
+        return shlex.join(moved)
+
+    return edit
+
+
+def _inserted_behind(marker: str, *extra: str) -> Callable[[str], str]:
+    """An edit that adds `extra` immediately behind `marker`'s token."""
+
+    def edit(command: str) -> str:
+        tokens = shlex.split(command)
+        positions = [index for index, token in enumerate(tokens) if marker in token]
+        if not positions:
+            return command
+        at = positions[0] + 1
+        return shlex.join(tokens[:at] + list(extra) + tokens[at:])
 
     return edit
 
@@ -508,6 +670,65 @@ def test_anything_this_module_cannot_read_authenticates_nothing() -> None:
     for addition in additions:
         mutated = _rewrite(the_provisioning_sequence(), _carrying(*addition))
         _assert_nothing_authenticates(mutated)
+
+
+def test_options_behind_the_ssh_remote_command_authenticate_nothing() -> None:
+    """Control: round 3's escape — the shipped options, moved, nothing added.
+
+    `ssh root@… 'bash /root/host-state.sh' -i "$vps_key" -o IdentitiesOnly=yes`
+    carries every token the round-2 predicate looked for, in the same relative
+    order, and it authenticates with whatever the agent holds: measured on this
+    machine, `ssh -G host echo -i /etc/hosts -o IdentitiesOnly=yes` reports
+    `identitiesonly no` and the five default identity files. Past the remote
+    command those tokens are arguments to the remote shell.
+
+    The `scp` has no such token and is deliberately left untouched, so this
+    asserts *which* five commands broke rather than that the block did.
+    """
+    mutated = _rewrite(the_provisioning_sequence(), _moved_behind(REMOTE_COMMAND))
+    assert [command.split()[0] for command in unauthenticated(mutated)] == ["ssh"] * 5
+
+
+def test_options_behind_the_destination_split_the_two_programs() -> None:
+    """Control: one edit, opposite verdicts — because the programs differ.
+
+    This is the pair that says the boundary is modelled per program rather than
+    guessed at. The same move, behind the destination that all six commands
+    name:
+
+    - `scp` stops reading options at its first path operand, so the `scp` line's
+      `-i` and `-o` become paths — `scp a -i k dst/` reports
+      `cp: -i: No such file or directory` here. It must go **red**;
+    - `ssh` resumes reading options after its destination, so the five `ssh`
+      lines are pinned exactly as shipped — `ssh -G host -i A
+      -o IdentitiesOnly=yes` reports both. They must stay **green**.
+
+    Getting this half wrong is not a fail-open, it is worse for the guard's
+    life expectancy: a rule that stopped at the first operand for both programs
+    would redden five commands that authenticate correctly, and the next
+    author's cheapest fix is to delete the guard.
+    """
+    mutated = _rewrite(the_provisioning_sequence(), _moved_behind(DESTINATION))
+    assert [command.split()[0] for command in unauthenticated(mutated)] == ["scp"]
+
+
+def test_a_second_identity_after_the_ssh_destination_authenticates_nothing() -> None:
+    """Control: the fail-open direction of the region the fix newly accepts.
+
+    Accepting options behind the destination is new acceptance surface, and new
+    acceptance surface needs a red control or it is only an assumption. `ssh -G
+    -i A host -i B` reports **both** identities, so a key added after the host
+    widens what may authenticate exactly as one added before it, and the five
+    `ssh` lines must fail.
+
+    On the `scp` line the same insertion lands past that program's boundary,
+    where it is a path rather than a credential, so it stays green — the guard
+    claims authentication, not that a command works.
+    """
+    mutated = _rewrite(
+        the_provisioning_sequence(), _inserted_behind(DESTINATION, "-i", "~/.ssh/id_ed25519")
+    )
+    assert [command.split()[0] for command in unauthenticated(mutated)] == ["ssh"] * 5
 
 
 def test_spellings_that_still_authenticate_are_not_rejected() -> None:
