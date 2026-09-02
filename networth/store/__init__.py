@@ -1,6 +1,8 @@
-"""SQLite Store facade and append-only repository errors."""
+"""SQLite Store facade and repository errors."""
 
 from networth.store.sqlite import (
+    ItemNotFoundError,
+    ItemRepository,
     ObservationConflictError,
     ObservationRepository,
     SnapshotConflictError,
@@ -13,6 +15,8 @@ from networth.store.sqlite import (
 )
 
 __all__ = [
+    "ItemNotFoundError",
+    "ItemRepository",
     "ObservationConflictError",
     "ObservationRepository",
     "SnapshotConflictError",

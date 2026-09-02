@@ -5,6 +5,7 @@ exception to learn that an Item needs re-authentication."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -20,6 +21,8 @@ CREDENTIALS = PlaidCredentials(
     secret="synthetic-secret",
     environment=PlaidEnvironment.SANDBOX,
 )
+
+_MISSING = object()
 
 
 class FakeError:
@@ -55,9 +58,27 @@ class ItemWithNoErrorField:
 
 
 class FakeResponse:
-    def __init__(self, item: Any, request_id: str = "synthetic-request") -> None:
+    def __init__(
+        self,
+        item: Any,
+        request_id: str = "synthetic-request",
+        *,
+        status: Any = _MISSING,
+    ) -> None:
         self.item = item
         self.request_id = request_id
+        if status is not _MISSING:
+            self.status = status
+
+
+class FakeInvestmentsStatus:
+    def __init__(self, last_successful_update: Any) -> None:
+        self.last_successful_update = last_successful_update
+
+
+class FakeStatus:
+    def __init__(self, last_successful_update: Any) -> None:
+        self.investments = FakeInvestmentsStatus(last_successful_update)
 
 
 class ResponseWithNoItem:
@@ -95,6 +116,50 @@ def test_clean_response_is_healthy() -> None:
     assert status.item_id == "synthetic-item-1"
     assert status.request_id == "synthetic-request"
     assert api.calls == ["synthetic-access-token"]
+
+
+def test_investments_source_clock_is_extracted_and_normalised_to_utc() -> None:
+    reported = datetime(2026, 1, 15, 4, 30, tzinfo=timezone(timedelta(hours=-8)))
+    client, _ = client_for(FakeResponse(FakeItem("synthetic-item-1"), status=FakeStatus(reported)))
+
+    status = client.item_get("synthetic-access-token")
+
+    assert status.classification.state is ItemState.HEALTHY
+    assert status.investments_status_observed
+    assert status.investments_last_successful_update == datetime(2026, 1, 15, 12, 30, tzinfo=UTC)
+
+
+def test_literal_null_investments_clock_is_observed_unknown() -> None:
+    client, _ = client_for(FakeResponse(FakeItem("synthetic-item-1"), status=FakeStatus(None)))
+
+    status = client.item_get("synthetic-access-token")
+
+    assert status.investments_status_observed
+    assert status.investments_last_successful_update is None
+
+
+def test_absent_investments_status_is_not_an_observed_null() -> None:
+    client, _ = client_for(FakeResponse(FakeItem("synthetic-item-1")))
+
+    status = client.item_get("synthetic-access-token")
+
+    assert not status.investments_status_observed
+    assert status.investments_last_successful_update is None
+
+
+def test_unreadable_investments_clock_cannot_leave_the_item_healthy() -> None:
+    client, _ = client_for(
+        FakeResponse(
+            FakeItem("synthetic-item-1"),
+            status=FakeStatus(datetime(2026, 1, 15, 12, 30)),
+        )
+    )
+
+    status = client.item_get("synthetic-access-token")
+
+    assert status.classification.state is ItemState.DEGRADED
+    assert not status.classification.recognised
+    assert not status.investments_status_observed
 
 
 def test_error_in_the_payload_is_classified() -> None:

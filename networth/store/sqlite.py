@@ -1,8 +1,10 @@
-"""Append-only repositories over the section-7 SQLite schema.
+"""Repositories over the section-7 SQLite schema.
 
 The repositories accept an existing connection so the caller owns transaction
-boundaries.  They never commit, open another file, call a service, or hide a
-figure behind a number-only convenience method.
+boundaries. Observations and snapshots are append-only; Item health is the
+explicit mutable state machine from section 8.2. They never commit, open
+another file, call a service, or hide a figure behind a number-only convenience
+method.
 """
 
 from __future__ import annotations
@@ -12,6 +14,9 @@ from datetime import UTC, datetime
 from typing import cast
 
 from networth.model import (
+    ItemHealth,
+    ItemHealthUpdate,
+    ItemState,
     Observation,
     ObservationDraft,
     ObservationSource,
@@ -49,6 +54,10 @@ class SnapshotRunNotSuccessfulError(StoreError):
     """A snapshot was requested for a run that did not finish successfully."""
 
 
+class ItemNotFoundError(StoreError):
+    """A health observation named an Item that no longer exists."""
+
+
 _OBSERVATION_COLUMNS = """
     o.id, o.sync_run_id, o.account_id, o.observed_at,
     o.value_minor, o.currency, o.source, o.fetched_at,
@@ -61,6 +70,12 @@ _SNAPSHOT_COLUMNS = """
     s.account_count, s.stale_account_count, s.unknown_freshness_account_count,
     s.static_account_count, s.reauth_account_count, s.unreconciled_account_count,
     s.is_complete, s.age_state, s.as_of, s.oldest_known_source_as_of
+"""
+
+_ITEM_COLUMNS = """
+    id, plaid_item_id, secret_ref, status, status_since,
+    last_health_poll_at, investments_last_successful_update,
+    last_error_code, last_error_message
 """
 
 
@@ -102,6 +117,12 @@ def _text(value: object, *, field: str) -> str:
     return value
 
 
+def _optional_text(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    return _text(value, field=field)
+
+
 def _integer(value: object, *, field: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise StoredDataError(f"{field} is not an integer")
@@ -121,6 +142,37 @@ def _rows(cursor: sqlite3.Cursor) -> tuple[tuple[object, ...], ...]:
 
 def _row(cursor: sqlite3.Cursor) -> tuple[object, ...] | None:
     return cast(tuple[object, ...] | None, cursor.fetchone())
+
+
+def _require_foreign_keys(connection: sqlite3.Connection) -> None:
+    """Assert the per-connection integrity setting every repository relies on."""
+
+    if not isinstance(connection, sqlite3.Connection):
+        raise TypeError("connection must be a sqlite3.Connection")
+    foreign_keys = _row(connection.execute("PRAGMA foreign_keys"))
+    if foreign_keys is None or foreign_keys[0] != 1:
+        raise StoreConfigurationError(
+            "connection must enable PRAGMA foreign_keys before a repository is created"
+        )
+
+
+def _item_from_row(row: tuple[object, ...]) -> ItemHealth:
+    try:
+        return ItemHealth(
+            id=_integer(row[0], field="item.id"),
+            plaid_item_id=_text(row[1], field="item.plaid_item_id"),
+            secret_ref=_text(row[2], field="item.secret_ref"),
+            status=ItemState(_text(row[3], field="item.status")),
+            status_since=_timestamp_from_db(row[4], field="item.status_since"),
+            last_polled_at=_optional_timestamp_from_db(row[5], field="item.last_health_poll_at"),
+            investments_last_successful_update=_optional_timestamp_from_db(
+                row[6], field="item.investments_last_successful_update"
+            ),
+            last_error_code=_optional_text(row[7], field="item.last_error_code"),
+            last_error_detail=_optional_text(row[8], field="item.last_error_message"),
+        )
+    except (IndexError, TypeError, ValueError) as exc:
+        raise StoredDataError("item row violates the domain model") from exc
 
 
 def _observation_from_row(row: tuple[object, ...]) -> Observation:
@@ -180,12 +232,123 @@ def _snapshot_from_row(row: tuple[object, ...]) -> Snapshot:
         raise StoredDataError("snapshot row violates the domain model") from exc
 
 
+class ItemRepository:
+    """Read Item poll targets and apply one durable Axis-A observation."""
+
+    __slots__ = ("_connection",)
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        _require_foreign_keys(connection)
+        self._connection = connection
+
+    def get(self, item_id: int) -> ItemHealth | None:
+        row = _row(
+            self._connection.execute(
+                f"SELECT {_ITEM_COLUMNS} FROM item WHERE id = ?",
+                (item_id,),
+            )
+        )
+        return None if row is None else _item_from_row(row)
+
+    def all(self) -> tuple[ItemHealth, ...]:
+        rows = _rows(self._connection.execute(f"SELECT {_ITEM_COLUMNS} FROM item ORDER BY id"))
+        return tuple(_item_from_row(row) for row in rows)
+
+    def due_at_or_before(self, cutoff: datetime) -> tuple[ItemHealth, ...]:
+        """Items never polled, or last polled no later than ``cutoff``."""
+
+        cutoff_text = _timestamp_to_db(cutoff)
+        rows = _rows(
+            self._connection.execute(
+                f"""
+                SELECT {_ITEM_COLUMNS}
+                FROM item
+                WHERE last_health_poll_at IS NULL
+                   OR last_health_poll_at <= ?
+                ORDER BY id
+                """,
+                (cutoff_text,),
+            )
+        )
+        return tuple(_item_from_row(row) for row in rows)
+
+    def record_poll(self, item_id: int, update: ItemHealthUpdate) -> ItemHealth:
+        """Apply one poll without allowing an older result to overwrite a newer one."""
+
+        if not isinstance(item_id, int) or isinstance(item_id, bool):
+            raise TypeError("item_id must be an integer")
+        if not isinstance(update, ItemHealthUpdate):
+            raise TypeError("update must be an ItemHealthUpdate")
+
+        existing = self.get(item_id)
+        if existing is None:
+            raise ItemNotFoundError(f"item {item_id} does not exist")
+        if update.polled_at < existing.status_since or (
+            existing.last_polled_at is not None and update.polled_at < existing.last_polled_at
+        ):
+            return existing
+
+        status = None if update.status is None else update.status.value
+        polled_at = _timestamp_to_db(update.polled_at)
+        row = _row(
+            self._connection.execute(
+                f"""
+                UPDATE item
+                SET last_health_poll_at = ?,
+                    status = coalesce(?, status),
+                    status_since = CASE
+                        WHEN ? IS NOT NULL AND status <> ? THEN ?
+                        ELSE status_since
+                    END,
+                    last_error_code = CASE
+                        WHEN ? IS NULL THEN last_error_code
+                        ELSE ?
+                    END,
+                    last_error_message = CASE
+                        WHEN ? IS NULL THEN last_error_message
+                        ELSE ?
+                    END,
+                    investments_last_successful_update = CASE
+                        WHEN ? = 1 THEN ?
+                        ELSE investments_last_successful_update
+                    END
+                WHERE id = ?
+                  AND (last_health_poll_at IS NULL OR last_health_poll_at <= ?)
+                RETURNING {_ITEM_COLUMNS}
+                """,
+                (
+                    polled_at,
+                    status,
+                    status,
+                    status,
+                    polled_at,
+                    status,
+                    update.error_code,
+                    status,
+                    update.error_detail,
+                    int(update.investments_status_observed),
+                    _optional_timestamp_to_db(update.investments_last_successful_update),
+                    item_id,
+                    polled_at,
+                ),
+            )
+        )
+        if row is not None:
+            return _item_from_row(row)
+
+        current = self.get(item_id)
+        if current is None:
+            raise ItemNotFoundError(f"item {item_id} does not exist")
+        return current
+
+
 class ObservationRepository:
     """Insert and read observations; intentionally no update or delete API."""
 
     __slots__ = ("_connection",)
 
     def __init__(self, connection: sqlite3.Connection) -> None:
+        _require_foreign_keys(connection)
         self._connection = connection
 
     def append(self, draft: ObservationDraft) -> Observation:
@@ -327,6 +490,7 @@ class SnapshotRepository:
     __slots__ = ("_connection",)
 
     def __init__(self, connection: sqlite3.Connection) -> None:
+        _require_foreign_keys(connection)
         self._connection = connection
 
     def append(self, draft: SnapshotDraft) -> Snapshot:
@@ -484,18 +648,14 @@ class Store:
     so the Store asserts it instead of mutating caller-owned connection state.
     """
 
-    __slots__ = ("observations", "snapshots")
+    __slots__ = ("items", "observations", "snapshots")
 
+    items: ItemRepository
     observations: ObservationRepository
     snapshots: SnapshotRepository
 
     def __init__(self, connection: sqlite3.Connection) -> None:
-        if not isinstance(connection, sqlite3.Connection):
-            raise TypeError("connection must be a sqlite3.Connection")
-        foreign_keys = _row(connection.execute("PRAGMA foreign_keys"))
-        if foreign_keys is None or foreign_keys[0] != 1:
-            raise StoreConfigurationError(
-                "connection must enable PRAGMA foreign_keys before Store is created"
-            )
+        _require_foreign_keys(connection)
+        self.items = ItemRepository(connection)
         self.observations = ObservationRepository(connection)
         self.snapshots = SnapshotRepository(connection)

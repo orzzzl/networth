@@ -24,8 +24,11 @@ from networth.model import (
 )
 from networth.storage import migrate
 from networth.store import (
+    ItemRepository,
     ObservationConflictError,
+    ObservationRepository,
     SnapshotConflictError,
+    SnapshotRepository,
     SnapshotRunNotSuccessfulError,
     Store,
     StoreConfigurationError,
@@ -448,7 +451,9 @@ def test_snapshot_ordering_preserves_microseconds(
     assert store.snapshots.history() == (older, newer)
 
 
-def test_store_requires_foreign_keys_on_each_callers_connection(tmp_path: Path) -> None:
+def test_every_repository_requires_foreign_keys_on_each_callers_connection(
+    tmp_path: Path,
+) -> None:
     database = tmp_path / "store.sqlite"
     migration_connection = sqlite3.connect(database)
     try:
@@ -460,8 +465,9 @@ def test_store_requires_foreign_keys_on_each_callers_connection(tmp_path: Path) 
     try:
         connection.execute("BEGIN IMMEDIATE")
 
-        with pytest.raises(StoreConfigurationError, match="PRAGMA foreign_keys"):
-            Store(connection)
+        for repository in (Store, ItemRepository, ObservationRepository, SnapshotRepository):
+            with pytest.raises(StoreConfigurationError, match="PRAGMA foreign_keys"):
+                repository(connection)
 
         assert connection.in_transaction
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (0,)

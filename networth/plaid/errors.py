@@ -37,33 +37,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import StrEnum
+
+from networth.model import ItemState as ItemState
 
 logger = logging.getLogger(__name__)
-
-
-class ItemState(StrEnum):
-    """Axis A of section 8. Data age is Axis B and is not on this axis at all.
-
-    The values are the strings the ``item.status`` column checks (task 03's
-    ``0001_initial.sql``); one vocabulary, so a state cannot be valid in the
-    taxonomy and rejected by the schema.
-    """
-
-    HEALTHY = "HEALTHY"
-    DEGRADED = "DEGRADED"
-    NEEDS_REAUTH = "NEEDS_REAUTH"
-    REVOKED = "REVOKED"
-
-    @property
-    def owner_actionable(self) -> bool:
-        """Does this state ask the owner to do something?
-
-        ``DEGRADED`` deliberately does not. "The institution is down" and "your
-        connection is dead" are different facts, and alerting the same way for
-        both is where alert fatigue starts (section 8.2).
-        """
-        return self in (ItemState.NEEDS_REAUTH, ItemState.REVOKED)
 
 
 # Codes named by DESIGN.md section 8.2 and by task 05's entry. Adding to this
