@@ -67,7 +67,7 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 02 | Project scaffold + secret scanner | — | **claude** | codex | **DONE** (#19, 2026-09-01) |
 | 03 | SQLite schema + migration runner | 02 | **codex** | claude | **DONE** (#22, 2026-09-01) |
-| 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **WIP** (#36) |
+| 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **DONE** (#36, 2026-09-02) |
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **DONE** (#29, 2026-09-01) |
 | 05a | `TokenStore` | 02 | **claude** | codex | **WIP** (PR #21) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | BLOCKED (05a) |
@@ -82,7 +82,7 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | BLOCKED (06a) |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b | **claude** | codex | BLOCKED (07a, 00b) |
-| 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | BLOCKED (04) |
+| 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **READY** |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
 | 12b | Replacement-Item reconcile flow | 04, 09 | **claude** | codex | BLOCKED (09) |
@@ -91,10 +91,10 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 10 | Item health poller | 04, 05 | **codex** | claude | BLOCKED (04) |
+| 10 | Item health poller | 04, 05 | **codex** | claude | **READY** |
 | 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | BLOCKED (10) |
 | 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | BLOCKED (11) |
-| 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | BLOCKED (04) |
+| 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **READY** |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED |
 | 15 | Alerts: payload-carried delivery | 11 | **codex** | claude | BLOCKED (11) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 28 | **codex** | claude | BLOCKED |
