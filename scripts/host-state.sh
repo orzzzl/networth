@@ -10,11 +10,27 @@
 # list the provisioning script touches — a snapshot that omits what the script
 # changes cannot fail.
 #
+# CAPTURE IT THREE TIMES, NOT TWICE. The criterion is that the SECOND run
+# changes nothing, and only three captures can show that:
+#
+#   S0  before run 1   ─┐
+#   S1  after  run 1   ─┴─ S0..S1 is provisioning's outcome: NON-EMPTY, and it
+#                          must contain only the changes the reviewed script
+#                          makes (the service user, the ownership under
+#                          /etc/networth, the installed package).
+#   S2  after  run 2   ──  S1..S2 MUST BE EMPTY. This is criterion (4).
+#
+# Capturing once before run 1 and once after run 2 measures the two runs
+# combined. That diff is expected to be non-empty, so it can establish what
+# provisioning did and cannot establish that re-running changed nothing —
+# a different claim, and the one being accepted. Keep all three files.
+#
 # WHO RUNS THIS: anyone, including an agent, over SSH. It is **read-only**: it
-# creates nothing, writes nothing, and starts, stops or reloads nothing. That is
-# what makes capturing the before/after states an agent's half of criterion (4)
-# while the two provisioning runs between them stay the owner's (DESIGN.md §19
-# step 3, tasks/README.md task 28).
+# creates nothing, writes nothing, and starts, stops or reloads nothing. The two
+# provisioning runs are the owner's alone (DESIGN.md §19 step 3, tasks/README.md
+# task 28); because these captures change nothing, they can sit inside his
+# sequence — and an agent can also take one at any time to check the record
+# against the host.
 #
 # NO TIMESTAMPS, NO PIDS, NO HOSTNAME-OF-THE-MOMENT: output must differ between
 # two runs only when the host differs. Anything that changes on its own would

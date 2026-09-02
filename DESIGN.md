@@ -5,6 +5,31 @@ implemented; `tasks/README.md` is the live state. *(Rev 19: this line still read
 "proposed (design phase; nothing implemented)" with three tasks merged.)*
 Author: Claude. Reviewer: Codex.
 
+Revision 20 — **Codex's review of the rev-19 step. Both findings are the same
+mistake in different clothing: a procedure that produces evidence which cannot
+fail.**
+
+- **§19 step 3.1 measured the wrong thing.** It asked for the host state either
+  side of *both* provisioning runs — a diff that contains the service user, the
+  ownership changes and the new package, so it is expected to be non-empty and
+  cannot show what it was written to show, that **re-running changes nothing**.
+  Three captures now: before run 1, between the runs, after run 2. The middle
+  pair is the criterion and must be empty; the first pair is the outcome of
+  provisioning.
+- **The command sequence hid its own failures.** Three independent commands with
+  `ssh … | tee` and no `pipefail`: a failed remote run exits with `tee`'s status
+  and reports success, its stderr never reaches the transcript that is kept, and
+  a failed `scp` is followed by a run of whatever older copy was already on the
+  host. It is now one `&&`-chained subshell with `pipefail` and `2>&1` into each
+  `tee`. (The evidence for a criterion is part of the criterion; a runbook that
+  can report success for a failed run is the same defect as a diff that cannot
+  come out non-empty.)
+- **Found while writing that fix, one layer up: the *local* copy could be stale
+  too.** Closing the remote path left `scp` faithfully copying whatever
+  `~/networth` happened to be sitting on, and the `sha256` check could not catch
+  it — it compares the transcript against that same local file, so an old
+  checkout agrees with itself. The chain now starts with `git pull --ff-only`.
+
 Revision 19 — **not review-driven, and small: two claims this document made
 about things outside it, corrected from the things themselves while task `28`
 was being written.**
@@ -4597,26 +4622,77 @@ device. All of it is gone with the third party it protected.)*
 
    **The script is `scripts/provision-host.sh`** *(rev 19, task `28`)* — one
    file, no dependency beyond the base system, so no checkout of this repository
-   ever lands on the host that holds the credentials. From
-   `zelengs-macbook-air-2`, copy it over and run it **twice**:
+   ever lands on the host that holds the credentials. It runs **twice**, and the
+   read-only `scripts/host-state.sh` is captured **three** times around those
+   runs *(rev 20)*. From `zelengs-macbook-air-2`, as one sequence that stops at
+   the first failure:
 
    ```
-   scp ~/networth/scripts/provision-host.sh root@100.102.245.37:/root/
-   ssh root@100.102.245.37 'bash /root/provision-host.sh' | tee ~/provision-run-1.log
-   ssh root@100.102.245.37 'bash /root/provision-host.sh' | tee ~/provision-run-2.log
+   (
+     set -o pipefail
+     cd ~/networth &&
+     git pull --ff-only &&
+     scp scripts/provision-host.sh scripts/host-state.sh root@100.102.245.37:/root/ &&
+     ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-0.txt 2>~/host-state-0.err &&
+     ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-1.log &&
+     ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-1.txt 2>~/host-state-1.err &&
+     ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-2.log &&
+     ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-2.txt 2>~/host-state-2.err
+   )
+   echo "sequence exit status: $?"   # anything but 0: stop, and read the last file it wrote
    ```
 
-   Keep both transcripts. **The second must end in `changed: 0`** — that, plus a
-   diff of the host state either side of the two runs, is acceptance criterion
-   (4), and the first transcript's `chown` lines are criterion (2). The
-   transcript prints the script's own `sha256`, so which version ran is a fact in
-   the record rather than an assumption; compare it against `shasum -a 256` on
-   the copy in the repo.
+   Then, on `zelengs-macbook-air-2`:
 
-   **Both runs are yours and neither is an agent's** — the script edits `sshd`,
-   the firewall and ownership under `/etc/networth/`. What an agent does either
-   side of them is `scripts/host-state.sh`, which only reads. There is no
-   rehearsal mode: the first run is the one that changes the host.
+   ```
+   diff -u ~/host-state-1.txt ~/host-state-2.txt   # MUST be empty — this is criterion (4)
+   diff -u ~/host-state-0.txt ~/host-state-1.txt   # what provisioning did, and nothing else
+   ```
+
+   **Why three captures and not two** *(rev 20; rev 19 asked for two, either side
+   of both runs)*. The criterion is that **re-running changes nothing**, and the
+   `0..2` diff cannot show it: that diff contains the service user, the ownership
+   changes and the installed package, so it is expected to be non-empty. It
+   establishes the outcome of the two runs combined — a different claim. Only
+   `1..2` is the criterion, and it is empty or the criterion failed. Keep all
+   three captures plus both transcripts; they are read back by someone who was
+   not at the keyboard.
+
+   **Why one chained sequence and not six commands** *(rev 20)*. Each piece of
+   the shape above is load-bearing:
+
+   - `set -o pipefail`, in a subshell so it does not outlive the sequence:
+     without it `ssh … | tee` exits with `tee`'s status, so a **failed remote
+     provisioning run reports success**.
+   - `&&` between the steps: an unchained `scp` that fails is followed by a run
+     of whatever `/root/provision-host.sh` was already on the host — **an older
+     copy, silently**. Chaining also stops run 2 from starting after run 1 failed.
+   - `git pull --ff-only` first, in the same chain: the link above closes the
+     *remote* stale copy, and this closes the local one. `scp` faithfully copies
+     whatever is in the checkout, so a `~/networth` sitting on an older commit
+     provisions the host from a script nobody reviewed at that state — and the
+     `sha256` check below could not catch it, because it compares the transcript
+     against that same stale file and they would agree. `--ff-only` rather than
+     `pull`: if the checkout has diverged the sequence stops instead of merging.
+   - `2>&1` into each `tee`: the script writes its failure diagnostic to stderr,
+     which would otherwise be absent from exactly the transcript that is kept.
+   - the captures are redirected rather than piped through `tee`, because those
+     three files get diffed against each other and nothing but host state may
+     enter them. Their stderr is kept beside them in `.err` rather than dropped.
+
+   **The second transcript must end in `changed: 0`**, and the first one's
+   `chown` lines are criterion (2). Each transcript prints the script's own
+   `sha256`, so which version ran is a fact in the record rather than an
+   assumption; compare it against `shasum -a 256 scripts/provision-host.sh` in
+   the repo. That comparison means something only because the sequence pulled
+   first — against a stale checkout both sides are the same wrong file.
+
+   **The two provisioning runs are yours and neither is an agent's** — the script
+   edits `sshd`, the firewall and ownership under `/etc/networth/`. The captures
+   in between are not: `scripts/host-state.sh` only reads, which is why it can
+   sit inside your sequence and why an agent may also run it at any time to check
+   the record against the host. There is no rehearsal mode: the first run is the
+   one that changes the host.
 
    Two things the script will **not** do on its own, and both print as a proposal
    for you instead: restricting root login (below), and enabling `ufw` if it is

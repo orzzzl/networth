@@ -30,9 +30,13 @@
 #   * It asks for no password, ever (§15.1), and runs non-interactively.
 #
 # IDEMPOTENCE IS AN ACCEPTANCE CRITERION (task 28, criterion 4), so every step
-# compares the current state before it acts and the run ends with a `changed:`
-# count. A second run must print `changed: 0`: that count, and a diff of the two
-# transcripts, is what makes idempotence checkable rather than asserted.
+# compares the current state before it acts and only then acts — a host that is
+# already correct is not written to at all — and the run ends with a `changed:`
+# count. A second run must print `changed: 0` AND leave the host byte-identical:
+# `host-state.sh` is captured three times, once before run 1 and once after each
+# run, and the last two captures must not differ. Two captures taken either side
+# of both runs measure the two runs combined, which is expected to be non-empty
+# and therefore cannot show that the second one changed nothing.
 
 set -euo pipefail
 
@@ -92,8 +96,31 @@ package_installed() {
 	dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "^install ok installed$"
 }
 
-# owner:group and mode of a path, as one comparable string.
+# owner:group and mode of a path, as one comparable string. `stat` does not
+# dereference, so this reports the path itself even when it is a symlink.
 state_of() { stat -c '%U:%G %a' "$1"; }
+
+# What every directory this script owns must end up as, in `state_of` form.
+readonly DIRECTORY_STATE="$SERVICE_USER:$SERVICE_USER 700"
+
+# `chown` and `chmod` act on a symlink's TARGET, and so do `-e` and `-d`. So a
+# path this script touches as root has to be proven a real directory before it
+# is tested, let alone changed.
+#
+# This is not hypothetical here. After the first run the *service account* owns
+# $SERVICE_HOME, so that unprivileged account can replace $DATA_DIR with a link
+# to anywhere on the host and wait: the owner's next run would then chown and
+# chmod the link's destination as root. Compromise of the daemon account must
+# not become a root filesystem primitive on the next provisioning run.
+#
+# Refusing is the only safe answer. Skipping would leave the daemon without a
+# directory it needs at first start, and repairing would mean this script
+# deleting something it did not create, on the owner's machine.
+require_not_symlink() {
+	if [[ -L $1 ]]; then
+		fail "$1 is a symlink, and this script changes ownership and mode as root — both act on a link's target, so it will not follow one. Replace it with a real directory, or remove it and run this again (it recreates what it owns)."
+	fi
+}
 
 # ---------------------------------------------------------------------------
 
@@ -139,20 +166,26 @@ L | NP) ok "$SERVICE_USER has no usable password ($password_state)" ;;
 *) warn "$SERVICE_USER has a password set ($password_state); this script does not change passwords" ;;
 esac
 
+# The parent comes first in this list on purpose: $DATA_DIR is reached through
+# $SERVICE_HOME, so rejecting a symlink at the parent has to happen before the
+# child's path is resolved at all.
 for directory in "$SERVICE_HOME" "$DATA_DIR"; do
-	if [[ ! -d $directory ]]; then
+	require_not_symlink "$directory"
+	if [[ ! -e $directory ]]; then
 		install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 700 "$directory"
 		did "created $directory (${SERVICE_USER}:${SERVICE_USER}, mode 700)"
 		continue
 	fi
+	[[ -d $directory ]] || fail "$directory exists and is not a directory; this script does not replace what it finds"
 	before=$(state_of "$directory")
-	chown "$SERVICE_USER:$SERVICE_USER" "$directory"
-	chmod 700 "$directory"
-	after=$(state_of "$directory")
-	if [[ $before == "$after" ]]; then
-		ok "$directory is $after"
+	if [[ $before == "$DIRECTORY_STATE" ]]; then
+		# Nothing is written when nothing is wrong, so a rerun of a correct
+		# host performs no root mutation here at all.
+		ok "$directory is $before"
 	else
-		did "$directory: $before -> $after"
+		chown -h "$SERVICE_USER:$SERVICE_USER" "$directory"
+		chmod 700 "$directory"
+		did "$directory: $before -> $(state_of "$directory")"
 	fi
 done
 
@@ -170,18 +203,19 @@ step "Secrets directory"
 # credential, and a step that quietly adjusts permissions on it is
 # indistinguishable from one that quietly widens them. Every entry is reported,
 # changed or not, and nothing here reads a byte of any file.
-if [[ ! -d $SECRETS_DIR ]]; then
+require_not_symlink "$SECRETS_DIR"
+if [[ ! -e $SECRETS_DIR ]]; then
 	install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 700 "$SECRETS_DIR"
 	did "created $SECRETS_DIR (${SERVICE_USER}:${SERVICE_USER}, mode 700)"
 else
+	[[ -d $SECRETS_DIR ]] || fail "$SECRETS_DIR exists and is not a directory; the credential files belong there and this script does not replace what it finds"
 	before=$(state_of "$SECRETS_DIR")
-	chown "$SERVICE_USER:$SERVICE_USER" "$SECRETS_DIR"
-	chmod 700 "$SECRETS_DIR"
-	after=$(state_of "$SECRETS_DIR")
-	if [[ $before == "$after" ]]; then
-		ok "$SECRETS_DIR is $after"
+	if [[ $before == "$DIRECTORY_STATE" ]]; then
+		ok "$SECRETS_DIR is $before"
 	else
-		did "$SECRETS_DIR: $before -> $after"
+		chown -h "$SERVICE_USER:$SERVICE_USER" "$SECRETS_DIR"
+		chmod 700 "$SECRETS_DIR"
+		did "$SECRETS_DIR: $before -> $(state_of "$SECRETS_DIR")"
 	fi
 fi
 
@@ -210,13 +244,12 @@ for entry in ${entries[@]+"${entries[@]}"}; do
 		continue
 	fi
 	before=$(state_of "$entry")
-	chown "$SERVICE_USER:$SERVICE_USER" "$entry"
-	chmod "$mode" "$entry"
-	after=$(state_of "$entry")
-	if [[ $before == "$after" ]]; then
-		ok "$entry is $after"
+	if [[ $before == "$SERVICE_USER:$SERVICE_USER $mode" ]]; then
+		ok "$entry is $before"
 	else
-		did "$entry: $before -> $after"
+		chown -h "$SERVICE_USER:$SERVICE_USER" "$entry"
+		chmod "$mode" "$entry"
+		did "$entry: $before -> $(state_of "$entry")"
 	fi
 done
 
@@ -503,6 +536,10 @@ cat <<'SUMMARY'
      * No credential was read, written or printed. /etc/networth is the
        owner's to fill (DESIGN.md §15, AGENTS.md rule 3).
 
-   Run this a second time: it must print `changed: 0`. That, plus a diff of
-   the two transcripts, is task 28's idempotence criterion.
+   Run this a second time: it must print `changed: 0`, and the host-state
+   capture taken after that run must be identical to the one taken after this
+   one. Three captures — before, between, after — are what make task 28's
+   idempotence criterion falsifiable; two taken either side of both runs
+   measure the runs combined and are expected to differ. DESIGN.md §19 step
+   3.1 has the exact sequence.
 SUMMARY

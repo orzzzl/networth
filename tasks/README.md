@@ -1775,15 +1775,24 @@ everything, the owner runs it", and criteria (2) and (4) are observations of tha
 |---|---|---|
 | Write the idempotent provisioning script; keep it off `PermitRootLogin`; keep `PLAID_ENV` out of the source — criteria **(1)** and **(3)** | **claude** | static facts about our code, checkable in the repo and in CI without touching the host |
 | Execute the script on `tokyo-exit`, twice — §19 step 3.1 | **owner** | §19 preamble: agents never perform these. It changes SSH config, the firewall and account ownership on his exit node |
-| Criteria **(2)** and **(4)** — the reported `chown`, and the host-state diff across two runs | **owner runs, claude inspects and records** | the observation is of *his* run. He brings back the two transcripts; claude captures the host state read-only over SSH before/after and takes the diff, then writes the result into this entry. All he does is run the script twice |
+| Criteria **(2)** and **(4)** — the reported `chown`, and the `S1..S2` host-state diff | **owner runs, claude inspects and records** | the observation is of *his* run. He brings back two transcripts and three captures; claude takes the diffs and writes the result into this entry |
 
 The same rule as `03a-live`: an agent may prepare, read back and record; the run itself is
 his. **The line is host *state*, not the wire.** Read-only checks over SSH stay claude's —
-the `id` re-check two paragraphs down is one, and so is capturing host state for criterion
-(4)'s diff — because they change no config, create no account and touch no key. What no
-agent does is *run the provisioning script*, and that includes a "rehearsal" pass: criterion
-(4) has no dry mode, it is two real runs, and the first one is the one that edits `sshd`,
-the firewall and `/etc/networth/`.
+the `id` re-check two paragraphs down is one, and so is running `scripts/host-state.sh`
+against the host at any time — because they change no config, create no account and touch
+no key. What no agent does is *run the provisioning script*, and that includes a
+"rehearsal" pass: criterion (4) has no dry mode, it is two real runs, and the first one is
+the one that edits `sshd`, the firewall and `/etc/networth/`.
+
+**The three captures are inside his sequence, and that is a correction** *(2026-09-01, from
+codex's review of PR #34)*. The version above split them "claude captures before and after,
+the owner runs the script in between", which cannot produce `S1` at all: that capture has to
+happen **between** his two runs, so an agent taking it would mean stopping the owner
+mid-procedure and waiting for a session to wake up. §19 step 3.1 is therefore one chained
+sequence he pastes once, with the read-only captures interleaved — which is only sound
+because they are read-only, and `test_host_state_capture_changes_nothing` is what keeps
+them that way. Claude's half is the diffing and the recording, on artifacts he brings back.
 
 **Consequence to state rather than let someone discover: this row does not close without
 him.** Claude's half is startable today and is real work — the script plus criteria (1) and
@@ -1827,7 +1836,7 @@ standalone so the host never needs a checkout of this repository:
 | File | Who may run it | What it does |
 |---|---|---|
 | `scripts/provision-host.sh` | **the owner only** | the whole of *What to build* above, comparing before it acts and ending in a `changed:` count |
-| `scripts/host-state.sh` | anyone, including an agent | reads and prints exactly what the other script can change — no writes, no clock, no pids, so two captures diff cleanly |
+| `scripts/host-state.sh` | anyone, including an agent | reads and prints exactly what the other script can change — no writes, no clock, no pids, so successive captures diff cleanly |
 
 `tests/test_provision_script.py` pins criteria (1) and (3) as facts about the repository:
 the only sshd setting the script can write is `PasswordAuthentication no`; every
@@ -1859,12 +1868,27 @@ the moment it matters. And **`python3` is 3.14 while CI runs 3.12** (issue **#33
 task installs the distribution interpreter on purpose, because one outside
 `unattended-upgrades` on the host holding the master credential is the worse trade.
 
-**How criterion (4) is measured, so it can fail.** Capture `scripts/host-state.sh` before
-the owner's first run and after his second, and diff. The expected diff is the service user
-appearing, `/etc/networth/` changing owner, `python3-venv` becoming installed — and nothing
-else. One known benign line: `tailscaled`'s ephemeral source port changes if it restarts
-between captures. Anything else in the diff is either a defect or something to explain in
-this entry, not to wave through.
+**How criterion (4) is measured, so it can fail.** Capture `scripts/host-state.sh` **three
+times** — `S0` before the owner's first run, `S1` between the two runs, `S2` after the
+second — and keep all three alongside both transcripts. The two diffs answer two different
+questions:
+
+| Diff | Expected | What it establishes |
+|---|---|---|
+| `S0..S1` | **non-empty**: the service user appears, `/etc/networth/` changes owner, `python3-venv` becomes installed — and nothing else | what provisioning did |
+| `S1..S2` | **empty** | criterion (4): re-running changes nothing |
+
+*(Corrected 2026-09-01, from codex's review of PR #34. The first version captured before run
+1 and after run 2 — one diff, expected to be non-empty, which can establish the outcome of
+the two runs combined and cannot establish the criterion written directly beneath it. An
+acceptance test whose evidence cannot come out clean is not a test.)* Run 2's transcript
+must also print `changed: 0`; the two are independent readings of the same claim, one from
+the script and one from the host.
+
+The one known benign line is `tailscaled`'s ephemeral source port, which changes if it
+restarts between captures. In `S1..S2` that is the only kind of entry that may be waved
+through, and only written down as the environmental event it is. Anything else there is a
+defect in the script.
 
 **Four acceptance criteria that are about not breaking the owner's machine — they matter
 more than the hardening itself:**
@@ -1882,8 +1906,9 @@ more than the hardening itself:**
 - [ ] **(3) claude** — Config is read from `/etc/networth/plaid.env`, with `PLAID_ENV`
       **never hardcoded**.
 - [ ] **(4) owner runs, claude records** — Re-running the script changes nothing.
-      Idempotence is testable: run twice, diff the host state. Both runs are his, and so is
-      the machine the diff is taken on.
+      Idempotence is testable: run twice, capture the host state three times, and the
+      capture between the runs must equal the one after the second (`S1..S2` empty, above).
+      Both runs are his, and so is the machine the diffs are taken on.
 
 **Must not:**
 

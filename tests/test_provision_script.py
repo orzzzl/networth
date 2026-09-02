@@ -77,6 +77,14 @@ _PASSWD_COMMAND = re.compile(r"(?:^|[;&|]|\$\(|\bsudo\s+)\s*passwd\b(?!\s+-S)")
 #: does not read as a clock.
 _DATE_COMMAND = re.compile(r"(?:^|[;&|(`]|\$\()\s*date\b", re.MULTILINE)
 
+#: A command that changes a path's ownership or mode, or creates a directory.
+#: All three resolve symlinks in their final argument, which is the path.
+_PATH_MUTATION = re.compile(r"^\s*(?:chown|chmod|install\s+-d)\b(?P<arguments>.*)$")
+
+#: A path proven not to be a symlink — either the helper, or the inline `-L`
+#: test used for the entries inside the secrets directory.
+_SYMLINK_GUARD = re.compile(r"(?:require_not_symlink\s+|-L\s+)(?P<path>\S+)")
+
 
 @dataclass(frozen=True)
 class Heredoc:
@@ -130,6 +138,11 @@ def _unquote(value: str) -> str:
 
 def _redirect_targets(line: str) -> list[str]:
     return [match.group("target") for match in _REDIRECT.finditer(_COMPARISON.sub("", line))]
+
+
+def _path_expression(token: str) -> str:
+    """One comparable spelling for `"$directory"`, `${DATA_DIR}` and `$entry`."""
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", r"$\1", _unquote(token))
 
 
 def _load(path: Path) -> Script:
@@ -335,15 +348,95 @@ def test_nothing_asks_for_a_password(provision: Script) -> None:
         assert not _PASSWD_COMMAND.search(line), f"changes or sets a password: {line!r}"
 
 
+# --- root must not follow a link the service account can plant ---------------
+#
+# Found by codex reviewing PR #34. After run 1 the unprivileged `networth`
+# account owns `$SERVICE_HOME`, so it can replace `$DATA_DIR` with a symlink to
+# anywhere on the host; `-d`, `chown` and `chmod` all resolve it, so the owner's
+# next run would retarget root's mutation. These three tests are the regression:
+# compromise of the daemon account must not become a root filesystem primitive.
+
+
+def test_every_ownership_change_refuses_to_dereference(provision: Script) -> None:
+    """`chown -h` acts on a link, never through it.
+
+    The `-L` guards below are what actually stop this, and they are checked
+    separately. This is the second layer: a path that turned into a symlink
+    between the guard and the mutation still cannot aim the `chown` elsewhere.
+    """
+    for line in provision.code:
+        if not re.match(r"\s*chown\b", line):
+            continue
+        assert re.match(r"\s*chown\s+(?:-h|--no-dereference)\b", line), (
+            f"a chown that follows symlinks: {line!r}"
+        )
+
+
+def test_no_path_is_chowned_or_chmodded_through_a_symlink(provision: Script) -> None:
+    """Every mutated path is proven a non-symlink first, and *earlier* in the file.
+
+    The two files the script writes itself are exempt: they are the ones
+    `ALLOWED_WRITE_TARGETS` already pins, and both live in directories only root
+    can write, so there is nobody to plant the link.
+    """
+    guards: dict[str, int] = {}
+    for index, line in enumerate(provision.code):
+        for match in _SYMLINK_GUARD.finditer(line):
+            guards.setdefault(_path_expression(match.group("path")), index)
+
+    for index, line in enumerate(provision.code):
+        mutation = _PATH_MUTATION.match(line)
+        if not mutation:
+            continue
+        arguments = mutation.group("arguments").split(" #", 1)[0].split()
+        assert arguments, f"a path mutation with no path: {line!r}"
+        target = _path_expression(arguments[-1])
+        if provision.resolve(target) in ALLOWED_WRITE_TARGETS:
+            continue
+        assert target in guards, (
+            f"{target} is mutated but never checked for being a symlink: {line!r}"
+        )
+        assert guards[target] < index, (
+            f"{target} is mutated at line {index} before its symlink check at {guards[target]}"
+        )
+
+
+def test_the_service_owned_child_directory_is_guarded_first(provision: Script) -> None:
+    """The loop's first statement is the guard, so it covers every iteration.
+
+    `$DATA_DIR` is the dangerous one — it sits *inside* a directory the service
+    account owns — and it is only guarded because the check is the first thing
+    in the loop body rather than a one-off before it. `$SERVICE_HOME` comes
+    first in the list for the same reason: the child's path is resolved through
+    the parent, so a link at the parent has to be rejected before the child is
+    named at all.
+    """
+    headers = [
+        index for index, line in enumerate(provision.code) if line.startswith("for directory in ")
+    ]
+
+    assert len(headers) == 1, "the service-directory loop moved; this test needs to follow it"
+    header = provision.code[headers[0]]
+    assert "$SERVICE_HOME" in header and "$DATA_DIR" in header
+    assert header.index("$SERVICE_HOME") < header.index("$DATA_DIR"), "the parent must come first"
+
+    body = (line.strip() for line in provision.code[headers[0] + 1 :] if line.strip())
+    assert next(body) == 'require_not_symlink "$directory"', (
+        "the symlink check is not the first thing the loop does"
+    )
+
+
 # --- the read-only companion ------------------------------------------------
 
 
 def test_host_state_capture_changes_nothing(host_state: Script) -> None:
-    """`host-state.sh` is what an agent may run, so it must only ever read.
+    """`host-state.sh` is what anyone may run, so it must only ever read.
 
-    Criterion (4) splits along exactly this line: the owner runs the two
-    provisioning passes, an agent captures the before and after. That split is
-    only true if the capture cannot alter what it is measuring.
+    Criterion (4) needs three captures — before run 1, between the runs, after
+    run 2 — and the middle one sits *inside* the owner's sequence. Only a
+    capture that cannot alter what it measures may be interleaved with the two
+    provisioning passes like that, and it is also what lets an agent take one
+    against the live host at any time.
     """
     forbidden = (
         "chmod",
