@@ -18,15 +18,29 @@ longer log into.
 The provisioning script is never *executed* here, in CI or locally. It changes
 sshd, the firewall and file ownership on a live host; there is no dry mode by
 design (task 28, criterion 4) and a test suite is not the place to invent one.
-``bash -n`` is the exception: it parses without running, and a syntax error in
-the artefact the owner is asked to run is exactly the failure that must not
-reach him.
+Two things are executed, and both are bounded: ``bash -n``, which parses without
+running — a syntax error in the artefact the owner is asked to run is exactly
+the failure that must not reach him — and the ``safe_path`` helper, on
+throwaway directories under ``tmp_path``.
+
+``safe_path`` is executed because it is the one part whose *shape* proves
+nothing. It exists so that a root ``chown``/``chmod`` cannot be aimed at
+whatever a symlink points to, and the difference between doing that and only
+appearing to is invisible to a text scan: rev 20 read as though it were safe and
+was not. So those tests build the attack — a link over a victim directory —
+prove a plain ``chmod`` walks straight through it, and then require the helper
+not to. They are Linux-only, like ``O_PATH`` and like the host.
 """
 
 from __future__ import annotations
 
+import grp
+import os
+import pwd
 import re
+import stat
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,9 +95,9 @@ _DATE_COMMAND = re.compile(r"(?:^|[;&|(`]|\$\()\s*date\b", re.MULTILINE)
 #: All three resolve symlinks in their final argument, which is the path.
 _PATH_MUTATION = re.compile(r"^\s*(?:chown|chmod|install\s+-d)\b(?P<arguments>.*)$")
 
-#: A path proven not to be a symlink — either the helper, or the inline `-L`
-#: test used for the entries inside the secrets directory.
-_SYMLINK_GUARD = re.compile(r"(?:require_not_symlink\s+|-L\s+)(?P<path>\S+)")
+#: The body of the `safe_path` here-document, so the tests can run the shipped
+#: bytes rather than a copy of them.
+_SAFE_PATH_BODY = re.compile(r"<<'PYTHON'\n(?P<source>.*?)\nPYTHON\n", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -192,6 +206,19 @@ def provision() -> Script:
 @pytest.fixture(scope="module")
 def host_state() -> Script:
     return _load(HOST_STATE)
+
+
+@pytest.fixture(scope="module")
+def safe_path_source() -> str:
+    """The `safe_path` helper's Python, taken out of the script that ships it.
+
+    Extracted rather than copied, so what the behavioural tests below execute
+    is the same bytes the owner runs on his host — a copy would drift and then
+    keep passing.
+    """
+    match = _SAFE_PATH_BODY.search(PROVISION.read_text(encoding="utf-8"))
+    assert match, "the safe_path helper's here-document moved; these tests need to follow it"
+    return match.group("source")
 
 
 # --- criterion (1): PermitRootLogin is never modified -----------------------
@@ -357,59 +384,69 @@ def test_nothing_asks_for_a_password(provision: Script) -> None:
 # compromise of the daemon account must not become a root filesystem primitive.
 
 
-def test_every_ownership_change_refuses_to_dereference(provision: Script) -> None:
-    """`chown -h` acts on a link, never through it.
+def test_no_ownership_or_mode_is_changed_through_a_pathname(provision: Script) -> None:
+    """A shell `chown`/`chmod`/`install -d` names a path, and a name can be swapped.
 
-    The `-L` guards below are what actually stop this, and they are checked
-    separately. This is the second layer: a path that turned into a symlink
-    between the guard and the mutation still cannot aim the `chown` elsewhere.
+    This is the regression for the defect that a guard cannot fix. `chown -h`
+    refuses to follow a link, but GNU `chmod` has no such option and
+    dereferences the link it is given, so "check that it is not a symlink, then
+    `chmod` it" is two pathname lookups with the service account's window in
+    between. The only paths still mutated by name are the two files this
+    project writes in root-only directories, where there is nobody to plant a
+    link; everything under `$SERVICE_HOME` or `$SECRETS_DIR` goes through
+    `safe_path`, which mutates a descriptor instead.
     """
     for line in provision.code:
-        if not re.match(r"\s*chown\b", line):
-            continue
-        assert re.match(r"\s*chown\s+(?:-h|--no-dereference)\b", line), (
-            f"a chown that follows symlinks: {line!r}"
-        )
-
-
-def test_no_path_is_chowned_or_chmodded_through_a_symlink(provision: Script) -> None:
-    """Every mutated path is proven a non-symlink first, and *earlier* in the file.
-
-    The two files the script writes itself are exempt: they are the ones
-    `ALLOWED_WRITE_TARGETS` already pins, and both live in directories only root
-    can write, so there is nobody to plant the link.
-    """
-    guards: dict[str, int] = {}
-    for index, line in enumerate(provision.code):
-        for match in _SYMLINK_GUARD.finditer(line):
-            guards.setdefault(_path_expression(match.group("path")), index)
-
-    for index, line in enumerate(provision.code):
         mutation = _PATH_MUTATION.match(line)
         if not mutation:
             continue
         arguments = mutation.group("arguments").split(" #", 1)[0].split()
         assert arguments, f"a path mutation with no path: {line!r}"
-        target = _path_expression(arguments[-1])
-        if provision.resolve(target) in ALLOWED_WRITE_TARGETS:
-            continue
-        assert target in guards, (
-            f"{target} is mutated but never checked for being a symlink: {line!r}"
+        target = provision.resolve(_path_expression(arguments[-1]))
+        assert target in ALLOWED_WRITE_TARGETS, (
+            f"{target} has its ownership or mode changed by pathname, which follows a "
+            f"symlink substituted after any guard; use safe_path: {line!r}"
         )
-        assert guards[target] < index, (
-            f"{target} is mutated at line {index} before its symlink check at {guards[target]}"
-        )
+
+    # Non-vacuity: the assertion above is satisfied by a script that changes no
+    # ownership at all, and this task's criterion (2) is that it changes some.
+    call_sites = [line for line in provision.code if re.search(r"\bsafe_path\s+ensure", line)]
+    assert len(call_sites) >= 3, (
+        f"expected safe_path to own the service directories, the secrets directory and its "
+        f"entries; found {len(call_sites)} call sites"
+    )
+
+
+def test_the_safe_path_helper_never_addresses_the_pathname_it_was_given(
+    safe_path_source: str,
+) -> None:
+    """Inside the helper, the pin is the whole point: refuse links, mutate the fd.
+
+    `O_PATH | O_NOFOLLOW` on a symlink does not fail — it returns a descriptor
+    to the *link itself* — so the refusal has to be an explicit `S_ISLNK` check
+    on the descriptor. Dropping that check would silently restore the
+    dereference through `/proc/self/fd`.
+    """
+    assert "os.O_PATH | os.O_NOFOLLOW" in safe_path_source
+    assert "stat.S_ISLNK(before.st_mode)" in safe_path_source, "the link refusal is gone"
+    assert 'pinned = "/proc/self/fd/%d" % fd' in safe_path_source
+
+    for call in re.findall(r"os\.(?:chown|chmod)\((?P<target>[^,]+),", safe_path_source):
+        assert call == "pinned", f"os.chown/os.chmod on {call!r} rather than the pinned descriptor"
+
+    # The read-back is a postcondition only if it cannot be aimed either.
+    assert "after = os.fstat(fd)" in safe_path_source
 
 
 def test_the_service_owned_child_directory_is_guarded_first(provision: Script) -> None:
-    """The loop's first statement is the guard, so it covers every iteration.
+    """The ordering that still matters once the mutation itself is safe.
 
-    `$DATA_DIR` is the dangerous one — it sits *inside* a directory the service
-    account owns — and it is only guarded because the check is the first thing
-    in the loop body rather than a one-off before it. `$SERVICE_HOME` comes
-    first in the list for the same reason: the child's path is resolved through
-    the parent, so a link at the parent has to be rejected before the child is
-    named at all.
+    `safe_path` is what stops a link being followed; `require_not_symlink` is
+    the readable message in front of it, and it is only worth anything if it
+    runs on every iteration rather than once before the loop. `$SERVICE_HOME`
+    comes first in the list because the child's path is resolved *through* the
+    parent — a link at the parent has to be rejected before the child is named
+    at all, and that ordering is not something a per-path descriptor can fix.
     """
     headers = [
         index for index, line in enumerate(provision.code) if line.startswith("for directory in ")
@@ -424,6 +461,112 @@ def test_the_service_owned_child_directory_is_guarded_first(provision: Script) -
     assert next(body) == 'require_not_symlink "$directory"', (
         "the symlink check is not the first thing the loop does"
     )
+
+
+# --- safe_path, executed --------------------------------------------------
+#
+# `O_PATH` is Linux-only, and so is the host. These run in CI (ubuntu) and skip
+# on the owner's Mac, which is stated rather than silently arranged: a shape
+# check cannot tell whether the mutation actually landed on the descriptor, and
+# that is the only thing that matters here.
+
+linux_only = pytest.mark.skipif(
+    sys.platform != "linux", reason="O_PATH and /proc/self/fd are Linux, and so is the sync host"
+)
+
+
+def _run_safe_path(source: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603
+        [sys.executable, "-c", source, *arguments], capture_output=True, text=True
+    )
+
+
+@pytest.fixture
+def me() -> str:
+    """`user:group` for the account running the tests — chowning to yourself is allowed."""
+    return f"{pwd.getpwuid(os.getuid()).pw_name}:{grp.getgrgid(os.getgid()).gr_name}"
+
+
+@linux_only
+def test_a_plain_chmod_really_does_reach_through_the_link(tmp_path: Path) -> None:
+    """The positive control, without which the refusal below proves nothing.
+
+    If this ever fails, the fixture stopped being a dereference vector and the
+    next test is passing for the wrong reason.
+    """
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o755)
+    link = tmp_path / "link"
+    link.symlink_to(victim)
+
+    subprocess.run(["chmod", "700", str(link)], check=True)  # noqa: S603, S607
+
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o700, "plain chmod no longer follows the link"
+
+
+@linux_only
+def test_safe_path_refuses_a_link_and_leaves_its_target_alone(
+    safe_path_source: str, tmp_path: Path, me: str
+) -> None:
+    """The defect, executed: the same setup the control above walks straight through."""
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o755)
+    link = tmp_path / "link"
+    link.symlink_to(victim)
+
+    for verb in ("ensure", "ensuredir"):
+        result = _run_safe_path(safe_path_source, verb, str(link), "dir", me, "700")
+        assert result.returncode != 0, f"{verb} accepted a symlink: {result.stdout!r}"
+        assert "symlink" in result.stderr, result.stderr
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o755, (
+            f"{verb} changed the link's target: the mutation followed the link"
+        )
+        assert link.is_symlink(), "the link itself was replaced"
+
+
+@linux_only
+def test_safe_path_creates_then_corrects_then_stops_writing(
+    safe_path_source: str, tmp_path: Path, me: str
+) -> None:
+    """Create, correct, and — the part criterion (4) rests on — do nothing at all."""
+    directory = tmp_path / "data"
+
+    created = _run_safe_path(safe_path_source, "ensuredir", str(directory), "dir", me, "700")
+    assert created.returncode == 0, created.stderr
+    assert created.stdout.split("|")[0] == "created"
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+    directory.chmod(0o755)
+    corrected = _run_safe_path(safe_path_source, "ensuredir", str(directory), "dir", me, "700")
+    assert corrected.returncode == 0, corrected.stderr
+    outcome, before, after = corrected.stdout.strip().split("|")
+    assert (outcome, before.split()[1], after.split()[1]) == ("changed", "755", "700")
+
+    unchanged = _run_safe_path(safe_path_source, "ensuredir", str(directory), "dir", me, "700")
+    assert unchanged.returncode == 0, unchanged.stderr
+    assert unchanged.stdout.split("|")[0] == "unchanged"
+
+
+@linux_only
+def test_safe_path_refuses_the_wrong_kind_and_never_invents_a_secret(
+    safe_path_source: str, tmp_path: Path, me: str
+) -> None:
+    """`ensure` adopts what is there; only `ensuredir` may create, and only directories.
+
+    The entries under `$SECRETS_DIR` are adopted with `ensure` precisely so that
+    one that vanishes mid-run stops the script rather than being re-created as
+    an empty file where a credential used to be.
+    """
+    missing = tmp_path / "gone"
+    refused = _run_safe_path(safe_path_source, "ensure", str(missing), "file", me, "600")
+    assert refused.returncode != 0
+    assert not missing.exists(), "ensure created something"
+
+    regular = tmp_path / "credential.env"
+    regular.write_text("x", encoding="utf-8")
+    mismatched = _run_safe_path(safe_path_source, "ensure", str(regular), "dir", me, "700")
+    assert mismatched.returncode != 0, "a regular file was accepted as a directory"
+    assert stat.S_IMODE(regular.stat().st_mode) != 0o700
 
 
 # --- the read-only companion ------------------------------------------------

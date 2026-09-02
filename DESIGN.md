@@ -5,6 +5,37 @@ implemented; `tasks/README.md` is the live state. *(Rev 19: this line still read
 "proposed (design phase; nothing implemented)" with three tasks merged.)*
 Author: Claude. Reviewer: Codex.
 
+Revision 21 — **Codex's review of rev 20. Every finding this round is a defect
+*inside a rev-20 fix*: each one closed the hole it was aimed at and left the
+same class of hole one step further along.**
+
+- **The symlink defence stopped one command short.** Rev 20 refused to follow a
+  link and made `chown` non-dereferencing with `-h`; the `chmod` on the next
+  line still followed one, because GNU `chmod` has no `-h` and dereferences the
+  path it is given. A guard cannot fix that — the guard and the mutation are two
+  pathname lookups, and the service account that owns the parent directory gets
+  to act in between. §15.1's provisioning step now names no path when it
+  mutates: it opens each one once with `O_PATH | O_NOFOLLOW`, refuses a link on
+  the descriptor, and does the `chown`, the `chmod` and the read-back through
+  `/proc/self/fd`. *(Reproduced first: `chmod 700 <link>` moved a victim
+  directory from 755 to 700.)*
+- **`git pull --ff-only` does not mean "reviewed bytes".** Rev 20 added it to
+  close the *local* stale-checkout hole and it answers a different question: on
+  a branch tracking anything other than `main` it pulls that, and on any branch
+  it returns 0 while leaving a modified tracked file in place. §19 step 3 now
+  extracts the two scripts out of `origin/main` with `git show FETCH_HEAD:…`, so
+  the local branch and every uncommitted edit are irrelevant — and the runbook
+  cannot be executed before this work is merged.
+- **The runbook reported success for a failed run — again, one level out.** Rev
+  20 fixed `ssh … | tee` swallowing the remote status, then ended the snippet
+  with `echo "sequence exit status: $?"`, which makes the *echo* the status: the
+  line printed `1` and the snippet returned `0`, in both bash and zsh. The
+  status is now re-emitted by an outer subshell.
+
+*(The pattern is worth naming, because it is the third round running: a fix is
+where the next defect lives, and the check that finds it is walking the fixed
+procedure one command further than the finding did.)*
+
 Revision 20 — **Codex's review of the rev-19 step. Both findings are the same
 mistake in different clothing: a procedure that produces evidence which cannot
 fail.**
@@ -28,7 +59,9 @@ fail.**
   too.** Closing the remote path left `scp` faithfully copying whatever
   `~/networth` happened to be sitting on, and the `sha256` check could not catch
   it — it compares the transcript against that same local file, so an old
-  checkout agrees with itself. The chain now starts with `git pull --ff-only`.
+  checkout agrees with itself. The chain was made to start with
+  `git pull --ff-only` — **which rev 21 replaced**: a pull answers "did this
+  branch move", not "are these the reviewed bytes".
 
 Revision 19 — **not review-driven, and small: two claims this document made
 about things outside it, corrected from the things themselves while task `28`
@@ -4629,18 +4662,28 @@ device. All of it is gone with the third party it protected.)*
 
    ```
    (
-     set -o pipefail
-     cd ~/networth &&
-     git pull --ff-only &&
-     scp scripts/provision-host.sh scripts/host-state.sh root@100.102.245.37:/root/ &&
-     ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-0.txt 2>~/host-state-0.err &&
-     ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-1.log &&
-     ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-1.txt 2>~/host-state-1.err &&
-     ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-2.log &&
-     ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-2.txt 2>~/host-state-2.err
+     (
+       set -o pipefail
+       mkdir -p ~/networth-run &&
+       git -C ~/networth fetch --quiet origin main &&
+       git -C ~/networth rev-parse FETCH_HEAD    >~/networth-run/reviewed-commit.txt &&
+       git -C ~/networth show FETCH_HEAD:scripts/provision-host.sh >~/networth-run/provision-host.sh &&
+       git -C ~/networth show FETCH_HEAD:scripts/host-state.sh     >~/networth-run/host-state.sh &&
+       scp ~/networth-run/provision-host.sh ~/networth-run/host-state.sh root@100.102.245.37:/root/ &&
+       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-0.txt 2>~/host-state-0.err &&
+       ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-1.log &&
+       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-1.txt 2>~/host-state-1.err &&
+       ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-2.log &&
+       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-2.txt 2>~/host-state-2.err
+     )
+     sequence_status=$?
+     echo "sequence exit status: $sequence_status"
+     exit "$sequence_status"
    )
-   echo "sequence exit status: $?"   # anything but 0: stop, and read the last file it wrote
    ```
+
+   **Anything but 0: stop, and read the last file it wrote.** The status is
+   printed *and* re-emitted, so `echo $?` afterwards still shows it — see below.
 
    Then, on `zelengs-macbook-air-2`:
 
@@ -4667,25 +4710,39 @@ device. All of it is gone with the third party it protected.)*
    - `&&` between the steps: an unchained `scp` that fails is followed by a run
      of whatever `/root/provision-host.sh` was already on the host — **an older
      copy, silently**. Chaining also stops run 2 from starting after run 1 failed.
-   - `git pull --ff-only` first, in the same chain: the link above closes the
-     *remote* stale copy, and this closes the local one. `scp` faithfully copies
-     whatever is in the checkout, so a `~/networth` sitting on an older commit
-     provisions the host from a script nobody reviewed at that state — and the
-     `sha256` check below could not catch it, because it compares the transcript
-     against that same stale file and they would agree. `--ff-only` rather than
-     `pull`: if the checkout has diverged the sequence stops instead of merging.
+   - **the two files are extracted from `origin/main`, not copied out of the
+     working tree** *(rev 21; rev 20 opened the chain with `git pull --ff-only`)*.
+     `scp` faithfully copies whatever is in the checkout, so the question is what
+     puts *reviewed* bytes there — and a pull does not. `git pull --ff-only`
+     answers "did this branch move", not "is this `main`, unmodified": on a
+     branch tracking something other than `main` it pulls that instead, and on
+     any branch it returns **0 / “Already up to date”** while leaving a locally
+     modified tracked file exactly as it is. Both were reproduced against a
+     disposable clone. `git show FETCH_HEAD:<path>` reads out of the fetched
+     object database, so the local branch, its upstream and every uncommitted
+     edit are all irrelevant — and because the source is `origin/main`, the
+     sequence cannot run until this work is **merged**.
    - `2>&1` into each `tee`: the script writes its failure diagnostic to stderr,
      which would otherwise be absent from exactly the transcript that is kept.
    - the captures are redirected rather than piped through `tee`, because those
      three files get diffed against each other and nothing but host state may
      enter them. Their stderr is kept beside them in `.err` rather than dropped.
+   - **the outer subshell re-emits the status** *(rev 21)*. Rev 20 ended with
+     `echo "sequence exit status: $?"`, which makes the *echo* the last command:
+     the diagnostic said `1` and the pasted snippet still returned **0**,
+     reproduced under both bash and zsh. A failure that prints as a failure and
+     reports as a success is the same defect this list opens with, one level
+     out. `exit "$sequence_status"` inside a subshell sets the snippet's status
+     without closing the interactive shell it was pasted into.
 
    **The second transcript must end in `changed: 0`**, and the first one's
-   `chown` lines are criterion (2). Each transcript prints the script's own
+   `[changed]` lines are criterion (2). Each transcript prints the script's own
    `sha256`, so which version ran is a fact in the record rather than an
-   assumption; compare it against `shasum -a 256 scripts/provision-host.sh` in
-   the repo. That comparison means something only because the sequence pulled
-   first — against a stale checkout both sides are the same wrong file.
+   assumption; compare it against
+   `shasum -a 256 ~/networth-run/provision-host.sh`, and the commit those bytes
+   came from is in `~/networth-run/reviewed-commit.txt`. That comparison means
+   something only because both sides came out of `origin/main` — compared
+   against a stale or edited checkout, both are the same unreviewed file.
 
    **The two provisioning runs are yours and neither is an agent's** — the script
    edits `sshd`, the firewall and ownership under `/etc/networth/`. The captures

@@ -26,7 +26,9 @@
 #     owns the units end to end; this script stops at the base host.
 #   * It never reads, writes, moves or prints the contents of a credential.
 #     It reports file *names*, owners and modes in /etc/networth — never a byte
-#     of what is in them.
+#     of what is in them. Fixing an entry's mode does open a descriptor to it,
+#     with `O_PATH`, which grants no read: `chown` and `chmod` need something to
+#     address that is not a name (see `safe_path`), and that is all it is for.
 #   * It asks for no password, ever (§15.1), and runs non-interactively.
 #
 # IDEMPOTENCE IS AN ACCEPTANCE CRITERION (task 28, criterion 4), so every step
@@ -96,26 +98,171 @@ package_installed() {
 	dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "^install ok installed$"
 }
 
-# owner:group and mode of a path, as one comparable string. `stat` does not
-# dereference, so this reports the path itself even when it is a symlink.
-state_of() { stat -c '%U:%G %a' "$1"; }
-
-# What every directory this script owns must end up as, in `state_of` form.
-readonly DIRECTORY_STATE="$SERVICE_USER:$SERVICE_USER 700"
-
-# `chown` and `chmod` act on a symlink's TARGET, and so do `-e` and `-d`. So a
-# path this script touches as root has to be proven a real directory before it
-# is tested, let alone changed.
+# --- Root mutations the service account cannot aim -------------------------
 #
-# This is not hypothetical here. After the first run the *service account* owns
-# $SERVICE_HOME, so that unprivileged account can replace $DATA_DIR with a link
-# to anywhere on the host and wait: the owner's next run would then chown and
-# chmod the link's destination as root. Compromise of the daemon account must
-# not become a root filesystem primitive on the next provisioning run.
+# After the first run the *service account* owns $SERVICE_HOME and
+# $SECRETS_DIR, so that unprivileged account controls the final component of
+# every path below them. It can replace $DATA_DIR with a link to anywhere on
+# the host and wait: the owner's next run would then chown and chmod the link's
+# destination as root. Compromise of the daemon account must not become a root
+# filesystem primitive on the next provisioning run.
 #
-# Refusing is the only safe answer. Skipping would leave the daemon without a
-# directory it needs at first start, and repairing would mean this script
-# deleting something it did not create, on the owner's machine.
+# Checking the path first does not prevent that, because a check and a mutation
+# are two separate pathname lookups and the account gets to act in between.
+# `chown -h` is safe on its own, but `chmod` has no such option at all: GNU
+# chmod dereferences a symbolic link given on the command line, by design
+# (coreutils manual, "chmod invocation"). `install -d` follows one too. So a
+# guard, however early, still leaves the mutation itself pointing at a name.
+#
+# Nothing here mutates a name. The path is opened ONCE, and every check, every
+# mutation and the read-back afterwards address that descriptor:
+#
+#   * `O_PATH` opens no file. It grants no read, so a credential's bytes are
+#     unreachable through the descriptor, and it does not block on a fifo.
+#   * `O_NOFOLLOW` stops a final-component symlink from being resolved. With
+#     `O_PATH` that yields a descriptor to the link ITSELF rather than an
+#     error, so the type is checked on the descriptor, where nothing can swap
+#     it, and a link is refused there.
+#   * `/proc/self/fd/N` belongs to this process. `chown` and `chmod` through it
+#     land on the object just inspected — there is no second lookup for the
+#     service account to win.
+#
+# The comparison lives inside the same descriptor too, which is what keeps a
+# correct host from being written to at all (criterion 4): "already right" is
+# decided from the same `fstat` the mutation would act on, not from an earlier
+# and separately racy one.
+SAFE_PATH_PY=$(
+	cat <<'PYTHON'
+import grp
+import os
+import pwd
+import stat
+import sys
+
+KINDS = {"dir": (stat.S_ISDIR, "a directory"), "file": (stat.S_ISREG, "a regular file")}
+
+
+def die(message):
+    sys.stderr.write("safe-path: %s\n" % message)
+    raise SystemExit(1)
+
+
+def described(info):
+    try:
+        user = pwd.getpwuid(info.st_uid).pw_name
+    except KeyError:
+        user = str(info.st_uid)
+    try:
+        group = grp.getgrgid(info.st_gid).gr_name
+    except KeyError:
+        group = str(info.st_gid)
+    return "%s:%s %o" % (user, group, stat.S_IMODE(info.st_mode))
+
+
+def main(argv):
+    if len(argv) != 5:
+        die("usage: ensure|ensuredir PATH dir|file USER:GROUP MODE")
+    verb, path, kind, owner, mode_text = argv
+    if verb not in ("ensure", "ensuredir"):
+        die("unknown verb %r" % verb)
+    if kind not in KINDS:
+        die("unknown kind %r" % kind)
+    if verb == "ensuredir" and kind != "dir":
+        die("ensuredir creates directories only")
+    if not hasattr(os, "O_PATH"):
+        die("this Python has no os.O_PATH, so ownership cannot be changed without following links")
+    mode = int(mode_text, 8)
+    user, _, group = owner.partition(":")
+    try:
+        uid = pwd.getpwnam(user).pw_uid
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        die("no such user or group as %s" % owner)
+
+    created = False
+    try:
+        fd = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        if verb != "ensuredir":
+            die("%s does not exist" % path)
+        # `mkdir` never follows the final component: if anything is there by
+        # now -- a directory, a file or a link planted since -- it fails with
+        # EEXIST rather than acting on what that link points at.
+        try:
+            os.mkdir(path, mode)
+        except FileExistsError:
+            die("%s appeared while this script was creating it; nothing was changed" % path)
+        created = True
+        fd = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+
+    try:
+        before = os.fstat(fd)
+        if stat.S_ISLNK(before.st_mode):
+            die(
+                "%s is a symlink; refusing to change ownership or mode, which would "
+                "act on whatever it points at" % path
+            )
+        recognises, description = KINDS[kind]
+        if not recognises(before.st_mode):
+            die("%s is not %s; this script does not replace what it finds" % (path, description))
+
+        # Narrow before handing over, never the other way round: going
+        # 755 -> 700 first means the moment in between is root-owned and
+        # unreadable, where chowning first would briefly leave the service
+        # account holding a directory the rest of the host can still read.
+        pinned = "/proc/self/fd/%d" % fd
+        if stat.S_IMODE(before.st_mode) != mode:
+            os.chmod(pinned, mode)
+        if (before.st_uid, before.st_gid) != (uid, gid):
+            os.chown(pinned, uid, gid)
+
+        # The postcondition, read back through the same descriptor: a link
+        # substituted in the meantime cannot make this report a success.
+        after = os.fstat(fd)
+        if (after.st_uid, after.st_gid) != (uid, gid) or stat.S_IMODE(after.st_mode) != mode:
+            die("%s is %s, not %s %o" % (path, described(after), owner, mode))
+
+        if created:
+            outcome = "created"
+        elif described(after) != described(before):
+            outcome = "changed"
+        else:
+            outcome = "unchanged"
+        sys.stdout.write("%s|%s|%s\n" % (outcome, described(before), described(after)))
+    finally:
+        os.close(fd)
+
+
+try:
+    main(sys.argv[1:])
+except OSError as error:
+    # A traceback in the middle of the owner's provisioning transcript is a
+    # worse artefact than one line naming the path and the reason, and the
+    # `&&` chain stops on either.
+    die("%s" % error)
+PYTHON
+)
+readonly SAFE_PATH_PY
+
+safe_path() { python3 -c "$SAFE_PATH_PY" "$@"; }
+
+# `created|changed|unchanged|before|after` turned into the transcript's own
+# vocabulary. Only the first two are root mutations, and only they count
+# towards `changed:`.
+report_path() {
+	local path=$1 outcome before after
+	IFS='|' read -r outcome before after <<<"$2"
+	case $outcome in
+	created) did "created $path ($after)" ;;
+	changed) did "$path: $before -> $after" ;;
+	unchanged) ok "$path is $after" ;;
+	*) fail "safe_path reported '$outcome' for $path, which this script does not understand" ;;
+	esac
+}
+
+# A clearer message than the descriptor-level refusal, for the case that is
+# worth naming outright. This is a courtesy, not the defence: `safe_path`
+# refuses a link whether or not this ran first.
 require_not_symlink() {
 	if [[ -L $1 ]]; then
 		fail "$1 is a symlink, and this script changes ownership and mode as root — both act on a link's target, so it will not follow one. Replace it with a real directory, or remove it and run this again (it recreates what it owns)."
@@ -128,6 +275,13 @@ step "Host and script identity"
 
 [[ $(id -u) -eq 0 ]] || fail "run this as root on the sync host (it changes sshd, the firewall and /etc/networth)"
 command -v apt-get >/dev/null || fail "this script provisions a Debian-family host; apt-get is not on this one"
+
+# Checked here rather than at "Python runtime" below, because `safe_path` — the
+# only way this script changes an owner or a mode — is a `python3` program. The
+# version floor is still that step's business; this is only about the
+# interpreter existing before anything is written.
+command -v python3 >/dev/null ||
+	fail "python3 is not installed, and it is what makes this script's ownership changes refuse to follow a symlink; install python3 and run this again"
 
 # The transcript has to name the machine it ran on and the exact script that
 # ran: criteria (2) and (4) are read back from these two runs by someone who
@@ -171,22 +325,13 @@ esac
 # child's path is resolved at all.
 for directory in "$SERVICE_HOME" "$DATA_DIR"; do
 	require_not_symlink "$directory"
-	if [[ ! -e $directory ]]; then
-		install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 700 "$directory"
-		did "created $directory (${SERVICE_USER}:${SERVICE_USER}, mode 700)"
-		continue
-	fi
-	[[ -d $directory ]] || fail "$directory exists and is not a directory; this script does not replace what it finds"
-	before=$(state_of "$directory")
-	if [[ $before == "$DIRECTORY_STATE" ]]; then
-		# Nothing is written when nothing is wrong, so a rerun of a correct
-		# host performs no root mutation here at all.
-		ok "$directory is $before"
-	else
-		chown -h "$SERVICE_USER:$SERVICE_USER" "$directory"
-		chmod 700 "$directory"
-		did "$directory: $before -> $(state_of "$directory")"
-	fi
+	# Creating, comparing and correcting all happen against one descriptor:
+	# nothing is written when nothing is wrong, so a rerun of a correct host
+	# performs no root mutation here at all, and the decision is taken where
+	# the service account cannot change the answer afterwards.
+	result=$(safe_path ensuredir "$directory" dir "$SERVICE_USER:$SERVICE_USER" 700) ||
+		fail "could not bring $directory to ${SERVICE_USER}:${SERVICE_USER} 700 — see the safe-path line above"
+	report_path "$directory" "$result"
 done
 
 # `$DATA_DIR` is created here and stays empty: DESIGN.md §7 puts the database at
@@ -204,20 +349,9 @@ step "Secrets directory"
 # indistinguishable from one that quietly widens them. Every entry is reported,
 # changed or not, and nothing here reads a byte of any file.
 require_not_symlink "$SECRETS_DIR"
-if [[ ! -e $SECRETS_DIR ]]; then
-	install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 700 "$SECRETS_DIR"
-	did "created $SECRETS_DIR (${SERVICE_USER}:${SERVICE_USER}, mode 700)"
-else
-	[[ -d $SECRETS_DIR ]] || fail "$SECRETS_DIR exists and is not a directory; the credential files belong there and this script does not replace what it finds"
-	before=$(state_of "$SECRETS_DIR")
-	if [[ $before == "$DIRECTORY_STATE" ]]; then
-		ok "$SECRETS_DIR is $before"
-	else
-		chown -h "$SERVICE_USER:$SERVICE_USER" "$SECRETS_DIR"
-		chmod 700 "$SECRETS_DIR"
-		did "$SECRETS_DIR: $before -> $(state_of "$SECRETS_DIR")"
-	fi
-fi
+result=$(safe_path ensuredir "$SECRETS_DIR" dir "$SERVICE_USER:$SERVICE_USER" 700) ||
+	fail "could not bring $SECRETS_DIR to ${SERVICE_USER}:${SERVICE_USER} 700 — the credential files belong there; see the safe-path line above"
+report_path "$SECRETS_DIR" "$result"
 
 shopt -s nullglob dotglob
 entries=("$SECRETS_DIR"/*)
@@ -236,21 +370,21 @@ for entry in ${entries[@]+"${entries[@]}"}; do
 		continue
 	fi
 	if [[ -d $entry ]]; then
-		mode=700
+		kind=dir mode=700
 	elif [[ -f $entry ]]; then
-		mode=600
+		kind=file mode=600
 	else
 		warn "$entry is neither a regular file nor a directory; left untouched"
 		continue
 	fi
-	before=$(state_of "$entry")
-	if [[ $before == "$SERVICE_USER:$SERVICE_USER $mode" ]]; then
-		ok "$entry is $before"
-	else
-		chown -h "$SERVICE_USER:$SERVICE_USER" "$entry"
-		chmod "$mode" "$entry"
-		did "$entry: $before -> $(state_of "$entry")"
-	fi
+	# `ensure`, never `ensuredir`: an entry that disappears between the test
+	# above and the open must make this stop, not create something new in the
+	# directory that holds the Plaid master credential. The kind is re-checked
+	# on the descriptor, so a file swapped for a directory in that window is
+	# refused rather than given a directory's mode.
+	result=$(safe_path ensure "$entry" "$kind" "$SERVICE_USER:$SERVICE_USER" "$mode") ||
+		fail "could not bring $entry to ${SERVICE_USER}:${SERVICE_USER} $mode — see the safe-path line above"
+	report_path "$entry" "$result"
 done
 
 step "SSH: key-only login"
