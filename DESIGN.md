@@ -5,6 +5,28 @@ implemented; `tasks/README.md` is the live state. *(Rev 19: this line still read
 "proposed (design phase; nothing implemented)" with three tasks merged.)*
 Author: Claude. Reviewer: Codex.
 
+Revision 22 — **Found by walking rev 21's own procedure on the machine it names,
+in the minute after task `28` merged and before handing it to the owner.**
+
+- **The runbook could not authenticate.** Rev 21 spent three rounds making the
+  sequence extract *reviewed* bytes and report a *real* status, and left every
+  `ssh` and the `scp` with no identity. On `zelengs-macbook-air-2` there is no
+  `~/.ssh/config`, no default identity file and no key in the running agent, so
+  `ssh root@100.102.245.37` is `Permission denied (publickey)` — the owner's
+  paste would have died on its first `scp`, having proved only that the
+  extraction works. §19 step 3.1 now passes
+  `-i ~/agents/secrets/networth-vps.key -o IdentitiesOnly=yes` on all six remote
+  commands, and `tests/test_owner_runbook.py` fails a PR that drops one. *(The
+  refusal and the fix were both verified against the host, read-only, before
+  `S0` was captured.)*
+- **The check that found it is the one this document keeps prescribing.** Rev 21
+  closed with "a fix is where the next defect lives, and the check that finds it
+  is walking the fixed procedure one command further than the finding did." The
+  reviewed rounds each stopped at the last command they had changed; nobody ran
+  the *first* command of the block on the machine it names. Reading a runbook
+  cannot find a missing credential — only the machine can, which is what the
+  environment-claims convention in `AGENTS.md` says and what this round is.
+
 Revision 21 — **Codex's review of rev 20. Every finding this round is a defect
 *inside a rev-20 fix*: each one closed the hole it was aimed at and left the
 same class of hole one step further along.**
@@ -4664,17 +4686,18 @@ device. All of it is gone with the third party it protected.)*
    (
      (
        set -o pipefail
+       vps_key=~/agents/secrets/networth-vps.key
        mkdir -p ~/networth-run &&
        git -C ~/networth fetch --quiet origin main &&
        git -C ~/networth rev-parse FETCH_HEAD    >~/networth-run/reviewed-commit.txt &&
        git -C ~/networth show FETCH_HEAD:scripts/provision-host.sh >~/networth-run/provision-host.sh &&
        git -C ~/networth show FETCH_HEAD:scripts/host-state.sh     >~/networth-run/host-state.sh &&
-       scp ~/networth-run/provision-host.sh ~/networth-run/host-state.sh root@100.102.245.37:/root/ &&
-       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-0.txt 2>~/host-state-0.err &&
-       ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-1.log &&
-       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-1.txt 2>~/host-state-1.err &&
-       ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-2.log &&
-       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-2.txt 2>~/host-state-2.err
+       scp -i "$vps_key" -o IdentitiesOnly=yes ~/networth-run/provision-host.sh ~/networth-run/host-state.sh root@100.102.245.37:/root/ &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-0.txt 2>~/host-state-0.err &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-1.log &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-1.txt 2>~/host-state-1.err &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-2.log &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-2.txt 2>~/host-state-2.err
      )
      sequence_status=$?
      echo "sequence exit status: $sequence_status"
@@ -4734,6 +4757,18 @@ device. All of it is gone with the third party it protected.)*
      reports as a success is the same defect this list opens with, one level
      out. `exit "$sequence_status"` inside a subshell sets the snippet's status
      without closing the interactive shell it was pasted into.
+   - **every `ssh` and the `scp` names the key** *(rev 22)*. Rev 21 left them
+     bare, and on `zelengs-macbook-air-2` a bare `ssh root@100.102.245.37` is
+     **`Permission denied (publickey)`**: that machine has no `~/.ssh/config`, no
+     default identity file at all, and its running `ssh-agent` holds no
+     identities, so there is nothing for `ssh` to offer. The sequence would have
+     died on its first `scp` — after the extraction, before any capture. The key
+     is the administration key from step 1a, `~/agents/secrets/networth-vps.key`,
+     which is what step 1a already says it is *for* ("the interactive key stays
+     for `link.sh` and administration"); `IdentitiesOnly=yes` keeps that true if
+     an agent is ever loaded. *(Both halves verified on the host itself on
+     2026-09-02, read-only and before `S0`: without the flag the login is
+     refused, with it `id` returns `uid=0(root)`.)*
 
    **The second transcript must end in `changed: 0`**, and the first one's
    `[changed]` lines are criterion (2). Each transcript prints the script's own

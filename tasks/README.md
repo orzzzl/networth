@@ -119,7 +119,7 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 28 | VPS provisioning + hardening (**base host only**) | — | **claude** (the script, criteria 1+3, and the records) / **owner** (runs §19 step 3.1 — criteria 2+4) | codex | **WIP** (PR #34) |
+| 28 | VPS provisioning + hardening (**base host only**) | — | **claude** (the script, criteria 1+3, and the records) / **owner** (runs §19 step 3.1 — criteria 2+4) | codex | **WIP — owner** (claude's half merged, #34; criteria 1+3 met, 2+4 wait on his two runs) |
 | 25 | ~~DB backup/restore~~ | — | — | — | **SUPERSEDED by 03a** |
 
 **Totals:** claude 18, codex 17, owner 3 (+1 answered, 1 superseded) — counted off the rows
@@ -276,6 +276,16 @@ one root, false here, and codex rejected it on exactly that ground in review of 
 Note also what that argument leaned on: the quota-stall rule above is a *mandatory trigger*
 for reassignment, not a licence to reassign only when quota is the cause. Reading a trigger
 as a prohibition is how an agent talks itself into idling.
+
+**2026-09-02, third occurrence — and this time no reassignment fixes it, which is the thing
+to say out loud rather than discover.** `28`'s claude half merged, so both claude rows are
+now waiting on the owner (`05a` on issue **#28**, `28` on his two provisioning runs) and
+claude holds **no** `READY` root. Codex holds exactly one — `04` — so by the rule two
+paragraphs up, taking it would move the idleness rather than remove it. The graph itself is
+the constraint here: every remaining claude row sits behind `04` (`26a`, `13`), behind
+`05a` + `00c` (`06`), or further down. Whoever reads this next should expect claude idle
+until one of four things happens, and none of them is an agent's to do: `04` merges, the
+owner answers `#28`, he installs `00c`, or he runs step 3.1.
 
 Still outstanding, in the order they would land: `04` merges (frees `26a` and `13`), the
 owner answers `#28` (frees `05a`), the owner installs `00c` (with `05a`, frees `06`), and
@@ -1803,6 +1813,21 @@ owner actions above, by that section's own rule — *an owner row is a row he ca
 today* — because the script he would run does not exist yet. It becomes his the moment
 claude's half merges, and the agent handing it over says so then.
 
+**Handed over 2026-09-02.** Claude's half merged as `6e35ef3` (PR #34, approved by codex at
+`b4810a7`), so criteria **(1)** and **(3)** are met and checked below; **(2)** and **(4)**
+are now the owner's two runs. What he brings back is fixed and small: `provision-run-1.log`,
+`provision-run-2.log`, and `host-state-{0,1,2}.txt`. Claude takes the two diffs, checks run
+2 for `changed: 0`, compares the transcripts' `sha256` against
+`~/networth-run/reviewed-commit.txt`, and writes the result into this entry.
+
+**One defect was found in the handover itself, between the merge and the hand-off**, and it
+is recorded here because it is the second time this row's *procedure* — not its script —
+was the broken part: §19 step 3.1's six remote commands named no key, and
+`zelengs-macbook-air-2` has no `~/.ssh/config`, no default identity file and an empty
+`ssh-agent`, so the paste would have failed at its first `scp`. Rev 22 passes the step-1a
+key explicitly and `tests/test_owner_runbook.py` fails a PR that drops it. Nothing was
+handed to him before that landed.
+
 **Unblocked 2026-09-01, verified on the host rather than inferred from the board.** This
 entry read `BLOCKED (00a)` because it needed the agent SSH key installed. It is installed,
 and it is enough: over `~/agents/secrets/networth-vps.key` to `100.102.245.37`, `id`
@@ -1893,7 +1918,7 @@ defect in the script.
 **Four acceptance criteria that are about not breaking the owner's machine — they matter
 more than the hardening itself:**
 
-- [ ] **(1) claude — The provisioning script must not modify `PermitRootLogin` at all.** This host
+- [x] **(1) claude — The provisioning script must not modify `PermitRootLogin` at all.** This host
       is **not fresh** — the owner administers it as `root`, and this design does not get
       to lock him out of his own exit node. **The fix must land in `DESIGN.md` §19 step 3,
       the procedure he actually executes**, not only in §15.1's rationale. (Rev 12
@@ -1903,7 +1928,7 @@ more than the hardening itself:**
 - [ ] **(2) owner runs, claude records** — `/etc/networth/` is root-owned today, so the
       `chown` is **reported**, never silent. Claude's half is that the script *can* report
       it; the criterion is met by what his run actually printed.
-- [ ] **(3) claude** — Config is read from `/etc/networth/plaid.env`, with `PLAID_ENV`
+- [x] **(3) claude** — Config is read from `/etc/networth/plaid.env`, with `PLAID_ENV`
       **never hardcoded**.
 - [ ] **(4) owner runs, claude records** — Re-running the script changes nothing.
       Idempotence is testable: run twice, capture the host state three times, and the
