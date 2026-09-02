@@ -1,7 +1,83 @@
 # DESIGN — networth
 
-Status: **proposed** (design phase; nothing implemented).
+Status: **building** — the design phase closed on 2026-08-31 and tasks are being
+implemented; `tasks/README.md` is the live state. *(Rev 19: this line still read
+"proposed (design phase; nothing implemented)" with three tasks merged.)*
 Author: Claude. Reviewer: Codex.
+
+Revision 21 — **Codex's review of rev 20. Every finding this round is a defect
+*inside a rev-20 fix*: each one closed the hole it was aimed at and left the
+same class of hole one step further along.**
+
+- **The symlink defence stopped one command short.** Rev 20 refused to follow a
+  link and made `chown` non-dereferencing with `-h`; the `chmod` on the next
+  line still followed one, because GNU `chmod` has no `-h` and dereferences the
+  path it is given. A guard cannot fix that — the guard and the mutation are two
+  pathname lookups, and the service account that owns the parent directory gets
+  to act in between. §15.1's provisioning step now names no path when it
+  mutates: it opens each one once with `O_PATH | O_NOFOLLOW`, refuses a link on
+  the descriptor, and does the `chown`, the `chmod` and the read-back through
+  `/proc/self/fd`. *(Reproduced first: `chmod 700 <link>` moved a victim
+  directory from 755 to 700.)*
+- **`git pull --ff-only` does not mean "reviewed bytes".** Rev 20 added it to
+  close the *local* stale-checkout hole and it answers a different question: on
+  a branch tracking anything other than `main` it pulls that, and on any branch
+  it returns 0 while leaving a modified tracked file in place. §19 step 3 now
+  extracts the two scripts out of `origin/main` with `git show FETCH_HEAD:…`, so
+  the local branch and every uncommitted edit are irrelevant — and the runbook
+  cannot be executed before this work is merged.
+- **The runbook reported success for a failed run — again, one level out.** Rev
+  20 fixed `ssh … | tee` swallowing the remote status, then ended the snippet
+  with `echo "sequence exit status: $?"`, which makes the *echo* the status: the
+  line printed `1` and the snippet returned `0`, in both bash and zsh. The
+  status is now re-emitted by an outer subshell.
+
+*(The pattern is worth naming, because it is the third round running: a fix is
+where the next defect lives, and the check that finds it is walking the fixed
+procedure one command further than the finding did.)*
+
+Revision 20 — **Codex's review of the rev-19 step. Both findings are the same
+mistake in different clothing: a procedure that produces evidence which cannot
+fail.**
+
+- **§19 step 3.1 measured the wrong thing.** It asked for the host state either
+  side of *both* provisioning runs — a diff that contains the service user, the
+  ownership changes and the new package, so it is expected to be non-empty and
+  cannot show what it was written to show, that **re-running changes nothing**.
+  Three captures now: before run 1, between the runs, after run 2. The middle
+  pair is the criterion and must be empty; the first pair is the outcome of
+  provisioning.
+- **The command sequence hid its own failures.** Three independent commands with
+  `ssh … | tee` and no `pipefail`: a failed remote run exits with `tee`'s status
+  and reports success, its stderr never reaches the transcript that is kept, and
+  a failed `scp` is followed by a run of whatever older copy was already on the
+  host. It is now one `&&`-chained subshell with `pipefail` and `2>&1` into each
+  `tee`. (The evidence for a criterion is part of the criterion; a runbook that
+  can report success for a failed run is the same defect as a diff that cannot
+  come out non-empty.)
+- **Found while writing that fix, one layer up: the *local* copy could be stale
+  too.** Closing the remote path left `scp` faithfully copying whatever
+  `~/networth` happened to be sitting on, and the `sha256` check could not catch
+  it — it compares the transcript against that same local file, so an old
+  checkout agrees with itself. The chain was made to start with
+  `git pull --ff-only` — **which rev 21 replaced**: a pull answers "did this
+  branch move", not "are these the reviewed bytes".
+
+Revision 19 — **not review-driven, and small: two claims this document made
+about things outside it, corrected from the things themselves while task `28`
+was being written.**
+
+- **§19 step 3.1 named no script.** The step the owner executes said "from the
+  provided script" through eighteen revisions, and there was no script — so the
+  procedure could not be followed even in principle. It now names
+  `scripts/provision-host.sh`, gives the exact commands, says the run happens
+  **twice** because that is acceptance criterion (4), and states what an agent
+  may do either side of it (`scripts/host-state.sh`, which only reads).
+- **§16's "Python 3.12" was a fact about a host that runs 3.14.** Ubuntu 26.04.1
+  on `tokyo-exit` ships CPython **3.14.4** and has no 3.12; CI resolves 3.12.3.
+  The version is now stated as the floor it always was in `pyproject.toml`, and
+  the gap between what CI tests and what the daemon will run is **issue #33**
+  rather than a sentence nobody would have re-read.
 
 Revision 18 — **Codex's seven blockers against rev 17. The theme of this round
 is that rev 17's new mechanisms each read correctly in isolation and then failed
@@ -4046,8 +4122,18 @@ never a reason for the agent to see it.
 
 ## 16. Stack
 
-**Host side: Python 3.12 + SQLite + the official `plaid-python` SDK**, on Ubuntu
-26.04. **Phone side: Flutter** (decided by the owner), Android only (O6).
+**Host side: Python 3.12 *or newer* + SQLite + the official `plaid-python`
+SDK**, on Ubuntu 26.04. **Phone side: Flutter** (decided by the owner), Android
+only (O6).
+
+*(Rev 19 turns "Python 3.12" into a floor, from the host itself rather than from
+this document: `tokyo-exit` runs Ubuntu 26.04.1, whose `python3` is **3.14.4**,
+and 3.12 is not in that archive at all. `pyproject.toml` has said `>=3.12`
+throughout, so the code is in range — but CI resolves 3.12.3 while the
+provisioned host will run 3.14, a version this project has never run a test on.
+Task `28` installs the **distribution** interpreter deliberately: one that sits
+outside `unattended-upgrades`, on the host holding the Plaid master credential,
+is the worse trade. Closing the testing gap is **issue #33**.)*
 
 | Option for the host side | For | Against | Verdict |
 |---|---|---|---|
@@ -4566,6 +4652,110 @@ device. All of it is gone with the third party it protected.)*
    public inbound service at all (§8.4) — unattended
    security upgrades, and a dedicated unprivileged service user that owns the
    database and the secrets.
+
+   **The script is `scripts/provision-host.sh`** *(rev 19, task `28`)* — one
+   file, no dependency beyond the base system, so no checkout of this repository
+   ever lands on the host that holds the credentials. It runs **twice**, and the
+   read-only `scripts/host-state.sh` is captured **three** times around those
+   runs *(rev 20)*. From `zelengs-macbook-air-2`, as one sequence that stops at
+   the first failure:
+
+   ```
+   (
+     (
+       set -o pipefail
+       mkdir -p ~/networth-run &&
+       git -C ~/networth fetch --quiet origin main &&
+       git -C ~/networth rev-parse FETCH_HEAD    >~/networth-run/reviewed-commit.txt &&
+       git -C ~/networth show FETCH_HEAD:scripts/provision-host.sh >~/networth-run/provision-host.sh &&
+       git -C ~/networth show FETCH_HEAD:scripts/host-state.sh     >~/networth-run/host-state.sh &&
+       scp ~/networth-run/provision-host.sh ~/networth-run/host-state.sh root@100.102.245.37:/root/ &&
+       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-0.txt 2>~/host-state-0.err &&
+       ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-1.log &&
+       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-1.txt 2>~/host-state-1.err &&
+       ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-2.log &&
+       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-2.txt 2>~/host-state-2.err
+     )
+     sequence_status=$?
+     echo "sequence exit status: $sequence_status"
+     exit "$sequence_status"
+   )
+   ```
+
+   **Anything but 0: stop, and read the last file it wrote.** The status is
+   printed *and* re-emitted, so `echo $?` afterwards still shows it — see below.
+
+   Then, on `zelengs-macbook-air-2`:
+
+   ```
+   diff -u ~/host-state-1.txt ~/host-state-2.txt   # MUST be empty — this is criterion (4)
+   diff -u ~/host-state-0.txt ~/host-state-1.txt   # what provisioning did, and nothing else
+   ```
+
+   **Why three captures and not two** *(rev 20; rev 19 asked for two, either side
+   of both runs)*. The criterion is that **re-running changes nothing**, and the
+   `0..2` diff cannot show it: that diff contains the service user, the ownership
+   changes and the installed package, so it is expected to be non-empty. It
+   establishes the outcome of the two runs combined — a different claim. Only
+   `1..2` is the criterion, and it is empty or the criterion failed. Keep all
+   three captures plus both transcripts; they are read back by someone who was
+   not at the keyboard.
+
+   **Why one chained sequence and not six commands** *(rev 20)*. Each piece of
+   the shape above is load-bearing:
+
+   - `set -o pipefail`, in a subshell so it does not outlive the sequence:
+     without it `ssh … | tee` exits with `tee`'s status, so a **failed remote
+     provisioning run reports success**.
+   - `&&` between the steps: an unchained `scp` that fails is followed by a run
+     of whatever `/root/provision-host.sh` was already on the host — **an older
+     copy, silently**. Chaining also stops run 2 from starting after run 1 failed.
+   - **the two files are extracted from `origin/main`, not copied out of the
+     working tree** *(rev 21; rev 20 opened the chain with `git pull --ff-only`)*.
+     `scp` faithfully copies whatever is in the checkout, so the question is what
+     puts *reviewed* bytes there — and a pull does not. `git pull --ff-only`
+     answers "did this branch move", not "is this `main`, unmodified": on a
+     branch tracking something other than `main` it pulls that instead, and on
+     any branch it returns **0 / “Already up to date”** while leaving a locally
+     modified tracked file exactly as it is. Both were reproduced against a
+     disposable clone. `git show FETCH_HEAD:<path>` reads out of the fetched
+     object database, so the local branch, its upstream and every uncommitted
+     edit are all irrelevant — and because the source is `origin/main`, the
+     sequence cannot run until this work is **merged**.
+   - `2>&1` into each `tee`: the script writes its failure diagnostic to stderr,
+     which would otherwise be absent from exactly the transcript that is kept.
+   - the captures are redirected rather than piped through `tee`, because those
+     three files get diffed against each other and nothing but host state may
+     enter them. Their stderr is kept beside them in `.err` rather than dropped.
+   - **the outer subshell re-emits the status** *(rev 21)*. Rev 20 ended with
+     `echo "sequence exit status: $?"`, which makes the *echo* the last command:
+     the diagnostic said `1` and the pasted snippet still returned **0**,
+     reproduced under both bash and zsh. A failure that prints as a failure and
+     reports as a success is the same defect this list opens with, one level
+     out. `exit "$sequence_status"` inside a subshell sets the snippet's status
+     without closing the interactive shell it was pasted into.
+
+   **The second transcript must end in `changed: 0`**, and the first one's
+   `[changed]` lines are criterion (2). Each transcript prints the script's own
+   `sha256`, so which version ran is a fact in the record rather than an
+   assumption; compare it against
+   `shasum -a 256 ~/networth-run/provision-host.sh`, and the commit those bytes
+   came from is in `~/networth-run/reviewed-commit.txt`. That comparison means
+   something only because both sides came out of `origin/main` — compared
+   against a stale or edited checkout, both are the same unreviewed file.
+
+   **The two provisioning runs are yours and neither is an agent's** — the script
+   edits `sshd`, the firewall and ownership under `/etc/networth/`. The captures
+   in between are not: `scripts/host-state.sh` only reads, which is why it can
+   sit inside your sequence and why an agent may also run it at any time to check
+   the record against the host. There is no rehearsal mode: the first run is the
+   one that changes the host.
+
+   Two things the script will **not** do on its own, and both print as a proposal
+   for you instead: restricting root login (below), and enabling `ufw` if it is
+   ever found switched off — `ufw enable` rebuilds netfilter, and this host's
+   Tailscale exit-node forwarding rides on rules `tailscaled` inserts rather than
+   on anything `ufw` stores.
 
    **The script does not touch `PermitRootLogin`, at all.** *(Rev 14. Rev 12
    identified this defect and fixed it in §15.1, then left this step — the part
