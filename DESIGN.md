@@ -5,6 +5,94 @@ implemented; `tasks/README.md` is the live state. *(Rev 19: this line still read
 "proposed (design phase; nothing implemented)" with three tasks merged.)*
 Author: Claude. Reviewer: Codex.
 
+Revision 23 — **The guard asked which tokens were present; `ssh` asks a
+different question, and the two disagree.**
+
+- **Two edits kept every token rev 22 looked for and unpinned the sequence
+  anyway** (Codex, round 2). Command-line settings are *first-value-wins*, so
+  `-o IdentitiesOnly=no` placed in front of the shipped `-o IdentitiesOnly=yes`
+  leaves the effective setting `no` — a loaded agent may then authenticate a
+  command whose `-i` is wrong, which is the entire thing that `-i` was made
+  load-bearing for. And identities *accumulate*, so a second `-i` rides along
+  while a guard reading only the first `-i` reports that step 1a's key is what
+  authenticated. Both measured with `ssh -G`, OpenSSH 10.2, on the machine §19
+  names, rather than reasoned about.
+- **Probing that fix turned up three more of the same class, none of them
+  reported.** `-o IdentityFile=k` is an identity spelled the long way and was
+  invisible to a check that read `-i`; `-F file`, `-Ffile` and `-4F file` each
+  carry in an identity from a file nothing reviews; `-4i k` is an identity in a
+  flag bundle. Enumerating the ways to widen a command is the losing side of
+  this exchange — `-o PreferredAuthentications=password` leaves keys out of it
+  altogether — so the rule is **inverted rather than extended**. The module
+  reads four spellings, `-i x`, `-ix`, `-o x`, `-ox`, and two setting names;
+  any other option-looking token on a remote command **fails** until the module
+  is taught it. That is one reviewed line to add, against the alternative of
+  trusting a token nothing read.
+- **Round 3 found that same sentence one word further along: *which* tokens,
+  never *where*.** Option parsing stops at a position, and the two programs stop
+  in different places. Moving the shipped `-i` and `-o` behind
+  `'bash /root/host-state.sh'` — every token still present, in the same order
+  relative to each other — leaves `ssh` authenticating with whatever an agent
+  holds, and the guard called that pinned. The boundary is now modelled per
+  program, measured rather than assumed: **`ssh` resumes after its destination**
+  (`-i` before the host and `-i` after it accumulate) and stops at the remote
+  command; **`scp` stops at its first path operand** (`scp a -i k dst/` copies a
+  file literally named `-i`). The fix was then run against `ssh -G` itself over
+  **2 532 mutants** of the six commands — the shipped options moved to every
+  position, and six widening edits injected at every index — with **no case
+  where the guard says pinned and `ssh` disagrees**. The 55 where it is
+  *stricter* than `ssh` are all `-o Compression=yes` and `--`: the fail-closed
+  rule above, doing what it says. *(Two of the three anomalies that sweep threw
+  up were defects in the **oracle**, not the guard — `ssh -G` omits identity
+  files that do not exist, so a differential probe using an absent key cannot
+  see the widening it just injected. Written down because a check that cannot
+  fail is the failure mode this row keeps producing.)*
+- **What must stay green is asserted beside it, and is the harder half.** The
+  identity written as `-o IdentityFile=`, the same key named twice, a redundant
+  second `IdentitiesOnly=yes`, and a `=no` *behind* the shipped `=yes` are all
+  commands OpenSSH treats exactly as the shipped one, and all still pass. The
+  last is the same pair of settings as the mutation above with the order
+  swapped, so the opposite verdicts are the claim that precedence is modelled
+  and not occurrences counted. A guard that reddens a sequence which
+  authenticates correctly teaches the next author that the guard is the thing
+  to delete — rev 22 shipped exactly that defect in its controls and it was
+  caught before review.
+
+Revision 22 — **Found by walking rev 21's own procedure on the machine it names,
+in the minute after task `28` merged and before handing it to the owner.**
+
+- **The runbook could not authenticate.** Rev 21 spent three rounds making the
+  sequence extract *reviewed* bytes and report a *real* status, and left every
+  `ssh` and the `scp` with no identity. On `zelengs-macbook-air-2` there is no
+  `~/.ssh/config`, no default identity file and no key in the running agent, so
+  `ssh root@100.102.245.37` is `Permission denied (publickey)` — the owner's
+  paste would have died on its first `scp`, having proved only that the
+  extraction works. §19 step 3.1 now passes
+  `-i ~/agents/secrets/networth-vps.key -o IdentitiesOnly=yes` on all six remote
+  commands. *(The refusal, and the `-i` that cures it, were both verified
+  against the host itself, read-only, before `S0` was captured.)*
+- **The guard shipped with this fix did not enforce what it said it did** —
+  Codex's review of the fix, and the same defect class one level in. It read
+  assignments from the whole block regardless of order, matched the key by
+  basename, and never looked at `IdentitiesOnly` at all, so it stayed green
+  under three edits that each break authentication: the `vps_key=` line moved
+  below its six uses, the path changed to `/tmp/networth-vps.key`, and
+  `IdentitiesOnly=yes` dropped from the `scp`. `tests/test_owner_runbook.py`
+  now resolves variables **in order**, compares against step 1a's **exact**
+  path (and checks step 1a still names it), and requires `IdentitiesOnly=yes`
+  on every remote command; each of those three edits, plus a seventh bare
+  `ssh`, an unassigned variable and `IdentitiesOnly=no`, was re-run against it
+  and fails. It remains a shape check: it cannot prove the key is on the host,
+  and it reads a block as a flat sequence, so an assignment nested in its own
+  subshell would read as in scope.
+- **The check that found it is the one this document keeps prescribing.** Rev 21
+  closed with "a fix is where the next defect lives, and the check that finds it
+  is walking the fixed procedure one command further than the finding did." The
+  reviewed rounds each stopped at the last command they had changed; nobody ran
+  the *first* command of the block on the machine it names. Reading a runbook
+  cannot find a missing credential — only the machine can, which is what the
+  environment-claims convention in `AGENTS.md` says and what this round is.
+
 Revision 21 — **Codex's review of rev 20. Every finding this round is a defect
 *inside a rev-20 fix*: each one closed the hole it was aimed at and left the
 same class of hole one step further along.**
@@ -4664,17 +4752,18 @@ device. All of it is gone with the third party it protected.)*
    (
      (
        set -o pipefail
+       vps_key=~/agents/secrets/networth-vps.key
        mkdir -p ~/networth-run &&
        git -C ~/networth fetch --quiet origin main &&
        git -C ~/networth rev-parse FETCH_HEAD    >~/networth-run/reviewed-commit.txt &&
        git -C ~/networth show FETCH_HEAD:scripts/provision-host.sh >~/networth-run/provision-host.sh &&
        git -C ~/networth show FETCH_HEAD:scripts/host-state.sh     >~/networth-run/host-state.sh &&
-       scp ~/networth-run/provision-host.sh ~/networth-run/host-state.sh root@100.102.245.37:/root/ &&
-       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-0.txt 2>~/host-state-0.err &&
-       ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-1.log &&
-       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-1.txt 2>~/host-state-1.err &&
-       ssh root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-2.log &&
-       ssh root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-2.txt 2>~/host-state-2.err
+       scp -i "$vps_key" -o IdentitiesOnly=yes ~/networth-run/provision-host.sh ~/networth-run/host-state.sh root@100.102.245.37:/root/ &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-0.txt 2>~/host-state-0.err &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-1.log &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-1.txt 2>~/host-state-1.err &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/provision-host.sh' 2>&1 | tee ~/provision-run-2.log &&
+       ssh -i "$vps_key" -o IdentitiesOnly=yes root@100.102.245.37 'bash /root/host-state.sh'      >~/host-state-2.txt 2>~/host-state-2.err
      )
      sequence_status=$?
      echo "sequence exit status: $sequence_status"
@@ -4734,6 +4823,28 @@ device. All of it is gone with the third party it protected.)*
      reports as a success is the same defect this list opens with, one level
      out. `exit "$sequence_status"` inside a subshell sets the snippet's status
      without closing the interactive shell it was pasted into.
+   - **every `ssh` and the `scp` names the key** *(rev 22)*. Rev 21 left them
+     bare, and on `zelengs-macbook-air-2` a bare `ssh root@100.102.245.37` is
+     **`Permission denied (publickey)`**: that machine has no `~/.ssh/config`, no
+     default identity file at all, and its running `ssh-agent` holds no
+     identities, so there is nothing for `ssh` to offer. The sequence would have
+     died on its first `scp` — after the extraction, before any capture. The key
+     is the administration key from step 1a, `~/agents/secrets/networth-vps.key`,
+     which is what step 1a already says it is *for* ("the interactive key stays
+     for `link.sh` and administration"). *(Verified on the host itself on
+     2026-09-02, read-only and before `S0`: with no `-i` the login is refused,
+     and with `-i ~/agents/secrets/networth-vps.key` it returns `uid=0(root)`.)*
+     `IdentitiesOnly=yes` is the other half and is **not** what that check
+     shows: with no agent loaded it changes nothing, which is exactly why it is
+     here — it keeps the `-i` above load-bearing on the day an agent *is*
+     loaded, so that "this key authenticated" cannot quietly become "some key
+     did". Only `tests/test_owner_runbook.py` holds that one. It reads the
+     `IdentitiesOnly` value `ssh` would *use* rather than the one it can find,
+     counts identities in both spellings, reads only the tokens each program
+     actually parses as options — `ssh` stops at the remote command, `scp` at
+     its first path operand — and fails on any other option-looking token there
+     *(rev 23)*. A new flag here is a review rather than a silent pass, and a
+     credential moved past that boundary is a failure rather than a pass.
 
    **The second transcript must end in `changed: 0`**, and the first one's
    `[changed]` lines are criterion (2). Each transcript prints the script's own
