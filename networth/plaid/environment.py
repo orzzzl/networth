@@ -20,13 +20,23 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-SECRETS_DIR = Path("/etc/networth")
+from networth.config import SECRETS_DIR, ConfigError, read_env_file
+
 DATA_DIR_NAME = "networth-data"
 ENV_VAR = "NETWORTH_ENV"
 
-
-class ConfigError(RuntimeError):
-    """The process must not start with the configuration it was given."""
+__all__ = [
+    "DATA_DIR_NAME",
+    "ENV_VAR",
+    "SECRETS_DIR",
+    "ConfigError",
+    "Paths",
+    "PlaidCredentials",
+    "PlaidEnvironment",
+    "load_credentials",
+    "paths_for",
+    "selected_environment",
+]
 
 
 class PlaidEnvironment(StrEnum):
@@ -146,36 +156,6 @@ def selected_environment(env: dict[str, str] | None = None) -> PlaidEnvironment:
         ) from None
 
 
-def _parse_env_file(text: str, path: Path) -> dict[str, str]:
-    """``KEY=value`` lines, the shape systemd's ``EnvironmentFile`` reads.
-
-    No shell: this file holds the Plaid master credential, and running it would
-    make one stray character on the owner's host an arbitrary command. Values
-    are taken literally, minus one layer of surrounding quotes.
-
-    No value ever appears in an error raised here — a parse failure is not a
-    reason to print a secret (the same rule ``TokenStore`` follows).
-    """
-    values: dict[str, str] = {}
-    for number, line in enumerate(text.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped.startswith("export "):
-            stripped = stripped[len("export ") :].lstrip()
-        key, separator, value = stripped.partition("=")
-        if not separator:
-            raise ConfigError(f"{path}:{number} is not a KEY=value line")
-        key = key.strip()
-        if not key:
-            raise ConfigError(f"{path}:{number} has an empty key")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        values[key] = value
-    return values
-
-
 def load_credentials(
     environment: PlaidEnvironment,
     *,
@@ -189,17 +169,7 @@ def load_credentials(
     lifetime Item slot.
     """
     path = paths_for(environment, secrets_dir=secrets_dir).credentials
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise ConfigError(
-            f"no Plaid credentials for {environment.value!r}: {path} does not exist. "
-            f"The owner installs it; agents never write it (AGENTS.md rule 3)"
-        ) from None
-    except OSError as exc:
-        raise ConfigError(f"cannot read {path}: {exc.strerror}") from None
-
-    values = _parse_env_file(text, path)
+    values = read_env_file(path, describe=f"Plaid credentials for {environment.value!r}")
     declared = values.get("PLAID_ENV")
     if declared != environment.value:
         # The value is NOT echoed. An earlier version did, reasoning that
