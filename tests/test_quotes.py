@@ -281,6 +281,24 @@ def test_every_unusable_answer_is_one_refusal_and_not_a_price(
         client_for(transport).get_quote("SYNTH")
 
 
+def test_a_refusing_venue_is_refused_even_when_its_body_would_parse() -> None:
+    """The status is checked, and this is the only test that can prove it.
+
+    Every non-200 case in the table above carries an empty body, so each of them
+    passes on the JSON parse failure alone — delete the status check entirely and
+    they all stay green. Found by mutating the check away and watching nothing
+    fail. A real 429 or 500 can carry a well-formed body, and then the status is
+    the only thing that says the venue did not answer the question.
+    """
+    for status in (401, 429, 500, 503):
+        transport = FakeTransport(
+            status=status,
+            payload=payload(SYNTH=entry(100.00, 100.02, "2026-01-14T21:00:00Z")),
+        )
+        with pytest.raises(QuoteUnavailable):
+            client_for(transport).get_quote("SYNTH")
+
+
 def test_a_transport_failure_does_not_carry_the_request_into_the_message() -> None:
     # A transport exception is free to quote the request it failed on, and this
     # request is authenticated by its headers.
