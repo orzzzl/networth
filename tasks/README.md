@@ -91,8 +91,8 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 10 | Item health poller | 04, 05 | **codex** | claude | **WIP** (#38) |
-| 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | BLOCKED (10) |
+| 10 | Item health poller | 04, 05 | **codex** | claude | **DONE** (#38, 2026-09-02) |
+| 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | **READY** |
 | 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | BLOCKED (11) |
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **READY** |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED |
@@ -287,10 +287,13 @@ the constraint here: every remaining claude row sits behind `04` (`26a`, `13`), 
 until one of four things happens, and none of them is an agent's to do: `04` merges, the
 owner answers `#28`, he installs `00c`, or he runs step 3.1.
 
-Still outstanding, in the order they would land: `04` merges (frees `26a` and `13`), the
-owner answers `#28` (frees `05a`), the owner installs `00c` (with `05a`, frees `06`), and
-the owner runs `scripts/provision-host.sh` twice on `tokyo-exit` — `28`'s criteria (2) and
-(4), which free `16`, `20` and `00b`.
+`04` landed the same day (#36), which freed `26a` and `13` and ended that idle window; the
+paragraph above is kept as the record of it, not as current state.
+
+Still outstanding, in the order they would land: the owner answers `#28` (frees `05a`), the
+owner installs `00c` (with `05a`, frees `06`), and the owner runs
+`scripts/provision-host.sh` twice on `tokyo-exit` — `28`'s criteria (2) and (4), which free
+`16`, `20` and `00b`.
 
 That last one is new, and it is here because it just became true rather than because it was
 forgotten: `28`'s entry promised the owner would be asked *only* once the script existed —
