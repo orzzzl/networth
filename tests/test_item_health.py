@@ -179,8 +179,14 @@ def test_poll_all_persists_every_visible_axis_a_state(
     }
     poller, client, tokens = poller_for(store, outcomes)
 
-    results = poller.poll_all(at=NOW)
+    batch = poller.poll_all(at=NOW)
+    results = batch.recorded
 
+    assert batch.attempted_count == len(suffixes)
+    assert batch.recorded_count == len(suffixes)
+    assert batch.failed_count == 0
+    assert batch.failure_types == ()
+    assert batch.ok
     assert [result.id for result in results] == list(ids.values())
     assert client.calls == [f"material-{suffix}" for suffix in suffixes]
     assert tokens.requests == [f"secret-ref-{suffix}" for suffix in suffixes]
@@ -218,9 +224,13 @@ def test_due_boundary_polls_never_polled_and_exactly_one_hour_old_items(
     }
     poller, client, _ = poller_for(store, outcomes)
 
-    results = poller.poll_due(at=NOW)
+    batch = poller.poll_due(at=NOW)
 
-    assert [result.plaid_item_id for result in results] == [
+    assert batch.attempted_count == 2
+    assert batch.recorded_count == 2
+    assert batch.failed_count == 0
+    assert batch.ok
+    assert [result.plaid_item_id for result in batch.recorded] == [
         "plaid-item-never",
         "plaid-item-boundary",
     ]
@@ -476,12 +486,19 @@ def test_one_unresolvable_token_does_not_discard_or_block_other_item_polls(
     )
     poller = ItemHealthPoller(store.items, client, tokens)
 
-    results = poller.poll_all(at=NOW)
+    batch = poller.poll_due(at=NOW)
 
-    assert [result.id for result in results] == [ids["one"], ids["three"]]
-    assert caplog.messages == [
+    assert batch.attempted_count == 3
+    assert batch.recorded_count == 2
+    assert batch.failed_count == 1
+    assert batch.failure_types == ("KeyError",)
+    assert not batch.ok
+    assert [result.id for result in batch.recorded] == [ids["one"], ids["three"]]
+    assert "secret-ref-broken" not in repr(batch)
+    assert (
         "1 Item poll attempt(s) produced no observation; skipped exception types: KeyError"
-    ]
+        in caplog.messages
+    )
     assert "secret-ref-broken" not in caplog.text
     assert tokens.requests == ["secret-ref-one", "secret-ref-broken", "secret-ref-three"]
     assert client.calls == ["material-one", "material-three"]

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
@@ -39,6 +40,33 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+@dataclass(frozen=True, slots=True)
+class PollBatchResult:
+    """Caller-visible outcome of one multi-Item polling attempt.
+
+    Failed observations carry only exception type names.  The caller can commit
+    :attr:`recorded` while still marking the enclosing run degraded, without an
+    exception message accidentally carrying token or Item material across the
+    poller's boundary.
+    """
+
+    attempted_count: int
+    recorded: tuple[ItemHealth, ...]
+    failure_types: tuple[str, ...]
+
+    @property
+    def recorded_count(self) -> int:
+        return len(self.recorded)
+
+    @property
+    def failed_count(self) -> int:
+        return len(self.failure_types)
+
+    @property
+    def ok(self) -> bool:
+        return not self.failure_types
+
+
 class ItemHealthPoller:
     """Poll due Items and persist the classified outcome.
 
@@ -64,15 +92,19 @@ class ItemHealthPoller:
         self._tokens = tokens
         self._clock = clock
 
-    def poll_due(self, *, at: datetime | None = None) -> tuple[ItemHealth, ...]:
-        """Poll Items whose previous observation is at least one hour old."""
+    def poll_due(self, *, at: datetime | None = None) -> PollBatchResult:
+        """Poll due Items, reporting any target skipped without an observation."""
 
         polled_at = self._poll_time(at)
         due = self._items.due_at_or_before(polled_at - POLL_INTERVAL)
         return self._observe_then_record(due, polled_at)
 
-    def poll_all(self, *, at: datetime | None = None) -> tuple[ItemHealth, ...]:
-        """Poll every Item unconditionally for probes and first-install sweeps."""
+    def poll_all(self, *, at: datetime | None = None) -> PollBatchResult:
+        """Poll every Item, reporting skipped targets alongside recorded results.
+
+        This unconditional sweep is for probes and first-install use.  Scheduled
+        work uses :meth:`poll_due` so downtime catch-up follows stored state.
+        """
 
         polled_at = self._poll_time(at)
         return self._observe_then_record(self._items.all(), polled_at)
@@ -95,7 +127,7 @@ class ItemHealthPoller:
         self,
         targets: tuple[ItemHealth, ...],
         polled_at: datetime,
-    ) -> tuple[ItemHealth, ...]:
+    ) -> PollBatchResult:
         # Finish every network call before the first UPDATE.  SQLite's default
         # transaction opens on that UPDATE, so interleaving these loops would
         # hold the write transaction across later network waits.
@@ -116,13 +148,18 @@ class ItemHealthPoller:
         recorded = tuple(
             self._items.record_poll(item_id, update) for item_id, update in observations
         )
-        if failure_types:
+        result = PollBatchResult(
+            attempted_count=len(targets),
+            recorded=recorded,
+            failure_types=tuple(failure_types),
+        )
+        if not result.ok:
             logger.error(
                 "%d Item poll attempt(s) produced no observation; skipped exception types: %s",
-                len(failure_types),
-                ", ".join(sorted(set(failure_types))),
+                result.failed_count,
+                ", ".join(sorted(set(result.failure_types))),
             )
-        return recorded
+        return result
 
     def _observe(self, target: ItemHealth, polled_at: datetime) -> ItemHealthUpdate:
         secret = self._tokens.get(target.secret_ref)
@@ -175,4 +212,4 @@ class ItemHealthPoller:
         )
 
 
-__all__ = ["POLL_INTERVAL", "ItemHealthPoller"]
+__all__ = ["POLL_INTERVAL", "ItemHealthPoller", "PollBatchResult"]
