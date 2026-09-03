@@ -10,7 +10,13 @@ import pytest
 
 from networth.item_health import ItemHealthPoller
 from networth.model import ItemState
-from networth.plaid import HEALTHY, ItemStatus, classify_error, transport_failure
+from networth.plaid import (
+    HEALTHY,
+    ItemStatus,
+    classify_error,
+    malformed_response,
+    transport_failure,
+)
 from networth.storage import migrate
 from networth.store import Store
 
@@ -231,9 +237,16 @@ def test_link_transition_may_be_newer_than_the_previous_health_poll(
         last_polled_at=INITIAL,
     )
 
-    stored = Store(db).items.get(item_id)
+    store = Store(db)
+    poller, _, _ = poller_for(
+        store,
+        {"relinked": item_status("relinked", ItemState.REVOKED)},
+    )
+
+    stored = poller.poll_item(item_id, at=NOW - timedelta(minutes=1))
 
     assert stored is not None
+    assert stored.status is ItemState.HEALTHY
     assert stored.status_since == NOW
     assert stored.last_polled_at == INITIAL
 
@@ -310,6 +323,64 @@ def test_transport_failure_preserves_the_last_observed_investments_clock(
     assert stored.last_error_detail is not None
 
 
+@pytest.mark.parametrize(
+    ("prior_state", "prior_error_code"),
+    [
+        (ItemState.NEEDS_REAUTH, "ITEM_LOGIN_REQUIRED"),
+        (ItemState.REVOKED, "ITEM_NOT_FOUND"),
+    ],
+)
+@pytest.mark.parametrize("outcome_kind", ["transport", "malformed", "wrong-item"])
+def test_no_item_state_evidence_cannot_demote_an_actionable_state(
+    db: sqlite3.Connection,
+    prior_state: ItemState,
+    prior_error_code: str,
+    outcome_kind: str,
+) -> None:
+    suffix = f"{prior_state.value.lower()}-{outcome_kind}"
+    prior_error_detail = "synthetic existing actionable error"
+    item_id = add_item(
+        db,
+        suffix,
+        status=prior_state,
+        investments_update=INVESTMENTS_UPDATE,
+        last_error_code=prior_error_code,
+        last_error_detail=prior_error_detail,
+    )
+    if outcome_kind == "transport":
+        outcome = ItemStatus(
+            item_id=None,
+            classification=transport_failure("synthetic transport failure"),
+            request_id=None,
+        )
+    elif outcome_kind == "malformed":
+        outcome = ItemStatus(
+            item_id=f"plaid-item-{suffix}",
+            classification=malformed_response("synthetic unreadable response"),
+            request_id=f"request-{suffix}",
+        )
+    else:
+        outcome = ItemStatus(
+            item_id="plaid-item-different",
+            classification=HEALTHY,
+            request_id=f"request-{suffix}",
+            investments_status_observed=True,
+            investments_last_successful_update=NOW,
+        )
+    store = Store(db)
+    poller, _, _ = poller_for(store, {suffix: outcome})
+
+    stored = poller.poll_item(item_id, at=NOW)
+
+    assert stored.status is prior_state
+    assert stored.status.owner_actionable
+    assert stored.status_since == INITIAL
+    assert stored.last_error_code == prior_error_code
+    assert stored.last_error_detail == prior_error_detail
+    assert stored.last_polled_at == NOW
+    assert stored.investments_last_successful_update == INVESTMENTS_UPDATE
+
+
 def test_observed_null_investments_clock_clears_to_unknown(
     db: sqlite3.Connection,
 ) -> None:
@@ -355,6 +426,72 @@ def test_response_for_a_different_item_cannot_mark_the_target_healthy(
     assert stored.last_error_detail is not None
     assert "did not match" in stored.last_error_detail
     assert stored.investments_last_successful_update is None
+
+
+def test_healthy_response_without_item_identity_cannot_mark_the_target_healthy(
+    db: sqlite3.Connection,
+) -> None:
+    item_id = add_item(
+        db,
+        "missing-identity",
+        status=ItemState.DEGRADED,
+        last_error_detail="synthetic prior failure",
+    )
+    store = Store(db)
+    missing_identity = ItemStatus(
+        item_id=None,
+        classification=HEALTHY,
+        request_id="request-missing-identity",
+        investments_status_observed=True,
+        investments_last_successful_update=INVESTMENTS_UPDATE,
+    )
+    poller, _, _ = poller_for(store, {"missing-identity": missing_identity})
+
+    stored = poller.poll_item(item_id, at=NOW)
+
+    assert stored.status is ItemState.DEGRADED
+    assert stored.status_since == INITIAL
+    assert stored.last_error_detail is not None
+    assert "did not match" in stored.last_error_detail
+    assert stored.investments_last_successful_update is None
+
+
+def test_one_unresolvable_token_does_not_discard_or_block_other_item_polls(
+    db: sqlite3.Connection,
+) -> None:
+    ids = {suffix: add_item(db, suffix) for suffix in ("one", "broken", "three")}
+    store = Store(db)
+    client = FakeClient(
+        {
+            "material-one": item_status("one", ItemState.NEEDS_REAUTH),
+            "material-three": item_status("three", ItemState.NEEDS_REAUTH),
+        }
+    )
+    tokens = FakeTokenResolver(
+        {
+            "secret-ref-one": "material-one",
+            "secret-ref-three": "material-three",
+        }
+    )
+    poller = ItemHealthPoller(store.items, client, tokens)
+
+    with pytest.raises(KeyError):
+        poller.poll_all(at=NOW)
+
+    assert tokens.requests == ["secret-ref-one", "secret-ref-broken", "secret-ref-three"]
+    assert client.calls == ["material-one", "material-three"]
+    for suffix in ("one", "three"):
+        stored = store.items.get(ids[suffix])
+        assert stored is not None
+        assert stored.status is ItemState.NEEDS_REAUTH
+        assert stored.status_since == NOW
+        assert stored.last_polled_at == NOW
+
+    broken = store.items.get(ids["broken"])
+    assert broken is not None
+    assert broken.status is ItemState.HEALTHY
+    assert broken.status_since == INITIAL
+    assert broken.last_polled_at is None
 
 
 def test_late_arriving_older_poll_cannot_overwrite_newer_health(

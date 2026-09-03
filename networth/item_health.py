@@ -69,7 +69,7 @@ class ItemHealthPoller:
         return self._observe_then_record(due, polled_at)
 
     def poll_all(self, *, at: datetime | None = None) -> tuple[ItemHealth, ...]:
-        """Poll every Item, used by the hourly job and deterministic probes."""
+        """Poll every Item unconditionally for probes and first-install sweeps."""
 
         polled_at = self._poll_time(at)
         return self._observe_then_record(self._items.all(), polled_at)
@@ -96,8 +96,29 @@ class ItemHealthPoller:
         # Finish every network call before the first UPDATE.  SQLite's default
         # transaction opens on that UPDATE, so interleaving these loops would
         # hold the write transaction across later network waits.
-        observations = tuple((target.id, self._observe(target, polled_at)) for target in targets)
-        return tuple(self._items.record_poll(item_id, update) for item_id, update in observations)
+        # One unusable token or unexpected client failure must not suppress the
+        # remaining Items, or discard observations already made.  Re-raise only
+        # after every target was attempted and every successful observation was
+        # recorded, so the job stays visibly failed without becoming a batch
+        # poison pill.
+        observations: list[tuple[int, ItemHealthUpdate]] = []
+        failures: list[Exception] = []
+        for target in targets:
+            try:
+                update = self._observe(target, polled_at)
+            except Exception as exc:
+                failures.append(exc)
+            else:
+                observations.append((target.id, update))
+
+        recorded = tuple(
+            self._items.record_poll(item_id, update) for item_id, update in observations
+        )
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise ExceptionGroup("multiple Item poll attempts failed", failures)
+        return recorded
 
     def _observe(self, target: ItemHealth, polled_at: datetime) -> ItemHealthUpdate:
         secret = self._tokens.get(target.secret_ref)
@@ -106,7 +127,11 @@ class ItemHealthPoller:
             target, status
         )
 
-        if classification.state in (None, ItemState.HEALTHY):
+        next_state = classification.state
+        if not classification.item_state_observed and target.status.owner_actionable:
+            next_state = None
+
+        if next_state in (None, ItemState.HEALTHY):
             error_code = None
             error_detail = None
         else:
@@ -115,7 +140,7 @@ class ItemHealthPoller:
 
         return ItemHealthUpdate(
             polled_at=polled_at,
-            status=classification.state,
+            status=next_state,
             error_code=error_code,
             error_detail=error_detail,
             investments_status_observed=investments_observed,
