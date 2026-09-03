@@ -458,6 +458,7 @@ def test_healthy_response_without_item_identity_cannot_mark_the_target_healthy(
 
 def test_one_unresolvable_token_does_not_discard_or_block_other_item_polls(
     db: sqlite3.Connection,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     ids = {suffix: add_item(db, suffix) for suffix in ("one", "broken", "three")}
     store = Store(db)
@@ -475,9 +476,13 @@ def test_one_unresolvable_token_does_not_discard_or_block_other_item_polls(
     )
     poller = ItemHealthPoller(store.items, client, tokens)
 
-    with pytest.raises(KeyError):
-        poller.poll_all(at=NOW)
+    results = poller.poll_all(at=NOW)
 
+    assert [result.id for result in results] == [ids["one"], ids["three"]]
+    assert caplog.messages == [
+        "1 Item poll attempt(s) produced no observation; skipped exception types: KeyError"
+    ]
+    assert "secret-ref-broken" not in caplog.text
     assert tokens.requests == ["secret-ref-one", "secret-ref-broken", "secret-ref-three"]
     assert client.calls == ["material-one", "material-three"]
     for suffix in ("one", "three"):

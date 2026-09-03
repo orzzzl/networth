@@ -8,6 +8,7 @@ independent Investments source clock.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -18,6 +19,8 @@ from networth.plaid import Classification, ItemStatus, malformed_response
 from networth.store import ItemNotFoundError, ItemRepository
 
 POLL_INTERVAL = timedelta(hours=1)
+
+logger = logging.getLogger(__name__)
 
 
 class _ItemGetter(Protocol):
@@ -97,27 +100,28 @@ class ItemHealthPoller:
         # transaction opens on that UPDATE, so interleaving these loops would
         # hold the write transaction across later network waits.
         # One unusable token or unexpected client failure must not suppress the
-        # remaining Items, or discard observations already made.  Re-raise only
-        # after every target was attempted and every successful observation was
-        # recorded, so the job stays visibly failed without becoming a batch
-        # poison pill.
+        # remaining Items, or discard observations already made.  Skip that
+        # target and report only safe exception types: re-raising after the
+        # writes could make a caller-owned transaction roll all of them back.
         observations: list[tuple[int, ItemHealthUpdate]] = []
-        failures: list[Exception] = []
+        failure_types: list[str] = []
         for target in targets:
             try:
                 update = self._observe(target, polled_at)
             except Exception as exc:
-                failures.append(exc)
+                failure_types.append(type(exc).__name__)
             else:
                 observations.append((target.id, update))
 
         recorded = tuple(
             self._items.record_poll(item_id, update) for item_id, update in observations
         )
-        if len(failures) == 1:
-            raise failures[0]
-        if failures:
-            raise ExceptionGroup("multiple Item poll attempts failed", failures)
+        if failure_types:
+            logger.error(
+                "%d Item poll attempt(s) produced no observation; skipped exception types: %s",
+                len(failure_types),
+                ", ".join(sorted(set(failure_types))),
+            )
         return recorded
 
     def _observe(self, target: ItemHealth, polled_at: datetime) -> ItemHealthUpdate:
