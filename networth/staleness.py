@@ -222,7 +222,14 @@ class StalenessMachine:
         item: ItemHealth | None,
         at: datetime,
     ) -> FreshnessAssessment:
-        """Classify one source clock; ``fetched_at`` never substitutes for it."""
+        """Classify one source clock; ``fetched_at`` never substitutes for it.
+
+        Task 12 owns raw-provider interpretation.  In particular, it converts a
+        date-granular holdings value (including Plaid's documented midnight
+        default) to this calendar's close while it still knows which upstream
+        field supplied the value.  A timestamp alone cannot safely distinguish
+        that default from a genuinely precise midnight instant.
+        """
 
         if not isinstance(observation, ObservationDraft):
             raise TypeError("observation must be an ObservationDraft")
@@ -256,11 +263,10 @@ class StalenessMachine:
                 item_state=None if item is None else item.status,
             )
 
-        effective_source_as_of = self._effective_source_as_of(policy, source_as_of)
         grace = self._posting_grace(policy)
-        is_fresh = self._inside_expectation(policy, effective_source_as_of, at, grace)
+        is_fresh = self._inside_expectation(policy, source_as_of, at, grace)
         market_days = self._healthy_market_days_without_advance(
-            effective_source_as_of,
+            source_as_of,
             item,
             at,
             grace=grace,
@@ -328,25 +334,6 @@ class StalenessMachine:
             return at <= source_as_of + CASH_FRESH_FOR
         required_close = self._calendar.latest_completed_close(at, grace=grace)
         return source_as_of >= required_close
-
-    def _effective_source_as_of(
-        self,
-        policy: FreshnessPolicy,
-        source_as_of: datetime,
-    ) -> datetime:
-        """Treat an exactly-midnight holdings clock as date-granular.
-
-        Plaid documents midnight defaults for ``institution_price_datetime``
-        and also supplies ``institution_price_as_of`` as a date.  Comparing the
-        stored midnight literally with that same day's 16:00 close would call a
-        current trading date stale and count its own session as a missed update.
-        Section 8.1 explicitly forbids that interpretation.
-        """
-
-        if policy is not FreshnessPolicy.SYNCED_HOLDINGS or source_as_of.time() != time(0, 0):
-            return source_as_of
-        close = self._calendar.session_close(source_as_of.date())
-        return source_as_of if close is None else close
 
     def _healthy_market_days_without_advance(
         self,
