@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
 import plaid
@@ -26,6 +27,7 @@ from networth.plaid.environment import PlaidCredentials, PlaidEnvironment
 from networth.plaid.errors import (
     HEALTHY,
     Classification,
+    ItemState,
     classify_error,
     malformed_response,
     transport_failure,
@@ -76,6 +78,8 @@ class ItemStatus:
     item_id: str | None
     classification: Classification
     request_id: str | None
+    investments_status_observed: bool = False
+    investments_last_successful_update: datetime | None = None
 
 
 def _error_fields(error: Any) -> tuple[str | None, str | None]:
@@ -129,6 +133,37 @@ def _api_exception_fields(exc: ApiException) -> tuple[str | None, str | None]:
         code if isinstance(code, str) and code else None,
         kind if isinstance(kind, str) and kind else None,
     )
+
+
+def _investments_update(response: Any) -> tuple[bool, datetime | None, str | None]:
+    """Read ``status.investments.last_successful_update`` without inventing it.
+
+    The entire status block is optional for Items without Investments.  A
+    missing block therefore means "not observed", while a literal null clock
+    means Plaid supplied the field but has no successful update to report.  The
+    distinction lets the poller preserve an older observation across a
+    transport failure while still recording UNKNOWN when Plaid says so.
+
+    The SDK contract types a populated value as ``datetime``.  A different or
+    naive value is an unreadable response, never a timestamp coerced from
+    ``str()``; the returned issue contains no response data and is safe to
+    persist.
+    """
+
+    status = getattr(response, "status", _MISSING)
+    if status is _MISSING or status is None:
+        return False, None, None
+    investments = getattr(status, "investments", _MISSING)
+    if investments is _MISSING or investments is None:
+        return False, None, None
+    value = getattr(investments, "last_successful_update", _MISSING)
+    if value is _MISSING:
+        return False, None, None
+    if value is None:
+        return True, None, None
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        return False, None, "investments last_successful_update was not an aware datetime"
+    return True, value.astimezone(UTC), None
 
 
 class PlaidClient:
@@ -204,13 +239,26 @@ class PlaidClient:
         # The only path to HEALTHY in this program: Plaid answered, the answer
         # had an Item, and that Item's error field is present and null.
         if error is None:
-            return ItemStatus(item_id=item_id, classification=HEALTHY, request_id=request_id)
+            classification = HEALTHY
+        else:
+            code, kind = _error_fields(error)
+            classification = classify_error(code, kind)
 
-        code, kind = _error_fields(error)
+        investments_observed, investments_update, investments_issue = _investments_update(response)
+        if investments_issue is not None and classification.state in (
+            ItemState.HEALTHY,
+            None,
+        ):
+            classification = malformed_response(investments_issue)
+            investments_observed = False
+            investments_update = None
+
         return ItemStatus(
             item_id=item_id,
-            classification=classify_error(code, kind),
+            classification=classification,
             request_id=request_id,
+            investments_status_observed=investments_observed,
+            investments_last_successful_update=investments_update,
         )
 
 

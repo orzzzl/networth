@@ -122,8 +122,8 @@ def _insert_link_flow(
 def test_migrations_run_from_empty_and_are_idempotent() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        assert migrate(connection) == (1,)
-        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+        assert migrate(connection) == (1, 2)
+        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
         assert connection.execute("PRAGMA busy_timeout").fetchone() == (5000,)
         before = connection.execute(
@@ -140,11 +140,44 @@ def test_migrations_run_from_empty_and_are_idempotent() -> None:
         connection.close()
 
 
+def test_item_health_migration_upgrades_v1_without_rewriting_items() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(_migration_sql())
+        connection.execute("PRAGMA user_version = 1")
+        connection.execute(
+            "INSERT INTO institution(plaid_institution_id, name, is_oauth) "
+            "VALUES ('synthetic-institution', 'Synthetic institution', 0)"
+        )
+        connection.execute(
+            """
+            INSERT INTO item(
+                institution_id, plaid_item_id, secret_ref, status,
+                status_since, created_at
+            ) VALUES (1, 'synthetic-item', 'synthetic-secret-ref', 'HEALTHY', ?, ?)
+            """,
+            (NOW, NOW),
+        )
+        connection.commit()
+
+        assert migrate(connection) == (2,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute(
+            """
+            SELECT plaid_item_id, status, last_health_poll_at,
+                   investments_last_successful_update
+            FROM item
+            """
+        ).fetchone() == ("synthetic-item", "HEALTHY", None, None)
+    finally:
+        connection.close()
+
+
 def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
     database_path = tmp_path / "networth.db"
     connection = sqlite3.connect(database_path)
     try:
-        assert migrate(connection) == (1,)
+        assert migrate(connection) == (1, 2)
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
     finally:
         connection.close()
@@ -159,10 +192,10 @@ def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
 def test_migration_refuses_a_database_from_the_future() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 3")
         with pytest.raises(SchemaTooNewError, match="newer than supported"):
             migrate(connection)
-        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
     finally:
         connection.close()
 
@@ -197,6 +230,8 @@ def test_schema_has_exactly_the_required_tables_and_columns(db: sqlite3.Connecti
             "consent_expiration_time",
             "replaces_item_id",
             "created_at",
+            "last_health_poll_at",
+            "investments_last_successful_update",
         ),
         "account": (
             "id",

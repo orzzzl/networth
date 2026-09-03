@@ -1671,6 +1671,8 @@ item(                                  -- one per institution LOGIN
   secret_ref,                          -- KEY NAME resolved by TokenStore, never the token
   status, status_since,                -- §8.2 connection state machine
   last_successful_sync, last_attempted_sync,
+  last_health_poll_at,                 -- §8.4 hourly-poll due-ness evidence
+  investments_last_successful_update, -- status.investments source clock (§8.1)
   last_error_code, last_error_message,
   consent_expiration_time,
   replaces_item_id,                    -- set when this Item replaced a REVOKED one (§8.5)

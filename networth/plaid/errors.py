@@ -37,33 +37,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import StrEnum
+
+from networth.model import ItemState as ItemState
 
 logger = logging.getLogger(__name__)
-
-
-class ItemState(StrEnum):
-    """Axis A of section 8. Data age is Axis B and is not on this axis at all.
-
-    The values are the strings the ``item.status`` column checks (task 03's
-    ``0001_initial.sql``); one vocabulary, so a state cannot be valid in the
-    taxonomy and rejected by the schema.
-    """
-
-    HEALTHY = "HEALTHY"
-    DEGRADED = "DEGRADED"
-    NEEDS_REAUTH = "NEEDS_REAUTH"
-    REVOKED = "REVOKED"
-
-    @property
-    def owner_actionable(self) -> bool:
-        """Does this state ask the owner to do something?
-
-        ``DEGRADED`` deliberately does not. "The institution is down" and "your
-        connection is dead" are different facts, and alerting the same way for
-        both is where alert fatigue starts (section 8.2).
-        """
-        return self in (ItemState.NEEDS_REAUTH, ItemState.REVOKED)
 
 
 # Codes named by DESIGN.md section 8.2 and by task 05's entry. Adding to this
@@ -123,12 +100,18 @@ class Classification:
     produces it today. Callers must treat ``None`` as "leave it alone" rather
     than as a default state, which is why it is not spelled ``HEALTHY``.
 
+    ``item_state_observed`` says whether Plaid supplied usable evidence about
+    the Item's Axis-A state.  A transport failure and an unreadable response
+    are still conservatively ``DEGRADED``, but cannot erase an already
+    actionable state that only Link update mode or replacement can resolve.
+
     Read health off :attr:`state`, never off ``error_code is None``:
     :func:`transport_failure` is a ``DEGRADED`` result with no code, because
     Plaid never answered. The state field is the answer; the code is provenance.
     """
 
     state: ItemState | None
+    item_state_observed: bool
     recognised: bool
     error_code: str | None
     error_type: str | None
@@ -141,6 +124,7 @@ class Classification:
 
 HEALTHY = Classification(
     state=ItemState.HEALTHY,
+    item_state_observed=True,
     recognised=True,
     error_code=None,
     error_type=None,
@@ -158,6 +142,7 @@ def malformed_response(detail: str) -> Classification:
     """
     return Classification(
         state=ItemState.DEGRADED,
+        item_state_observed=False,
         recognised=False,
         error_code=None,
         error_type=None,
@@ -189,6 +174,7 @@ def classify_error(error_code: str | None, error_type: str | None) -> Classifica
         )
         return Classification(
             state=provisional,
+            item_state_observed=True,
             recognised=False,
             error_code=None,
             error_type=error_type,
@@ -201,6 +187,7 @@ def classify_error(error_code: str | None, error_type: str | None) -> Classifica
     if error_code in _NO_TRANSITION_CODES:
         return Classification(
             state=None,
+            item_state_observed=True,
             recognised=True,
             error_code=error_code,
             error_type=error_type,
@@ -214,6 +201,7 @@ def classify_error(error_code: str | None, error_type: str | None) -> Classifica
     if state is not None:
         return Classification(
             state=state,
+            item_state_observed=True,
             recognised=True,
             error_code=error_code,
             error_type=error_type,
@@ -231,6 +219,7 @@ def classify_error(error_code: str | None, error_type: str | None) -> Classifica
     )
     return Classification(
         state=provisional,
+        item_state_observed=True,
         recognised=False,
         error_code=error_code,
         error_type=error_type,
@@ -250,6 +239,7 @@ def transport_failure(detail: str) -> Classification:
     """
     return Classification(
         state=ItemState.DEGRADED,
+        item_state_observed=False,
         recognised=True,
         error_code=None,
         error_type=None,

@@ -91,7 +91,7 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 10 | Item health poller | 04, 05 | **codex** | claude | **READY** |
+| 10 | Item health poller | 04, 05 | **codex** | claude | **WIP** (#38) |
 | 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | BLOCKED (10) |
 | 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | BLOCKED (11) |
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **READY** |
