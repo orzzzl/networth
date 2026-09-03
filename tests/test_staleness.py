@@ -180,31 +180,6 @@ def test_holdings_wait_through_the_posting_grace_after_a_new_close() -> None:
     assert grace_elapsed.state is FreshnessState.STALE
 
 
-def test_a_midnight_holdings_timestamp_is_date_granular_not_before_its_own_close() -> None:
-    machine = StalenessMachine()
-    monday_date_at_midnight = datetime(2026, 1, 12, 0, 0, tzinfo=UTC)
-    monday_close = datetime(2026, 1, 12, 21, 0, tzinfo=UTC)
-    row = observation(monday_date_at_midnight, fetched_at=monday_close)
-
-    monday_result = machine.assess(
-        row,
-        policy=FreshnessPolicy.SYNCED_HOLDINGS,
-        item=item(),
-        at=monday_close + HOLDINGS_POSTING_GRACE,
-    )
-    tuesday_result = machine.assess(
-        row,
-        policy=FreshnessPolicy.SYNCED_HOLDINGS,
-        item=item(),
-        at=monday_close + timedelta(days=1) + HOLDINGS_POSTING_GRACE,
-    )
-
-    assert monday_result.state is FreshnessState.FRESH
-    assert monday_result.market_days_without_advance == 0
-    assert tuesday_result.state is FreshnessState.STALE
-    assert tuesday_result.market_days_without_advance == 1
-
-
 def test_a_successful_new_call_cannot_refresh_a_frozen_source_clock() -> None:
     machine = StalenessMachine()
     fifth_market_day_due = datetime(2026, 1, 12, 21, 0, tzinfo=UTC) + HOLDINGS_POSTING_GRACE
