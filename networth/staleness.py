@@ -345,10 +345,13 @@ class StalenessMachine:
     ) -> int:
         if item is None or item.status is not ItemState.HEALTHY:
             return 0
-        healthy_anchor = max(source_as_of, item.status_since)
+        # A transient Axis A failure must not erase Axis B's source-clock evidence.
+        # ``status_since`` records only the latest transition, so anchoring here would
+        # let recurring DEGRADED blips suppress a frozen-data alert forever.  Recovery
+        # gates evaluation again; only an advancing source clock resets its age.
         return len(
             self._calendar.completed_closes_after(
-                healthy_anchor,
+                source_as_of,
                 at,
                 grace=grace,
             )
