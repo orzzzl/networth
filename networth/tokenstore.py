@@ -95,6 +95,24 @@ class CorruptRecord(TokenStoreError):
     """A record on disk could not be read as this store's format."""
 
 
+class UnverifiedMaterial(TokenStoreError):
+    """Material is under the pending name and its durability could not be established.
+
+    Deliberately neither of its neighbours, because both of them would burn a
+    lifetime Item slot:
+
+    - reporting it as :class:`UnknownSecretRef` tells a recovering worker the
+      token is not on this disk, and the only way to get another one is a new
+      Link — a *new* Item, one of ten, gone;
+    - reporting it as durable is the failure this class exists to stop: a
+      database row committed against material that may not survive a power loss,
+      which is the unrecoverable direction this whole module is ordered around.
+
+    So it is a third outcome and the caller must treat it as one: material is at
+    risk, a human decides, and **nothing re-exchanges automatically**.
+    """
+
+
 # A `flow_id` is 32 lowercase hex characters — a minted uuid4 and nothing else.
 #
 # Two jobs, and the second is why the grammar is this narrow. The first is
@@ -421,6 +439,14 @@ class TokenStore:
         of them is the pending name, which is the whole of issue #15's crash: a
         worker that died between the record's ``fsync`` and the ``link`` left a
         durable credential that only this lookup can find.
+
+        **There are three outcomes here, not two.** A record found under the
+        pending name is only returned once this call has completed the barrier
+        itself (:meth:`_establish_pending_durability`); if it cannot,
+        :class:`UnverifiedMaterial` is raised and the caller must neither commit
+        a row against the material nor treat the flow as needing a new exchange.
+        Both of those spend an Item slot, which is why the uncertainty is handed
+        up rather than resolved here.
         """
         ref = secret_ref_for(SecretKind.ACCESS_TOKEN, flow_id)
         try:
@@ -537,6 +563,7 @@ class TokenStore:
     def _read(self, secret_ref: str) -> dict[str, Any]:
         """The one validated record for ``secret_ref``, from either of its names."""
         kind, flow_id = parse_secret_ref(secret_ref)
+        pending: Path | None = None
         try:
             text = self._read_text(self._path(secret_ref), secret_ref)
         except UnknownSecretRef:
@@ -544,8 +571,64 @@ class TokenStore:
             # was fsynced before the crash (issue #15). Only *absence* falls
             # through: a published record that exists and does not parse is
             # corrupt, and corruption must raise rather than look absent.
-            text = self._read_text(self._pending_path(secret_ref), secret_ref)
-        return self._validate(text, secret_ref, kind, flow_id)
+            pending = self._pending_path(secret_ref)
+            text = self._read_text(pending, secret_ref)
+        record = self._validate(text, secret_ref, kind, flow_id)
+        if pending is not None:
+            self._establish_pending_durability(pending, secret_ref)
+        return record
+
+    def _establish_pending_durability(self, pending: Path, secret_ref: str) -> None:
+        """Complete the barrier before a pending record is reported as durable.
+
+        The pending name exists after two different crashes, and **from here they
+        are indistinguishable** — same file, same contents, both parse:
+
+        - :meth:`put` completed both barriers and died before ``link``. Issue
+          #15's case; the material is durable and finding it is the whole reason
+          :meth:`reconcile` reads this name.
+        - :meth:`put`'s own ``fsync`` — of the record or of the directory entry —
+          **failed**. Nothing about durability was ever established, and the data
+          sits in a page cache that a power loss discards.
+
+        Reading cannot tell them apart, so this does not try to. It makes the
+        fact true instead: ``fsync`` the record, then the directory entry, in the
+        same order :meth:`put` uses. A reader that completes both barriers has
+        earned the answer it is about to give, whichever crash it arrived from.
+
+        **The residual limitation, stated rather than glossed.** For the
+        directory-entry barrier this is exact: re-``fsync``ing the directory
+        genuinely makes the name durable. For the record's own data it is the
+        best evidence obtainable from userspace and not a proof — a kernel that
+        reports a write error once and then drops the dirty page will let the
+        second ``fsync`` succeed over data that is already gone. That case is not
+        closable from this side of the syscall; what closes it is the ordering
+        this module exists to enforce, which is that no database row is committed
+        before this returns.
+        """
+        try:
+            fd = os.open(pending, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise UnverifiedMaterial(
+                f"material for {secret_ref!r} is pending and could not be reopened "
+                f"to establish durability: {exc.strerror}"
+            ) from None
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            raise UnverifiedMaterial(
+                f"material for {secret_ref!r} is pending and its record could not be "
+                f"made durable: {exc.strerror}"
+            ) from None
+        finally:
+            os.close(fd)
+        try:
+            self._fsync_directory()
+        except OSError as exc:
+            raise UnverifiedMaterial(
+                f"material for {secret_ref!r} is pending and its directory entry could "
+                f"not be made durable: {exc.strerror}"
+            ) from None
 
     def _validate(
         self, text: str, secret_ref: str, kind: SecretKind, flow_id: str

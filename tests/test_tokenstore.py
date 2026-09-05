@@ -33,6 +33,7 @@ from networth.tokenstore import (
     SecretRefExists,
     TokenStore,
     UnknownSecretRef,
+    UnverifiedMaterial,
     new_flow_id,
     parse_secret_ref,
     secret_ref_for,
@@ -290,6 +291,61 @@ def test_a_publication_that_fails_keeps_the_only_durable_copy(
     # over the surviving one — the same rule as every other pending record.
     with pytest.raises(SecretRefExists):
         store.put(SecretKind.ACCESS_TOKEN, FLOW, synthetic_material("retry"))
+
+
+@pytest.mark.parametrize("failing_barrier", ["record", "directory"])
+def test_a_put_whose_barrier_failed_is_never_reported_as_durable(
+    store: TokenStore, monkeypatch: pytest.MonkeyPatch, failing_barrier: str
+) -> None:
+    """A pending record that was never made durable must not answer `reconcile`.
+
+    Both crashes leave the identical artefact — a parseable `.pending` file — so
+    the reader cannot tell "durable, died before `link`" (issue #15, and the
+    answer must be the record) from "the `fsync` itself failed" (nothing is
+    established, and the data is in a page cache a power loss discards). Before
+    the fix `reconcile` returned the second case as durable, and task 07a is
+    required to commit an `item` row on that answer: a database row against
+    material that may not survive, which is the unrecoverable direction and one
+    permanently burned Item slot.
+
+    So the barrier is completed on read. This test drives the half that cannot
+    be completed: `fsync` keeps failing, and the answer has to be neither the
+    record nor `None`.
+    """
+    material = synthetic_material(f"barrier-{failing_barrier}")
+    ref = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW)
+    real_fsync = os.fsync
+
+    def fsync_fails(fd: int) -> None:
+        is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        if is_directory == (failing_barrier == "directory"):
+            raise OSError(errno.EIO, "input/output error")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync_fails)
+    with pytest.raises(OSError) as caught:
+        store.put(SecretKind.ACCESS_TOKEN, FLOW, material, item_id=ITEM)
+    assert caught.value.errno == errno.EIO
+
+    # The artefact the reader has to judge: present, parseable, not durable.
+    assert not (store.directory / f"{ref}.json").exists()
+    assert (store.directory / pending_name(ref)).exists()
+
+    for call in (lambda: store.reconcile(FLOW), lambda: store.record(ref), lambda: store.get(ref)):
+        with pytest.raises(UnverifiedMaterial):
+            call()
+
+    # It is emphatically not "absent" either: answering `None` sends a recovering
+    # worker to Plaid for a replacement Item, which spends a second slot.
+    monkeypatch.undo()
+    assert (store.directory / pending_name(ref)).exists()
+
+    # Once the barrier can be completed, the same record is durable and answers
+    # normally — the recovery path issue #15 exists for is not broken by this.
+    recovered = store.reconcile(FLOW)
+    assert recovered is not None
+    assert recovered.item_id == ITEM
+    assert store.get(ref).reveal() == material
 
 
 def test_a_crash_between_the_write_and_the_commit_leaves_a_findable_orphan(
