@@ -23,6 +23,7 @@ from networth.staleness import (
     HOLDINGS_POSTING_GRACE,
     StalenessMachine,
     UsEquityMarketCalendar,
+    _regular_holidays,
 )
 
 MONDAY_CLOSE = datetime(2026, 1, 5, 21, 0, tzinfo=UTC)
@@ -93,6 +94,19 @@ def test_market_calendar_knows_weekends_holidays_dst_and_half_days() -> None:
     assert calendar.session_close(date(2026, 11, 27)) == datetime(2026, 11, 27, 18, 0, tzinfo=UTC)
     assert calendar.session_close(date(2026, 12, 24)) == datetime(2026, 12, 24, 18, 0, tzinfo=UTC)
     assert calendar.session_close(date(2025, 7, 3)) == datetime(2025, 7, 3, 17, 0, tzinfo=UTC)
+
+
+def test_calendar_pins_deliberate_new_year_and_juneteenth_boundaries() -> None:
+    calendar = UsEquityMarketCalendar()
+
+    # NYSE does not observe a Saturday New Year's Day on the preceding Friday.
+    # The generator's year-keyed invariant matters even though session_close asks
+    # for the session's year rather than the nominal holiday's year.
+    assert date(2027, 12, 31) not in _regular_holidays(2028)
+    assert calendar.session_close(date(2027, 12, 31)) == datetime(2027, 12, 31, 21, 0, tzinfo=UTC)
+
+    # Juneteenth became an NYSE holiday in 2022, not retroactively in 2021.
+    assert calendar.session_close(date(2021, 6, 18)) == datetime(2021, 6, 18, 20, 0, tzinfo=UTC)
 
 
 def test_exceptional_exchange_closures_are_explicit_calendar_inputs() -> None:
@@ -180,6 +194,11 @@ def test_holdings_wait_through_the_posting_grace_after_a_new_close() -> None:
     assert grace_elapsed.state is FreshnessState.STALE
 
 
+def test_owner_thresholds_match_the_literal_design_values() -> None:
+    assert timedelta(hours=36) == CASH_FRESH_FOR
+    assert timedelta(hours=12) == HOLDINGS_POSTING_GRACE
+
+
 def test_a_successful_new_call_cannot_refresh_a_frozen_source_clock() -> None:
     machine = StalenessMachine()
     fifth_market_day_due = datetime(2026, 1, 12, 21, 0, tzinfo=UTC) + HOLDINGS_POSTING_GRACE
@@ -247,22 +266,32 @@ def test_stale_before_the_fifth_market_day_is_waiting_not_an_alert() -> None:
     assert machine.display_state([result]) is DisplayState.WAITING
 
 
-def test_only_days_while_the_item_is_healthy_count_toward_frozen() -> None:
+def test_transient_degraded_polls_cannot_suppress_a_frozen_source_forever() -> None:
     machine = StalenessMachine()
-    at = datetime(2026, 1, 20, 21, 0, tzinfo=UTC) + HOLDINGS_POSTING_GRACE
-    recovered_after_friday_close = datetime(2026, 1, 16, 22, 0, tzinfo=UTC)
-    row = observation(MONDAY_CLOSE, fetched_at=at)
+    status = ItemState.HEALTHY
+    status_since = MONDAY_CLOSE - timedelta(days=30)
+    frozen_while_healthy = False
 
-    result = machine.assess(
-        row,
-        policy=FreshnessPolicy.SYNCED_HOLDINGS,
-        item=item(status_since=recovered_after_friday_close),
-        at=at,
-    )
+    for elapsed_days in range(1, 88):
+        at = MONDAY_CLOSE + timedelta(days=elapsed_days, hours=12)
+        next_status = ItemState.DEGRADED if elapsed_days % 3 == 0 else ItemState.HEALTHY
+        if next_status is not status:
+            status = next_status
+            status_since = at
 
-    assert result.market_days_without_advance == 1  # Jan 20; Jan 19 is a holiday.
-    assert result.state is FreshnessState.STALE
-    assert machine.display_state([result]) is DisplayState.WAITING
+        result = machine.assess(
+            observation(MONDAY_CLOSE, fetched_at=at),
+            policy=FreshnessPolicy.SYNCED_HOLDINGS,
+            item=item(status, status_since=status_since),
+            at=at,
+        )
+        if status is ItemState.DEGRADED:
+            assert result.market_days_without_advance == 0
+            assert result.frozen_alert_required is False
+        else:
+            frozen_while_healthy |= result.frozen_alert_required
+
+    assert frozen_while_healthy is True
 
 
 @pytest.mark.parametrize("status", [ItemState.DEGRADED, ItemState.NEEDS_REAUTH, ItemState.REVOKED])
