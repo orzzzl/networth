@@ -19,6 +19,8 @@ from networth.model import (
     MANUAL_VALUED_AS_OF,
     QUOTE_AS_OF,
     EquityHolding,
+    ManualAsset,
+    ManualAssetKind,
     ObservationSource,
     PropertyValuation,
     Quote,
@@ -413,3 +415,97 @@ def test_minor_units_round_half_to_even_and_refuse_an_unknown_currency() -> None
     assert to_minor_units(Decimal("1.015"), currency="USD") == 102
     with pytest.raises(ValueError, match="no minor-unit scale"):
         to_minor_units(Decimal("1"), currency="XXX")
+
+
+def a_valuation() -> PropertyValuation:
+    return PropertyValuation(
+        value_minor=PURCHASE_MINOR,
+        currency="USD",
+        valued_as_of=BOUGHT,
+    )
+
+
+def a_holding() -> EquityHolding:
+    return EquityHolding(
+        symbol=normalize_symbol("synth"),
+        shares=parse_share_count("1"),
+        currency="USD",
+        set_on=BOUGHT,
+    )
+
+
+def test_a_manual_asset_carries_exactly_the_payload_its_kind_names() -> None:
+    property_asset = ManualAsset(
+        account_id=1,
+        kind=ManualAssetKind.REAL_PROPERTY,
+        valuation=a_valuation(),
+    )
+    equity_asset = ManualAsset(
+        account_id=2,
+        kind=ManualAssetKind.EQUITY_SHARES,
+        holding=a_holding(),
+        note="synthetic vesting grant",
+    )
+
+    assert property_asset.valuation is not None
+    assert property_asset.valuation.figure.source_clock == MANUAL_VALUED_AS_OF
+    assert equity_asset.holding is not None
+    assert equity_asset.holding.symbol == "SYNTH"
+
+
+def test_a_payload_that_is_not_its_kind_is_refused_not_stored() -> None:
+    """Presence and exclusivity are not enough; the payload must be its kind.
+
+    The crossed cases below are the interesting half. Each payload is a
+    perfectly *valid* record of the other kind, so both existing rules pass and
+    only the type check can tell that the row describes the wrong thing — the
+    shape a writer produces by transposing two rows, silent right up until the
+    first reader touches an attribute that is not there.
+    """
+    # A bare string is what a hand-built row or a loose deserializer produces.
+    with pytest.raises(TypeError, match="valuation must be"):
+        ManualAsset(
+            account_id=1,
+            kind=ManualAssetKind.REAL_PROPERTY,
+            valuation="40000000",  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="holding must be"):
+        ManualAsset(
+            account_id=1,
+            kind=ManualAssetKind.EQUITY_SHARES,
+            holding="1 share",  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="valuation must be"):
+        ManualAsset(
+            account_id=1,
+            kind=ManualAssetKind.REAL_PROPERTY,
+            valuation=a_holding(),  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="holding must be"):
+        ManualAsset(
+            account_id=1,
+            kind=ManualAssetKind.EQUITY_SHARES,
+            holding=a_valuation(),  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("kind", list(ManualAssetKind))
+def test_a_manual_asset_without_exactly_one_payload_is_refused(
+    kind: ManualAssetKind,
+) -> None:
+    with pytest.raises(ValueError, match="carries a"):
+        ManualAsset(account_id=1, kind=kind)
+    with pytest.raises(ValueError, match="carries a"):
+        # Both payloads present: exclusivity, not typing, is what refuses this.
+        ManualAsset(account_id=1, kind=kind, valuation=a_valuation(), holding=a_holding())
+
+
+@pytest.mark.parametrize("note", ["", "   ", " has whitespace ", 7])
+def test_a_note_that_is_not_usable_text_is_refused(note: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="note must be"):
+        ManualAsset(
+            account_id=1,
+            kind=ManualAssetKind.REAL_PROPERTY,
+            valuation=a_valuation(),
+            note=note,  # type: ignore[arg-type]
+        )

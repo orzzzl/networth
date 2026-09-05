@@ -228,10 +228,17 @@ class EquityHolding:
 class ManualAsset:
     """The ``manual_asset`` row: which kind, and the kind's own configuration.
 
-    Exactly one of the two payloads is present, mirroring the schema's CHECK.
-    Keeping them in one type rather than two lets a caller read the row without
-    first knowing what it will find, and the ``__post_init__`` below is the
-    reason a caller can then trust the payload it did find.
+    Exactly one of the two payloads is present *and is the type its kind names*,
+    mirroring the schema's CHECK. Keeping them in one type rather than two lets
+    a caller read the row without first knowing what it will find, and the
+    ``__post_init__`` below is the reason a caller can then trust the payload it
+    did find.
+
+    Checking presence without checking type would make that last sentence a
+    promise this class does not keep: ``kind`` would say ``REAL_PROPERTY``,
+    ``valuation`` would be a string, and the mismatch would surface as an
+    ``AttributeError`` in whichever reader first touched ``.figure`` — a stack
+    trace pointing at the caller rather than at the row that was wrong.
     """
 
     account_id: int
@@ -250,5 +257,12 @@ class ManualAsset:
         if self.kind is ManualAssetKind.REAL_PROPERTY:
             if self.valuation is None or self.holding is not None:
                 raise ValueError("a REAL_PROPERTY asset carries a valuation and no holding")
-        elif self.holding is None or self.valuation is not None:
-            raise ValueError("an EQUITY_SHARES asset carries a holding and no valuation")
+            if not isinstance(self.valuation, PropertyValuation):
+                raise TypeError("valuation must be a PropertyValuation")
+        else:
+            if self.holding is None or self.valuation is not None:
+                raise ValueError("an EQUITY_SHARES asset carries a holding and no valuation")
+            if not isinstance(self.holding, EquityHolding):
+                raise TypeError("holding must be an EquityHolding")
+        if self.note is not None:
+            require_nonempty(self.note, field="note")
