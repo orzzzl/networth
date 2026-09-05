@@ -1086,6 +1086,19 @@ respect:**
 - [ ] `EXCHANGE_UNCERTAIN` is a real terminal outcome, not a retry loop against a
       single-use token.
 - [ ] The `access_token` is written through `TokenStore` **before** the `item` row.
+- [ ] **`item_id` is asserted not to be the material before `put` is called** — issue
+      **#42**, deferred here from `05a` by owner adjudication (issue #28) and tagged **must
+      close before the first Production Link**. `TokenStore` cannot tell the two apart by
+      inspection (both are opaque provider strings), so the caller that holds both is where
+      the check belongs; `put(material=M, item_id=M)` currently reaches
+      `item.plaid_item_id`, putting a credential in the database without any
+      `Secret.reveal()` call. Carry a regression proving it is refused.
+- [ ] **A pending record that cannot be made durable is `UnverifiedMaterial`, and that is
+      neither "found" nor "absent."** `05a`'s reader completes the `fsync` barrier itself
+      before answering, and raises when it cannot. Both automatic resolutions spend an Item
+      slot — committing the row risks material a power loss discards, and treating it as
+      absent sends this worker to Plaid for a replacement Item — so this state is surfaced
+      for a human and must not be retried into either answer.
 - [ ] **A stale `EXCHANGING` claim reconciles `TokenStore` before it is classified** (issue
       #15). Order: look up durable material for this `flow_id` first; if it exists, finish
       the `item` + `link_flow` transaction from it and **do not call Plaid again**; only if
