@@ -69,11 +69,11 @@ that row. He caught it, not us.)
 | 03 | SQLite schema + migration runner | 02 | **codex** | claude | **DONE** (#22, 2026-09-01) |
 | 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **DONE** (#36, 2026-09-02) |
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **DONE** (#29, 2026-09-01) |
-| 05a | `TokenStore` | 02 | **claude** | codex | **WIP** (PR #21) |
-| 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | BLOCKED (05a) |
+| 05a | `TokenStore` | 02 | **claude** | codex | **DONE** (#21, 2026-09-05) |
+| 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **READY** |
 | 00a | Generate the constrained backup keypair; pin its `command=` | 03a | **codex** | claude | BLOCKED (03a) |
 | 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b | **codex** (the wire and the records) / **owner** (runs §19 step 1c) | claude | BLOCKED (03a, 00b) |
-| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | BLOCKED (05a, 00c) |
+| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | BLOCKED (00c) |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half) | codex | BLOCKED (06) |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
