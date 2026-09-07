@@ -4457,6 +4457,37 @@ is a path this design does not take.
 
 Agents must never perform these. Everything before and after is automated.
 
+**What is allowed to be in this section** *(rev 19, after the owner asked why he
+was handed §19 step 3.1: "这么琐碎的事为啥要交给我来做" — and he was right)*:
+
+> **A human pasting a command block he does not read is not a safety control.**
+> If the owner is not evaluating the commands, his keypress adds latency and
+> nothing else. A step belongs to him only when an agent **physically cannot**
+> do it, or **must not**.
+
+That test, applied:
+
+| Genuinely his | Not his |
+|---|---|
+| Installing or entering a secret **no agent may ever see** | Running a reviewed script |
+| Typing bank credentials and MFA into Plaid Link | Copying files, reading diffs |
+| Accepting legal terms; creating accounts | Capturing evidence, verifying criteria |
+| Putting a key somewhere outside these machines (escrow) | Anything an agent already has the access to do |
+
+Step 3.1 failed that test and should never have been written here.
+`scripts/provision-host.sh` states at its line 17 and again at line 425 that it
+**never modifies `PermitRootLogin`** — "read only; this script does not change
+it, ever" — so the lockout risk that would have justified a human at the
+keyboard was **already designed out**. What remained was running a reviewed
+script over a key the agents already hold, against a host they already reach,
+and then diffing two files. It has since been run and verified, and it is kept
+below only as a record.
+
+This is the **membership** rule for §19, and it is the one that was missing. The
+rule that a §19 step makes a task row *shared* (`tasks/README.md`) stays exactly
+as it was and is not weakened by this: the fix is that fewer things are §19
+steps, never that a §19 step may quietly be done by an agent.
+
 **Step 1 — Create the Plaid account** — ✅ **DONE 2026-08-30.** Kept because it
 records a trap, not because there is work left.
 

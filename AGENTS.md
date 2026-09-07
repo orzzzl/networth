@@ -91,6 +91,27 @@ Never ask the owner to paste a credential into a chat, a file, or a PR. Agents
 build the tooling; the owner runs it. Everything on either side of those two
 steps must be fully automated.
 
+**And the converse rule, which costs him more often** *(2026-09-05, after he
+asked why `DESIGN.md` §19 step 3.1 was his: "这么琐碎的事为啥要交给我来做")*:
+
+> **A human pasting a command block he does not read is not a safety control.**
+> If the owner is not evaluating the commands, his keypress adds latency and
+> nothing else. Assign a step to the owner only when an agent physically cannot
+> do it, or must not.
+
+Genuinely his: installing a secret **no agent may ever see**; typing bank
+credentials into Plaid Link; accepting legal terms; creating accounts; putting a
+key somewhere outside these machines. **Not** his: running reviewed scripts,
+copying files, reading diffs, capturing evidence, verifying criteria — or
+anything an agent already holds the access to do.
+
+**Every row assigned to the owner must name, in one sentence, what an agent
+cannot or must not do about it.** A row that cannot answer that question is
+misassigned. Apply the check when the row is *created*, not when he complains —
+this has now cost him twice (`00a` blocked on a key that did not exist yet, then
+`28` handing him mechanical execution), which makes it a pattern rather than an
+incident.
+
 ### 4. Never present a number without its age
 
 The product exists because other aggregators render stale figures as live ones.

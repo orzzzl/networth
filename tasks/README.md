@@ -50,8 +50,9 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
-| 00b | Install the constrained backup key on the VPS; escrow the backup key | 00a, 28 | **owner** | — | BLOCKED (00a, 28) |
-| 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` | 00 | **owner** | — | **READY (owner)** |
+| 00b | Install the constrained backup key's `authorized_keys` line on the VPS | 00a, 28 | **codex** | claude | BLOCKED (00a) |
+| 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | BLOCKED (00a) |
+| 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` — *owner: a secret no agent may ever see* | 00 | **owner** | — | **DONE** (2026-09-05) |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
 
 **Every row in this table names something the owner can do the day it says
@@ -72,18 +73,18 @@ that row. He caught it, not us.)
 | 05a | `TokenStore` | 02 | **claude** | codex | **DONE** (#21, 2026-09-05) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **WIP** (claimed 2026-09-05) |
 | 00a | Generate the constrained backup keypair; pin its `command=` | 03a | **codex** | claude | BLOCKED (03a) |
-| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b | **codex** (the wire and the records) / **owner** (runs §19 step 1c) | claude | BLOCKED (03a, 00b) |
-| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | BLOCKED (00c) |
-| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half) | codex | BLOCKED (06) |
+| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (03a, 00b, 00b-escrow) |
+| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **READY** |
+| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | BLOCKED (06) |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | BLOCKED (06a) |
-| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b | **claude** | codex | BLOCKED (07a, 00b) |
+| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a, 00b-escrow) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **READY** |
-| 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it) | codex | BLOCKED |
+| 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
 | 12b | Replacement-Item reconcile flow | 04, 09 | **claude** | codex | BLOCKED (09) |
 
@@ -107,7 +108,7 @@ that row. He caught it, not us.)
 | 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | BLOCKED (14) |
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | BLOCKED (17) |
 | 19 | Payload schema + `Publisher` (encrypt) | 17 | **codex** | claude | BLOCKED (17) |
-| 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (28) |
+| 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (19) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | BLOCKED (20) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | BLOCKED (19) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED |
@@ -119,15 +120,15 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 28 | VPS provisioning + hardening (**base host only**) | — | **claude** (the script, criteria 1+3, and the records) / **owner** (runs §19 step 3.1 — criteria 2+4) | codex | **WIP — owner** (claude's half merged, #34; criteria 1+3 met, 2+4 wait on his two runs) |
+| 28 | VPS provisioning + hardening (**base host only**) | — | **claude** (the script and all four criteria; §19 step 3.1 should never have been the owner's — see §19's membership rule) | codex | **DONE** (2026-09-05; `host-state-1.txt` and `host-state-2.txt` byte-identical, and the `0→1` diff contains exactly the service user, `/var/lib/networth`, both credential files to `networth:networth` 600, and `python3-venv`) |
 | 25 | ~~DB backup/restore~~ | — | — | — | **SUPERSEDED by 03a** |
 
-**Totals:** claude 18, codex 17, owner 3 (+1 answered, 1 superseded) — counted off the rows
-above at this revision, which is the only way this line has ever been wrong. **Four agent
-rows are shared with the owner** because he is the one who runs part of them — three of
-claude's (`06a`'s measurement (iv), `08`, and `28`'s live runs, which are §19 step 3.1) and
-one of codex's (`03a-live`, whose §19 step 1c half is his). Agents write those commands; the
-owner executes them.
+**Totals:** claude 18, codex 18, owner 3 (+1 answered, 1 superseded) — counted off the rows
+above at this revision, which is the only way this line has ever been wrong. **Three agent
+rows are shared with the owner** because he is the one who runs part of them — two of
+claude's (`06a`'s measurement (iv) and `08`) and one of codex's (`03a-live`, whose
+`attest-key` and offline-drill items are his). Agents write those commands; the owner
+executes them.
 
 **A row is shared the moment any of its acceptance criteria is a `DESIGN.md` §19 step**,
 and the entry must say which criteria those are. §19's preamble — *"agents must never
@@ -135,6 +136,37 @@ perform these"* — has no exception for a step an agent could technically run, 
 assignee cell naming only an agent is a defect whatever the agent is capable of. That is
 how `03a-live` shipped with three owner-run steps inside a codex-only row (caught in review,
 2026-09-01).
+
+**And the check that runs the other way** *(2026-09-07, at the owner's instruction, after
+he asked why §19 step 3.1 was his: "这么琐碎的事为啥要交给我来做")*:
+
+> **A human pasting a command block he does not read is not a safety control.** If the
+> owner is not evaluating the commands, his keypress adds latency and nothing else. Assign
+> a step to the owner only when an agent physically cannot do it, or must not.
+
+**Every row naming the owner must say, in one sentence, what an agent cannot or must not
+do about it.** A row that cannot answer that in one sentence is misassigned. Apply it when
+the row is *created*, not when he complains — it has now cost him twice (`00a` marked
+`BLOCKED (owner)` on a key that did not exist yet, then `28` handing him mechanical
+execution), which makes it a pattern rather than an incident.
+
+**The two rules above do not conflict, and the resolution matters.** The membership rule
+stays: a §19 step still makes a row shared, with no exception for one an agent could
+technically run. What was wrong is not that rule but §19's *contents* — the new criterion
+governs what is allowed to be a §19 step in the first place (`DESIGN.md` §19). Fewer things
+are §19 steps; nothing that is one may quietly be done by an agent.
+
+**Audit of 2026-09-07, against that criterion.** Kept with the owner: `00`
+(creating an account, accepting terms), `00c` (a secret no agent may ever see), `00b-escrow`
+(a key must land somewhere no agent can read — that *is* the escrow), `06a`(iv)'s Mac half
+(he types the Sandbox secret at a TTY prompt; it exists only on the VPS), `08` (real bank
+credentials and MFA), `03a-live`'s `attest-key` (an agent running it records a fact that did
+not happen) and its offline drill (an agent session needs the network the criterion requires
+be absent). Moved to agents: `00b`'s `authorized_keys` paste — the private half already
+lives in `~/agents/secrets/` and the public half goes onto a host the agents already hold
+root on, so his keypress added nothing; `28` in full; and `03a-live`'s LaunchAgent install
+and battery confirmation, which `03a` deliberately built as one re-runnable command with a
+recorded power source.
 
 ## Why the split is shaped this way
 
@@ -332,7 +364,24 @@ bank access is **automatic on the Trial** — no per-institution request (**F4**
 - **The Production secret must never reach an agent.** Agents write the command; the owner
   runs it on the VPS (§15).
 
-### 00b — Install the constrained backup key; escrow the backup key — **owner only**
+### 00b — Install the constrained backup key — **codex** / 00b-escrow — **owner only**
+
+**Split 2026-09-07, at the owner's instruction, against the criterion "only work an agent
+cannot or must not do."** This entry used to be one owner-only row and it failed that test
+in half. Pasting the `authorized_keys` line is running one reviewed command over a key the
+agents already hold, onto a host they already have root on — his keypress added latency and
+nothing else, which is exactly what he objected to about §19 step 3.1. That half is now
+`00b` and belongs to **codex** (it sits between codex's `00a`, which produces the line, and
+codex's `03a-live`, which consumes it, so the split adds no handoff).
+
+The **escrow** half is genuinely his and is now `00b-escrow`: copying `networth-backup.key`
+into a password manager or writing it down means putting a key somewhere no agent can read,
+which is the entire point of an escrow and cannot be delegated to something that would then
+hold both copies. Note it no longer blocks on `28` — only the `authorized_keys` paste needed
+the service account to exist first.
+
+Everything below describes both halves; the paragraph on the paste is `00b`'s and the
+paragraph on escrow is `00b-escrow`'s.
 
 **Blocked on `00a` and `28`, both ours.** `00a` produces the line; `28` creates the
 dedicated service user the design requires the key to be installed under, so a paste that
@@ -829,9 +878,9 @@ while §19's preamble says agents never perform it)*:
 
 | Act | Who | Why |
 |---|---|---|
-| Install the puller LaunchAgent; confirm a pull on battery | **owner** | §19 step 1c item 2 |
+| Install the puller LaunchAgent; confirm a pull on battery | **codex** | **Reassigned 2026-09-07.** `03a` builds `networth backup install-puller` as one re-runnable command on the Mac, and it records the power source it ran under at run time. So neither half needs him: installing is running a reviewed command, and the battery evidence is read out of the pull journal rather than watched by a person. `03a` wrote that criterion specifically so it would not need someone happening to see the right run — leaving it with the owner would throw that away |
 | `networth backup attest-key` | **owner** | §19 step 1c item 3 — it records *his* confirmation that he holds an escrow copy. An agent running it writes down a fact that did not happen |
-| The restore drill with the VPS unreachable | **owner** | §19 step 1c items 4/4a |
+| The restore drill with the VPS unreachable | **owner** | §19 step 1c items 4/4a — the criterion is *no network path to the VPS at all*, and an agent session needs the very network it would have to switch off. This is a genuine "cannot", not a formality; the drill logic itself is built and tested in `03a` |
 | Everything over the wire, and every check that a fact was **recorded** | **codex** | not in §19; it is `ssh` and `sqlite`, and it touches neither the host's config nor a key |
 
 **His half is two visits, not one, and the gap between them is a wait nobody can shorten.**
