@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,12 +33,14 @@ def load_backup_config(
     SSH forced commands do not inherit a service unit's environment.  The
     non-secret ``networth.env`` therefore carries the same explicit
     ``NETWORTH_ENV`` selection and archive directory; it is parsed as data,
-    never sourced as shell.  Process variables override matching file entries
-    for unit tests and interactive administration, but no value is defaulted.
+    never sourced as shell. The file is authoritative in production so the
+    timer and forced command cannot select different databases from ambient
+    process state. An explicit mapping may override entries in tests only.
     """
 
     values = read_env_file(config_path, describe="networth runtime configuration")
-    values.update(os.environ if environ is None else environ)
+    if environ is not None:
+        values.update(environ)
     environment = selected_environment(values)
     paths = paths_for(environment, secrets_dir=secrets_dir, data_dir=data_dir)
     archive_dir = values.get(ARCHIVE_DIR_VAR)

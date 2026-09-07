@@ -28,6 +28,28 @@ def test_runtime_file_selects_database_token_store_and_archive_together(tmp_path
     assert "agents/secrets" not in str(loaded)
 
 
+def test_ambient_environment_cannot_diverge_timer_and_forced_command_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secrets = tmp_path / "vps-secrets"
+    data = tmp_path / "vps-data"
+    secrets.mkdir()
+    config = secrets / "networth.env"
+    archive = data / "production-archives"
+    config.write_text(
+        f"NETWORTH_ENV=production\n{ARCHIVE_DIR_VAR}={archive}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NETWORTH_ENV", "sandbox")
+    monkeypatch.setenv(ARCHIVE_DIR_VAR, str(data / "wrong-archives"))
+
+    loaded = load_backup_config(config_path=config, secrets_dir=secrets, data_dir=data)
+
+    assert loaded.database == data / "networth.db"
+    assert loaded.token_store == secrets / "plaid-items.json"
+    assert loaded.archive_dir == archive
+
+
 def test_environment_selection_and_archive_path_have_no_default(tmp_path: Path) -> None:
     config = tmp_path / "networth.env"
     config.write_text("NETWORTH_ENV=production\n", encoding="utf-8")

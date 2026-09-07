@@ -13,6 +13,7 @@ import pytest
 import networth.backup.dispatcher as dispatcher_module
 from networth.backup.archive import BackupBuilder
 from networth.backup.dispatcher import BackupDispatcher
+from networth.backup.state import ARCHIVE_ID_NOTICE_PREFIX
 from networth.storage import migrate
 from networth.tokenstore import SecretKind, TokenStore, new_flow_id
 
@@ -84,6 +85,7 @@ def test_four_positive_verbs_and_only_their_declared_writes(tmp_path: Path) -> N
     output.truncate()
     assert dispatcher.dispatch("serve-archive current") == 0
     assert output.getvalue() == current.path.read_bytes()
+    assert f"{ARCHIVE_ID_NOTICE_PREFIX}{current.archive_id}" in errors.getvalue()
 
     assert (
         dispatcher.dispatch(f"record-pull {current.archive_id} VERIFIED zelengs-macbook-air-2") == 0
@@ -154,6 +156,17 @@ def test_well_shaped_archive_id_must_already_name_a_row(tmp_path: Path) -> None:
         ).fetchone() == (1,)
     finally:
         connection.close()
+
+
+def test_current_archive_identity_must_match_its_outside_bookkeeping(tmp_path: Path) -> None:
+    dispatcher, _, builder, output, errors = _dispatcher(tmp_path)
+    current = builder.build_current(now=NOW)
+    sealed = current.path.read_bytes()
+    current.path.write_bytes(sealed[:-1] + bytes((sealed[-1] ^ 1,)))
+
+    assert dispatcher.dispatch("serve-archive current") != 0
+    assert output.getvalue() == b""
+    assert "verb=serve-archive" in errors.getvalue()
 
 
 def test_dispatcher_source_never_invokes_a_shell() -> None:

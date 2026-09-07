@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from networth.backup.archive import (
     ProbeOutcome,
 )
 from networth.backup.state import (
+    ARCHIVE_ID_NOTICE_PREFIX,
     PULLER_NAME,
     BackupStateError,
     BackupStateStore,
@@ -74,6 +76,20 @@ class BackupDispatcher:
             return 1
         try:
             with os.fdopen(fd, "rb", closefd=False) as source:
+                if name == "current":
+                    digest = hashlib.sha256()
+                    byte_size = 0
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                        byte_size += len(chunk)
+                    with closing(open_database(self.database)) as connection:
+                        archive_id = BackupStateStore(connection).archive_id_for_transfer(
+                            archive_sha256=digest.hexdigest(),
+                            byte_size=byte_size,
+                        )
+                    print(f"{ARCHIVE_ID_NOTICE_PREFIX}{archive_id}", file=self.stderr)
+                    self.stderr.flush()
+                    source.seek(0)
                 while chunk := source.read(1024 * 1024):
                     self.stdout.write(chunk)
             self.stdout.flush()

@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from networth.backup.archive import ArchiveKind, ProbeOutcome
-from networth.backup.state import PULLER_NAME, validate_archive_id, validate_verdict
+from networth.backup.state import (
+    ARCHIVE_ID_NOTICE_PREFIX,
+    PULLER_NAME,
+    BackupStateError,
+    validate_archive_id,
+    validate_verdict,
+)
 
 _HOST_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252}[A-Za-z0-9])?\Z")
 _USER_RE = re.compile(r"\A[a-z_][a-z0-9_-]{0,31}\Z")
@@ -24,6 +30,13 @@ class TransportError(RuntimeError):
 class RemoteProbe:
     probe_generation: int
     outcome: ProbeOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class FetchedArchive:
+    """VPS-side identity carried outside the sealed bytes over authenticated SSH."""
+
+    archive_id: str | None
 
 
 class SshTransport:
@@ -54,7 +67,7 @@ class SshTransport:
             original_command,
         ]
 
-    def fetch_archive(self, kind: ArchiveKind, destination: Path) -> bool:
+    def fetch_archive(self, kind: ArchiveKind, destination: Path) -> FetchedArchive:
         command = f"serve-archive {kind.value}"
         fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
@@ -62,7 +75,7 @@ class SshTransport:
             result = subprocess.run(  # noqa: S603
                 self._argv(command),
                 stdout=fd,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 timeout=self._timeout,
                 check=False,
             )
@@ -76,7 +89,25 @@ class SshTransport:
             raise TransportError(
                 f"SSH {kind.value} archive fetch failed with exit {result.returncode}"
             )
-        return True
+        archive_id: str | None = None
+        if kind is ArchiveKind.CURRENT:
+            prefix = ARCHIVE_ID_NOTICE_PREFIX.encode("ascii")
+            matches = [
+                line[len(prefix) :]
+                for line in result.stderr.splitlines()
+                if line.startswith(prefix)
+            ]
+            if len(matches) != 1:
+                destination.unlink(missing_ok=True)
+                raise TransportError("SSH current archive fetch omitted its transfer identity")
+            try:
+                archive_id = validate_archive_id(matches[0].decode("ascii"))
+            except (BackupStateError, UnicodeDecodeError):
+                destination.unlink(missing_ok=True)
+                raise TransportError(
+                    "SSH current archive fetch returned an invalid identity"
+                ) from None
+        return FetchedArchive(archive_id)
 
     def build_probe(self) -> RemoteProbe:
         try:

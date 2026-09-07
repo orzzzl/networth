@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -14,6 +15,7 @@ import pytest
 from networth.backup.archive import ArchiveKind, BackupBuilder, ProbeOutcome
 from networth.backup.crypto import AuthenticationError
 from networth.backup.puller import (
+    CURRENT_RECEIPT,
     PENDING_REPORTS,
     PULL_JOURNAL,
     BackupPuller,
@@ -22,7 +24,7 @@ from networth.backup.puller import (
     run_canary,
 )
 from networth.backup.state import BackupStateStore, open_database
-from networth.backup.transport import RemoteProbe, TransportError
+from networth.backup.transport import FetchedArchive, RemoteProbe, TransportError
 from networth.storage import migrate
 from networth.tokenstore import SecretKind, TokenStore, new_flow_id
 
@@ -31,8 +33,9 @@ NOW = datetime(2026, 9, 7, 10, 0, tzinfo=UTC)
 
 
 class FakeTransport:
-    def __init__(self, current: bytes, probe: bytes | None = None) -> None:
+    def __init__(self, current: bytes, archive_id: str, probe: bytes | None = None) -> None:
         self.current = current
+        self.archive_id = archive_id
         self.probe = current if probe is None else probe
         self.transfer = True
         self.fail_pull_records = 0
@@ -40,11 +43,11 @@ class FakeTransport:
         self.drill_records: list[tuple[str, str]] = []
         self.probes: list[RemoteProbe] = []
 
-    def fetch_archive(self, kind: ArchiveKind, destination: Path) -> bool:
+    def fetch_archive(self, kind: ArchiveKind, destination: Path) -> FetchedArchive | None:
         if not self.transfer:
-            return False
+            return None
         destination.write_bytes(self.current if kind is ArchiveKind.CURRENT else self.probe)
-        return True
+        return FetchedArchive(self.archive_id if kind is ArchiveKind.CURRENT else None)
 
     def build_probe(self) -> RemoteProbe:
         if not self.probes:
@@ -101,7 +104,7 @@ def _archives(tmp_path: Path) -> tuple[bytes, bytes, str, int]:
 
 def test_verified_pull_is_atomic_records_battery_and_writes_back(tmp_path: Path) -> None:
     current, probe, archive_id, _ = _archives(tmp_path)
-    transport = FakeTransport(current, probe)
+    transport = FakeTransport(current, archive_id, probe)
     destination = tmp_path / "mac-copy"
     puller = BackupPuller(
         transport=transport,
@@ -116,6 +119,10 @@ def test_verified_pull_is_atomic_records_battery_and_writes_back(tmp_path: Path)
     assert result.report_recorded
     assert result.power_source is PowerSource.BATTERY
     assert (destination / "current.nwb").read_bytes() == current
+    assert json.loads((destination / CURRENT_RECEIPT).read_text()) == {
+        "archive_id": archive_id,
+        "archive_sha256": hashlib.sha256(current).hexdigest(),
+    }
     assert transport.pull_records == [(archive_id, "VERIFIED")]
     assert json.loads((destination / PENDING_REPORTS).read_text()) == []
     journal = [json.loads(line) for line in (destination / PULL_JOURNAL).read_text().splitlines()]
@@ -133,7 +140,7 @@ def test_verified_pull_is_atomic_records_battery_and_writes_back(tmp_path: Path)
 
 def test_failed_write_back_stays_pending_and_retries_without_transfer(tmp_path: Path) -> None:
     current, probe, archive_id, _ = _archives(tmp_path)
-    transport = FakeTransport(current, probe)
+    transport = FakeTransport(current, archive_id, probe)
     transport.fail_pull_records = 1
     destination = tmp_path / "mac-copy"
     puller = BackupPuller(
@@ -181,7 +188,7 @@ def test_failed_write_back_leaves_the_vps_row_null_until_a_later_retry(tmp_path:
                 )
                 connection.commit()
 
-    transport = StateTransport(current, probe)
+    transport = StateTransport(current, archive_id, probe)
     transport.fail_pull_records = 1
     puller = BackupPuller(
         transport=transport,
@@ -212,9 +219,47 @@ def test_failed_write_back_leaves_the_vps_row_null_until_a_later_retry(tmp_path:
         connection.close()
 
 
+def test_failed_destination_verification_is_distinct_from_a_pull_that_never_ran(
+    tmp_path: Path,
+) -> None:
+    current, probe, archive_id, _ = _archives(tmp_path)
+    database = tmp_path / "source.db"
+
+    class StateTransport(FakeTransport):
+        def record_pull(self, selected_archive_id: str, verdict: str) -> None:
+            self.pull_records.append((selected_archive_id, verdict))
+            with closing(open_database(database)) as connection:
+                BackupStateStore(connection).record_pull(
+                    archive_id=selected_archive_id,
+                    verdict=verdict,
+                    pulled_by="zelengs-macbook-air-2",
+                    at=NOW,
+                )
+                connection.commit()
+
+    corrupt = current[:-1] + bytes((current[-1] ^ 1,))
+    transport = StateTransport(corrupt, archive_id, probe)
+    puller = BackupPuller(
+        transport=transport,
+        destination=tmp_path / "mac-copy",
+        backup_key=KEY,
+        clock=lambda: NOW,
+        power_reader=lambda: PowerSource.BATTERY,
+    )
+    with pytest.raises(AuthenticationError):
+        puller.run_once()
+
+    assert transport.pull_records == [(archive_id, "FAILED")]
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute(
+            "SELECT pulled_verified_at, verify_error FROM backup_archive WHERE archive_id = ?",
+            (archive_id,),
+        ).fetchone() == (None, "destination verification failed")
+
+
 def test_bad_download_never_replaces_the_last_verified_copy(tmp_path: Path) -> None:
-    current, probe, _, _ = _archives(tmp_path)
-    transport = FakeTransport(current, probe)
+    current, probe, archive_id, _ = _archives(tmp_path)
+    transport = FakeTransport(current, archive_id, probe)
     destination = tmp_path / "mac-copy"
     puller = BackupPuller(
         transport=transport,
@@ -232,15 +277,17 @@ def test_bad_download_never_replaces_the_last_verified_copy(tmp_path: Path) -> N
     last = json.loads((destination / PULL_JOURNAL).read_text().splitlines()[-1])
     assert last["verified"] is False
     assert last["power_source"] == "UNKNOWN"
+    assert last["recorded"] is True
+    assert transport.pull_records[-1] == (archive_id, "FAILED")
 
 
 def test_failure_after_durable_verification_does_not_falsify_the_journal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    current, probe, _, _ = _archives(tmp_path)
+    current, probe, archive_id, _ = _archives(tmp_path)
     destination = tmp_path / "mac-copy"
     puller = BackupPuller(
-        transport=FakeTransport(current, probe),
+        transport=FakeTransport(current, archive_id, probe),
         destination=destination,
         backup_key=KEY,
         clock=lambda: NOW,
@@ -262,10 +309,10 @@ def test_failure_after_durable_verification_does_not_falsify_the_journal(
 
 
 def test_pending_state_failure_still_journals_measured_power(tmp_path: Path) -> None:
-    current, probe, _, _ = _archives(tmp_path)
+    current, probe, archive_id, _ = _archives(tmp_path)
     destination = tmp_path / "mac-copy"
     puller = BackupPuller(
-        transport=FakeTransport(current, probe),
+        transport=FakeTransport(current, archive_id, probe),
         destination=destination,
         backup_key=KEY,
         clock=lambda: NOW,
@@ -283,8 +330,8 @@ def test_pending_state_failure_still_journals_measured_power(tmp_path: Path) -> 
 
 @pytest.mark.parametrize("clock_skew", [timedelta(hours=-1), timedelta(hours=1)])
 def test_canary_verdict_ignores_mac_clock_skew(tmp_path: Path, clock_skew: timedelta) -> None:
-    current, probe, _, generation = _archives(tmp_path)
-    transport = FakeTransport(current, probe)
+    current, probe, archive_id, generation = _archives(tmp_path)
+    transport = FakeTransport(current, archive_id, probe)
     transport.probes = [RemoteProbe(generation, ProbeOutcome.BUILT)]
     observed = NOW + clock_skew
     result = run_canary(
@@ -299,8 +346,8 @@ def test_canary_verdict_ignores_mac_clock_skew(tmp_path: Path, clock_skew: timed
 
 
 def test_canary_waits_out_reuse_and_requires_its_own_built_generation(tmp_path: Path) -> None:
-    current, probe, _, generation = _archives(tmp_path)
-    transport = FakeTransport(current, probe)
+    current, probe, archive_id, generation = _archives(tmp_path)
+    transport = FakeTransport(current, archive_id, probe)
     transport.probes = [
         RemoteProbe(generation - 1, ProbeOutcome.REUSED),
         RemoteProbe(generation, ProbeOutcome.BUILT),
@@ -318,8 +365,8 @@ def test_canary_waits_out_reuse_and_requires_its_own_built_generation(tmp_path: 
 
 
 def test_canary_rejects_a_different_generation(tmp_path: Path) -> None:
-    current, probe, _, generation = _archives(tmp_path)
-    transport = FakeTransport(current, probe)
+    current, probe, archive_id, generation = _archives(tmp_path)
+    transport = FakeTransport(current, archive_id, probe)
     transport.probes = [RemoteProbe(generation + 1, ProbeOutcome.BUILT)]
     with pytest.raises(RuntimeError, match="different"):
         run_canary(

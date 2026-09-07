@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 
 from networth.backup.archive import ArchiveKind, ProbeOutcome
-from networth.backup.transport import SshTransport
+from networth.backup.state import ARCHIVE_ID_NOTICE_PREFIX
+from networth.backup.transport import SshTransport, TransportError
 
 
 def test_probe_and_write_back_use_exact_commands_without_a_local_shell(
@@ -49,9 +50,31 @@ def test_archive_fetch_streams_to_an_exclusive_private_temp_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = b"sealed archive bytes"
+    archive_id = "a" * 32
 
     def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         os.write(kwargs["stdout"], payload)
+        notice = f"{ARCHIVE_ID_NOTICE_PREFIX}{archive_id}\n".encode()
+        return subprocess.CompletedProcess(argv, 0, b"", notice)
+
+    monkeypatch.setattr("networth.backup.transport.subprocess.run", run)
+    transport = SshTransport(
+        host="tokyo-exit",
+        user="networth",
+        identity=tmp_path / "networth-backup-ssh.key",
+    )
+    destination = tmp_path / "download"
+    fetched = transport.fetch_archive(ArchiveKind.CURRENT, destination)
+    assert fetched.archive_id == archive_id
+    assert destination.read_bytes() == payload
+    assert destination.stat().st_mode & 0o077 == 0
+
+
+def test_current_fetch_without_vps_transfer_identity_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        os.write(kwargs["stdout"], b"sealed archive bytes")
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
     monkeypatch.setattr("networth.backup.transport.subprocess.run", run)
@@ -61,9 +84,9 @@ def test_archive_fetch_streams_to_an_exclusive_private_temp_file(
         identity=tmp_path / "networth-backup-ssh.key",
     )
     destination = tmp_path / "download"
-    assert transport.fetch_archive(ArchiveKind.CURRENT, destination)
-    assert destination.read_bytes() == payload
-    assert destination.stat().st_mode & 0o077 == 0
+    with pytest.raises(TransportError, match="transfer identity"):
+        transport.fetch_archive(ArchiveKind.CURRENT, destination)
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize(

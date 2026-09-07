@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -17,18 +18,20 @@ from typing import Protocol
 from networth.backup.archive import (
     CURRENT_ARCHIVE,
     ArchiveKind,
+    ArchiveVerificationError,
     ProbeOutcome,
     verify_archive,
 )
-from networth.backup.state import VERIFIED
-from networth.backup.transport import RemoteProbe, TransportError
+from networth.backup.state import ARCHIVE_ID_RE, ARCHIVE_SHA256_RE, FAILED, VERIFIED
+from networth.backup.transport import FetchedArchive, RemoteProbe, TransportError
 
 PENDING_REPORTS = ".pending-backup-reports.json"
 PULL_JOURNAL = "pull-runs.jsonl"
+CURRENT_RECEIPT = ".current-backup-receipt.json"
 
 
 class BackupTransport(Protocol):
-    def fetch_archive(self, kind: ArchiveKind, destination: Path) -> bool: ...
+    def fetch_archive(self, kind: ArchiveKind, destination: Path) -> FetchedArchive | None: ...
 
     def build_probe(self) -> RemoteProbe: ...
 
@@ -49,6 +52,12 @@ class PendingReport:
     kind: str
     archive_id: str
     verdict: str
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentReceipt:
+    archive_id: str
+    archive_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +116,55 @@ class LocalBackupState:
         os.chmod(self.directory, 0o700)
         self.pending_path = directory / PENDING_REPORTS
         self.journal_path = directory / PULL_JOURNAL
+        self.receipt_path = directory / CURRENT_RECEIPT
+
+    def current_receipt(self) -> CurrentReceipt | None:
+        try:
+            raw = json.loads(self.receipt_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("local current backup receipt is unreadable") from exc
+        if not isinstance(raw, dict) or set(raw) != {"archive_id", "archive_sha256"}:
+            raise RuntimeError("local current backup receipt has the wrong shape")
+        archive_id, archive_sha256 = raw["archive_id"], raw["archive_sha256"]
+        if (
+            not isinstance(archive_id, str)
+            or ARCHIVE_ID_RE.fullmatch(archive_id) is None
+            or not isinstance(archive_sha256, str)
+            or ARCHIVE_SHA256_RE.fullmatch(archive_sha256) is None
+        ):
+            raise RuntimeError("local current backup receipt has an invalid value")
+        return CurrentReceipt(archive_id, archive_sha256)
+
+    def replace_current_receipt(self, receipt: CurrentReceipt) -> None:
+        temporary = self.directory / f".current-receipt-{uuid.uuid4().hex}"
+        body = json.dumps(
+            {
+                "archive_id": receipt.archive_id,
+                "archive_sha256": receipt.archive_sha256,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb", closefd=False) as handle:
+                handle.write(body)
+                handle.flush()
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(temporary, self.receipt_path)
+        _fsync_directory(self.directory)
+
+    def clear_current_receipt(self) -> None:
+        try:
+            self.receipt_path.unlink()
+        except FileNotFoundError:
+            return
+        _fsync_directory(self.directory)
 
     def pending(self) -> list[PendingReport]:
         try:
@@ -181,6 +239,20 @@ def send_report(transport: BackupTransport, report: PendingReport) -> None:
         raise RuntimeError("unknown local backup report kind")
 
 
+def queue_and_send_report(
+    state: LocalBackupState, transport: BackupTransport, report: PendingReport
+) -> bool:
+    """Persist before sending; a lost write-back is retried on the next run."""
+
+    state.add_pending(report)
+    try:
+        send_report(transport, report)
+    except TransportError:
+        return False
+    state.replace_pending([pending for pending in state.pending() if pending != report])
+    return True
+
+
 def flush_pending_reports(state: LocalBackupState, transport: BackupTransport) -> None:
     remaining: list[PendingReport] = []
     for report in state.pending():
@@ -216,37 +288,71 @@ class BackupPuller:
         temporary = self.state.directory / f".tmp-pull-{uuid.uuid4().hex}"
         destination = self.state.directory / CURRENT_ARCHIVE
         transferred = False
+        receipt: CurrentReceipt | None = None
         archive_id: str | None = None
         verified_copy = False
+        recorded = False
         try:
+            receipt = self.state.current_receipt()
+            archive_id = None if receipt is None else receipt.archive_id
             self.flush_pending()
-            transferred = self.transport.fetch_archive(ArchiveKind.CURRENT, temporary)
+            fetched = self.transport.fetch_archive(ArchiveKind.CURRENT, temporary)
+            transferred = fetched is not None
             candidate = temporary if transferred else destination
-            if transferred:
+            if fetched is not None:
+                if fetched.archive_id is None:
+                    raise TransportError("current archive transfer omitted its archive_id")
+                archive_id = fetched.archive_id
                 fd = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW)
                 try:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-            verified = verify_archive(candidate, self._backup_key)
-            if verified.manifest.archive_kind is not ArchiveKind.CURRENT:
-                raise RuntimeError("pull received a probe where the current archive belongs")
+            try:
+                verified = verify_archive(candidate, self._backup_key)
+                if verified.manifest.archive_kind is not ArchiveKind.CURRENT:
+                    raise ArchiveVerificationError(
+                        "pull received a probe where the current archive belongs"
+                    )
+                archive_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                if archive_id is not None and verified.manifest.archive_id != archive_id:
+                    raise ArchiveVerificationError(
+                        "archive manifest does not match its transfer bookkeeping"
+                    )
+                if (
+                    receipt is not None
+                    and not transferred
+                    and (
+                        receipt.archive_id != verified.manifest.archive_id
+                        or receipt.archive_sha256 != archive_sha256
+                    )
+                ):
+                    raise ArchiveVerificationError(
+                        "held archive does not match its durable local receipt"
+                    )
+            except Exception:
+                if archive_id is not None:
+                    recorded = queue_and_send_report(
+                        self.state,
+                        self.transport,
+                        PendingReport("pull", archive_id, FAILED),
+                    )
+                raise
             archive_id = verified.manifest.archive_id
+            verified_copy = True
+            new_receipt = CurrentReceipt(archive_id, archive_sha256)
             if transferred:
+                # Clear the old identity first. Any crash before the replacement
+                # receipt is durable leaves no receipt, never one naming the
+                # wrong bytes.
+                self.state.clear_current_receipt()
                 os.replace(temporary, destination)
                 _fsync_directory(self.state.directory)
-            verified_copy = True
+                self.state.replace_current_receipt(new_receipt)
+            elif receipt != new_receipt:
+                self.state.replace_current_receipt(new_receipt)
             report = PendingReport("pull", archive_id, VERIFIED)
-            self.state.add_pending(report)
-            recorded = True
-            try:
-                send_report(self.transport, report)
-            except TransportError:
-                recorded = False
-            if recorded:
-                self.state.replace_pending(
-                    [pending for pending in self.state.pending() if pending != report]
-                )
+            recorded = queue_and_send_report(self.state, self.transport, report)
             self.state.journal(
                 {
                     "archive_id": archive_id,
@@ -264,7 +370,7 @@ class BackupPuller:
                 {
                     "archive_id": archive_id,
                     "power_source": power.value,
-                    "recorded": False,
+                    "recorded": recorded,
                     "run_at": started_at.isoformat(),
                     "transferred": transferred,
                     "verified": verified_copy,
@@ -304,7 +410,7 @@ def run_canary(
 
     temporary = state.directory / f".tmp-canary-{uuid.uuid4().hex}"
     try:
-        if not transport.fetch_archive(ArchiveKind.PROBE, temporary):
+        if transport.fetch_archive(ArchiveKind.PROBE, temporary) is None:
             raise RuntimeError("backup canary transport did not return its probe")
         verified = verify_archive(temporary, backup_key)
         if (

@@ -305,14 +305,16 @@ def _run_restore_drill(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "archive_id": result.archive_id,
+                "failure": result.failure,
                 "orphan_token_count": result.orphan_token_count,
                 "report_recorded": result.report_recorded,
+                "restore_preparation_passed": result.restore_preparation_passed,
                 "verified": result.verified,
             },
             sort_keys=True,
         )
     )
-    return 0
+    return 0 if result.verified else 1
 
 
 def _run_restore(args: argparse.Namespace) -> int:
@@ -329,7 +331,12 @@ def _run_restore(args: argparse.Namespace) -> int:
                 "destination": str(result.destination),
                 "orphan_token_count": result.orphan_token_count,
                 "publish_epoch": result.publish_epoch,
-                "replay_drill_passed": result.replay.passed,
+                "publication_max_seq": result.preparation.publication_max_seq_after,
+                "published_envelopes_removed": (
+                    result.preparation.published_envelope_count_before
+                    - result.preparation.published_envelope_count_after
+                ),
+                "restore_preparation_passed": result.preparation.passed,
             },
             sort_keys=True,
         )

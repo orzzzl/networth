@@ -12,6 +12,8 @@ from typing import cast
 from networth.storage import migrate
 
 ARCHIVE_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
+ARCHIVE_SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+ARCHIVE_ID_NOTICE_PREFIX = "backup-ssh-dispatch: archive_id="
 VERIFIED = "VERIFIED"
 FAILED = "FAILED"
 VERDICTS = frozenset({VERIFIED, FAILED})
@@ -142,6 +144,20 @@ class BackupStateStore:
                 manifest_sha256,
             ),
         )
+
+    def archive_id_for_transfer(self, *, archive_sha256: str, byte_size: int) -> str:
+        """Identify the exact current file from VPS-side transfer bookkeeping."""
+
+        if ARCHIVE_SHA256_RE.fullmatch(archive_sha256) is None or byte_size < 0:
+            raise BackupStateError("archive transfer identity is malformed")
+        rows = self._connection.execute(
+            "SELECT archive_id FROM backup_archive "
+            "WHERE archive_sha256 = ? AND byte_size = ? LIMIT 2",
+            (archive_sha256, byte_size),
+        ).fetchall()
+        if len(rows) != 1 or not isinstance(rows[0][0], str):
+            raise BackupStateError("served archive has no unique bookkeeping row")
+        return validate_archive_id(rows[0][0])
 
     def record_pull(
         self,
