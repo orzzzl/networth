@@ -4774,6 +4774,15 @@ device. All of it is gone with the third party it protected.)*
    security upgrades, and a dedicated unprivileged service user that owns the
    database and the secrets.
 
+   > **This substep is no longer the owner's, and it is `DONE`** *(rev 22,
+   > 2026-09-07, by owner instruction — see this section's membership rule
+   > above)*. It was run and verified on 2026-09-05; `host-state-1.txt` and
+   > `host-state-2.txt` came back byte-identical. It is kept here as the record
+   > of what was done to the host, **not as an instruction to him**. The script
+   > never touches `PermitRootLogin`, so the lockout risk that would have put a
+   > human at this keyboard was already designed out — which is exactly why it
+   > failed the membership test. Task `28` owns it, assigned to claude.
+
    **The script is `scripts/provision-host.sh`** *(rev 19, task `28`)* — one
    file, no dependency beyond the base system, so no checkout of this repository
    ever lands on the host that holds the credentials. It runs **twice**, and the
