@@ -70,7 +70,7 @@ that row. He caught it, not us.)
 | 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **DONE** (#36, 2026-09-02) |
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **DONE** (#29, 2026-09-01) |
 | 05a | `TokenStore` | 02 | **claude** | codex | **DONE** (#21, 2026-09-05) |
-| 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **READY** |
+| 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **WIP** (claimed 2026-09-05) |
 | 00a | Generate the constrained backup keypair; pin its `command=` | 03a | **codex** | claude | BLOCKED (03a) |
 | 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b | **codex** (the wire and the records) / **owner** (runs §19 step 1c) | claude | BLOCKED (03a, 00b) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | BLOCKED (00c) |
@@ -92,13 +92,13 @@ that row. He caught it, not us.)
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 10 | Item health poller | 04, 05 | **codex** | claude | **DONE** (#38, 2026-09-02) |
-| 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | **READY** |
+| 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | **WIP** (PR #41) |
 | 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | BLOCKED (11) |
-| 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **READY** |
-| 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED |
+| 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
+| 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED (12) |
 | 15 | Alerts: payload-carried delivery | 11 | **codex** | claude | BLOCKED (11) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 28 | **codex** | claude | BLOCKED |
-| 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | BLOCKED |
+| 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | BLOCKED (15) |
 
 ### Phase 4 — getting the number onto the phone
 
@@ -290,10 +290,10 @@ owner answers `#28`, he installs `00c`, or he runs step 3.1.
 `04` landed the same day (#36), which freed `26a` and `13` and ended that idle window; the
 paragraph above is kept as the record of it, not as current state.
 
-Still outstanding, in the order they would land: the owner answers `#28` (frees `05a`), the
-owner installs `00c` (with `05a`, frees `06`), and the owner runs
-`scripts/provision-host.sh` twice on `tokyo-exit` — `28`'s criteria (2) and (4), which free
-`16`, `20` and `00b`.
+Still outstanding, in the order they would land: the owner installs `00c` — now the *only*
+thing blocking `06`, since `05a` merged — and the owner runs `scripts/provision-host.sh`
+twice on `tokyo-exit`, `28`'s criteria (2) and (4), which free `16`, `20` and `00b`. He
+adjudicated `#28` on 2026-09-05 and it is closed, so it is no longer on this list.
 
 That last one is new, and it is here because it just became true rather than because it was
 forgotten: `28`'s entry promised the owner would be asked *only* once the script existed —
