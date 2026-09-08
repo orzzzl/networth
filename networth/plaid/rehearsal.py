@@ -159,7 +159,7 @@ class RehearsalClient(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class RehearsalOutcome:
-    """What one full Link -> exchange -> fetch cycle established.
+    """What one full item -> exchange -> fetch cycle established.
 
     ``institution_id``, ``item_id`` and ``secret_ref`` are carried because the run is
     not reconstructable without them, and **redacted from the repr** because this
@@ -188,7 +188,12 @@ class RehearsalOutcome:
 
 
 class SandboxRehearsal:
-    """One Link -> exchange -> fetch cycle, against Sandbox and nowhere else."""
+    """One item -> exchange -> fetch cycle, against Sandbox and nowhere else.
+
+    The item arrives from ``/sandbox/public_token/create``, Plaid's Link bypass —
+    see the module docstring for why calling that a Link would cost task ``06a``
+    its subject.
+    """
 
     def __init__(
         self,

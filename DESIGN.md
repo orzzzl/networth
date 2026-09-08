@@ -2166,6 +2166,78 @@ every weekend, and an alarm that cries wolf every Saturday is worse than no
 alarm at all. Cash accounts, which have no market calendar, use plain wall-clock 36h (the
 owner's threshold).
 
+#### What Sandbox actually returned — observed, not assumed (task `06`, 2026-09-08)
+
+Every clock above was written from Plaid's documentation. Task `06`'s acceptance
+criterion 2 exists because a document cannot answer whether a field arrives, so
+this is the run that asked. Commit `283d531`, executed on the sync host as the
+`networth` service user against `/etc/networth/plaid-sandbox.env`; institution
+discovered through `/institutions/get`, Item created through
+`/sandbox/public_token/create` with `user_good`/`pass_good` — Plaid's Link
+bypass, not a completed Link (that is `06a`'s).
+
+**`absent` and `null` are different answers and the table keeps them apart.**
+Absent means the field is not on the record at all — Plaid does not supply it for
+this product. Null means it is supplied and no record carried a value: an
+`UNKNOWN` age (R2) rather than a design constraint. Collapsing the two is the
+mistake this whole section exists to prevent, one layer down.
+
+| Response | Field | Observed |
+|---|---|---|
+| `/accounts/balance/get`, 14 accounts | `account_id`, `name` | `str` |
+| | `type`, `subtype` | `AccountType` / `AccountSubtype` — **SDK enums, not `str`** |
+| | `balances.current`, `.available`, `.limit` | `float` |
+| | `balances.iso_currency_code` | `str` |
+| | `balances.unofficial_currency_code` | `null` |
+| | **`balances.last_updated_datetime`** | **absent** |
+| `/investments/holdings/get`, 13 holdings | `account_id`, `security_id` | `str` |
+| | `quantity`, `institution_price`, `institution_value`, `cost_basis` | `float` |
+| | `iso_currency_code` | `str` |
+| | **`institution_price_as_of`** | **`date`** |
+| | **`institution_price_datetime`** | **null** |
+| same call, 13 securities | `security_id`, `ticker_symbol`, `name`, `type` | `str` |
+| | `is_cash_equivalent` | `bool` |
+| | `close_price` | `null` |
+| | **`close_price_as_of`** | **null** |
+
+Four consequences, in the order they will bite:
+
+- **The realtime-balance row's primary branch never runs in Sandbox.**
+  `balances.last_updated_datetime` is *absent*, so the `balance_mode: realtime`
+  clock falls through to `fetched_at` — the **F5** exception — on all 14
+  accounts. In Sandbox the exception is not the fallback, it is the only path.
+  So the branch that reads an institution-supplied balance timestamp has **no
+  Sandbox coverage available at all** and will meet its first real value in
+  Production. Its tests have to be fixture-driven on purpose, and that is a
+  statement about what Sandbox can prove, not a gap to close later.
+- **The holdings clock runs on its fallback, and the fallback is date-granular.**
+  `institution_price_datetime` is present-and-null on every holding, so the
+  minimum is taken over `institution_price_as_of` — which arrives as a Python
+  `date`, with no time component to misread. §8.1 already treats an
+  exactly-midnight `institution_price_datetime` as date-granular; this is the
+  sibling case, where the preferred field exists on the model and is simply never
+  populated. Both collapse to the same handling, which is the outcome to want.
+- **Securities carry no close price in Sandbox**: `close_price` and
+  `close_price_as_of` are both present-and-null across all 13. The holdings clock
+  does not read them (it uses institution price), so nothing here breaks — but
+  anything that later reaches for a close price as a cross-check must treat its
+  absence as Sandbox's normal state rather than as a fault to alarm on.
+- **`type` and `subtype` cross the seam as SDK enums.** Every other field above
+  is a builtin; those two are `plaid.model` classes. §5 forbids raw SDK objects
+  past `PlaidClient`, so whoever persists an account converts them. Recorded as an
+  observation rather than a defect: nothing persists accounts yet, and the point
+  of writing it down is that the conversion is not discovered by a `TypeError` in
+  the task that first does.
+
+**What this run did not observe, stated as the gap it is.** The holdings row
+above takes the *older* of the price clock and
+`status.investments.last_successful_update`, which comes from `/item/get` — a
+call task `05` implemented and this rehearsal does not make. The four fields
+§8.1 names on the **response bodies** are answered above; the item-status clock
+is not, so the "older of" comparison itself is still unexercised. Whether to
+extend the rehearsal or leave that to `07` is raised in `06`'s review rather than
+settled here — it is a scope call on the task, not one of §18's owner decisions.
+
 ### 8.2 Axis A: connection state, per Item
 
 ```
@@ -3862,8 +3934,18 @@ path bug turns into "it worked on my machine" for a file holding access tokens.)
   differs between the two files was wrong.)* Same directory,
   same mode, same owner-installs-it rule — and, like the Production secret, **no
   agent may see it**: agents write the command, the owner runs it.
-- `/etc/networth/plaid-items.json` — `{item_id: access_token}`, Production.
-  Sandbox Items live in `plaid-items-sandbox.json`, never the same file.
+- `/etc/networth/plaid-items.json` — Production. **Despite the name this is a
+  token-store *directory*, not a JSON file**: `TokenStore` creates it `700` and
+  writes one JSON record per ref inside it, named `{kind}.{flow_id}.json`
+  (`access-token.<flow_id>.json`), each `600`. The lock sits beside it at
+  `/etc/networth/.tokenstore.lock`. Sandbox Items live in
+  `plaid-items-sandbox.json`, never the same tree. *(Rev 18: the on-disk shape
+  became visible in task `06`'s live Sandbox run on 2026-09-08, and the old
+  description here — `{item_id: access_token}` — described neither the layout nor
+  the indirection. **The paths are deliberately kept as they are**: `03a`'s backup
+  set already names them, so renaming to match would move a path two other tasks
+  depend on in order to fix a sentence. The sentence was the thing that was
+  wrong.)*
 - `/etc/networth/networth-payload.key` — the payload key (§6.1). **One key, no
   tokens**: tailnet membership replaces the bearer credential and the payload key
   *is* the read credential (§6.3.1).

@@ -455,7 +455,13 @@ class PlaidClient:
     def sandbox_public_token_create(
         self, *, institution_id: str, products: Sequence[str], username: str, password: str
     ) -> str:
-        """``/sandbox/public_token/create`` — a completed Link, without a browser.
+        """``/sandbox/public_token/create`` — Plaid's documented *Link bypass*.
+
+        It mints a fresh Sandbox Item and a ``public_token`` with **the Link UI
+        never opening at all**, so what comes back is not a completed Link and
+        must not be recorded as one. A real Hosted Link is task ``06a``'s to
+        prove; describing the bypass as the thing it bypasses would leave ``06a``
+        verifying something a transcript had already claimed.
 
         **Refuses outside Sandbox, before the request object is built.** The
         endpoint does not exist on ``production.plaid.com``, so this guard is
