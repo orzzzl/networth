@@ -5,16 +5,20 @@ exception to learn that an Item needs re-authentication."""
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import urllib3.exceptions
 from plaid.exceptions import ApiException, ApiTypeError, ApiValueError
+from plaid.model_utils import model_to_dict
 
-from networth.plaid.client import PlaidClient
+from networth.plaid.client import PlaidCallError, PlaidClient
 from networth.plaid.environment import PlaidCredentials, PlaidEnvironment
 from networth.plaid.errors import ItemState
+from tests.fake_plaid import ACCESS_TOKEN, INSTITUTION, ITEM_ID, FakeSandboxApi
 
 CREDENTIALS = PlaidCredentials(
     client_id="synthetic-client",
@@ -87,6 +91,14 @@ class ResponseWithNoItem:
 
 
 class FakeApi:
+    """The item-status fake. Task 05's tests need ``item_get`` and nothing else.
+
+    The other five methods exist because the SDK protocol has six and this object
+    stands in for the SDK; each one raises, so a test that reaches an endpoint it
+    did not mean to fails instead of being quietly answered. (The Link tests use
+    ``tests.fake_plaid.FakeSandboxApi``, which is the mirror image of this.)
+    """
+
     def __init__(self, outcome: Any) -> None:
         self.outcome = outcome
         self.calls: list[str] = []
@@ -96,6 +108,21 @@ class FakeApi:
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
+
+    def institutions_get(self, institutions_get_request: Any) -> Any:
+        raise AssertionError("an item-status test must not call /institutions/get")
+
+    def sandbox_public_token_create(self, sandbox_public_token_create_request: Any) -> Any:
+        raise AssertionError("an item-status test must not call /sandbox/public_token/create")
+
+    def item_public_token_exchange(self, item_public_token_exchange_request: Any) -> Any:
+        raise AssertionError("an item-status test must not call /item/public_token/exchange")
+
+    def accounts_balance_get(self, accounts_balance_get_request: Any) -> Any:
+        raise AssertionError("an item-status test must not call /accounts/balance/get")
+
+    def investments_holdings_get(self, investments_holdings_get_request: Any) -> Any:
+        raise AssertionError("an item-status test must not call /investments/holdings/get")
 
 
 def client_for(outcome: Any) -> tuple[PlaidClient, FakeApi]:
@@ -390,3 +417,278 @@ def test_real_api_is_built_against_the_selected_host() -> None:
         client = PlaidClient(credentials)
         configuration = client._api.api_client.configuration  # type: ignore[attr-defined]
         assert configuration.host == environment.api_host
+
+
+# --- The Link, exchange and fetch calls (task 06) ------------------------------
+#
+# They live on this seam because DESIGN.md section 5 says the SDK stops here, and
+# because the redaction, the environment pairing and the conversion into our own
+# types are all properties of the seam rather than of any one caller.
+
+PRODUCTION_CREDENTIALS = PlaidCredentials(
+    client_id="synthetic-client",
+    secret="synthetic-secret",
+    environment=PlaidEnvironment.PRODUCTION,
+)
+
+_HOLDING_FIELDS = ("security_id", "institution_price_as_of")
+_SECURITY_FIELDS = ("security_id", "close_price_as_of")
+
+
+def sandbox_client(**overrides: Any) -> tuple[PlaidClient, FakeSandboxApi]:
+    api = FakeSandboxApi(**overrides)
+    return PlaidClient(CREDENTIALS, api=api), api
+
+
+def test_the_sandbox_only_endpoint_refuses_production_before_building_a_request() -> None:
+    """F2: the master credential must not even be *attached* to this attempt."""
+    api = FakeSandboxApi()
+    client = PlaidClient(PRODUCTION_CREDENTIALS, api=api)
+
+    with pytest.raises(PlaidCallError, match="refuses to run against 'production'"):
+        client.sandbox_public_token_create(
+            institution_id="ins_x", products=("investments",), username="u", password="p"
+        )
+
+    assert api.requests == []
+
+
+def test_an_institution_is_discovered_with_the_products_the_caller_asked_for() -> None:
+    client, api = sandbox_client()
+
+    institution_id = client.first_institution_supporting(
+        products=("investments",), country_codes=("US",)
+    )
+
+    assert institution_id == INSTITUTION
+    asked = api.request_for("institutions_get")
+    assert [str(p.value) for p in asked.options.products] == ["investments"]
+    assert [str(c.value) for c in asked.country_codes] == ["US"]
+
+
+def test_the_institutions_request_puts_products_where_plaid_defines_it() -> None:
+    """The regression test for the first live Sandbox failure (task 06, HTTP 400).
+
+    The previous version of the test above asserted ``request.products`` — the
+    same undeclared attribute the code had just set. ``InstitutionsGetRequest``
+    permits arbitrary attributes (``additional_properties_type``), so setting and
+    reading one back always agrees with itself: the assertion could not fail, and
+    it certified a request Plaid rejects.
+
+    So this asserts the **serialised** request instead, which is the only form
+    Plaid is given, and it asserts the negative — ``products`` is not a top-level
+    key — because that, not the presence of ``options``, is what produced the 400.
+    """
+    client, api = sandbox_client()
+
+    client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+    wire = model_to_dict(api.request_for("institutions_get"), serialize=True)
+
+    assert wire["options"]["products"] == ["investments"]
+    assert "products" not in wire, (
+        "products at the top level is what /institutions/get answers HTTP 400 to; "
+        f"the serialised request was {wire}"
+    )
+
+
+def test_an_empty_institution_list_is_a_failure_not_an_empty_string() -> None:
+    client, _ = sandbox_client(institutions_get=SimpleNamespace(institutions=[]))
+
+    with pytest.raises(PlaidCallError, match="no institution supporting"):
+        client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+
+def test_an_institution_without_an_id_is_a_failure() -> None:
+    client, _ = sandbox_client(
+        institutions_get=SimpleNamespace(institutions=[SimpleNamespace(institution_id=None)])
+    )
+
+    with pytest.raises(PlaidCallError, match="no institution_id"):
+        client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+
+def raising_sandbox_client(exc: Exception) -> PlaidClient:
+    def boom(_request: Any) -> Any:
+        raise exc
+
+    return PlaidClient(CREDENTIALS, api=SimpleNamespace(institutions_get=boom))
+
+
+def test_an_http_error_names_the_request_id_it_tells_the_reader_to_look_up() -> None:
+    """The message has always said "read it from the dashboard by request id" and
+    never printed one, so the first live HTTP 400 was undiagnosable (task 06)."""
+    client = raising_sandbox_client(
+        api_exception(400, json.dumps({"request_id": "abc123XYZ", "error_code": "INVALID_FIELD"}))
+    )
+
+    with pytest.raises(PlaidCallError) as caught:
+        client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+    assert "abc123XYZ" in str(caught.value)
+    assert "HTTP 400" in str(caught.value)
+
+
+def test_a_body_with_no_usable_request_id_says_so_instead_of_inventing_one() -> None:
+    for body in (None, "", "not json at all", "[]", json.dumps({"error_code": "INVALID_FIELD"})):
+        client = raising_sandbox_client(api_exception(400, body))
+
+        with pytest.raises(PlaidCallError) as caught:
+            client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+        assert "carried no request id" in str(caught.value), body
+
+
+def test_nothing_but_a_plain_token_escapes_the_body_the_error_refuses_to_show() -> None:
+    """The request id is the single field lifted out of a redacted body, so it is
+    validated rather than trusted: a body is attacker-shaped in the general case,
+    and this string is printed, logged and pasted into PRs."""
+    smuggled = (
+        "secret sandbox-abc123 leaked",
+        "x" * 65,
+        "has\nnewline",
+        {"nested": "object"},
+        1234,
+        None,
+    )
+    for reference in smuggled:
+        client = raising_sandbox_client(api_exception(400, json.dumps({"request_id": reference})))
+
+        with pytest.raises(PlaidCallError) as caught:
+            client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+        message = str(caught.value)
+        assert "carried no request id" in message, reference
+        assert "leaked" not in message
+        assert "nested" not in message
+
+
+def test_a_public_token_that_did_not_come_back_is_a_failure() -> None:
+    client, _ = sandbox_client(
+        sandbox_public_token_create=SimpleNamespace(public_token=None),
+    )
+
+    with pytest.raises(PlaidCallError, match="no public_token"):
+        client.sandbox_public_token_create(
+            institution_id="ins_x", products=("investments",), username="u", password="p"
+        )
+
+
+def test_the_exchange_returns_our_own_type_with_both_halves() -> None:
+    client, _ = sandbox_client()
+
+    item = client.item_public_token_exchange("public-token")
+
+    assert (item.access_token, item.item_id) == (ACCESS_TOKEN, ITEM_ID)
+    assert type(item).__module__.startswith("networth.")
+
+
+def test_an_exchange_missing_either_half_is_refused() -> None:
+    for response in (
+        SimpleNamespace(access_token="a", item_id=None),
+        SimpleNamespace(access_token=None, item_id="i"),
+    ):
+        client, _ = sandbox_client(item_public_token_exchange=response)
+        with pytest.raises(PlaidCallError, match="no access_token or no item_id"):
+            client.item_public_token_exchange("public-token")
+
+
+def test_balances_cross_the_seam_as_observations_and_not_as_figures() -> None:
+    client, _ = sandbox_client()
+
+    accounts = client.accounts_balance_get("access", fields=("account_id", "balances.current"))
+
+    assert accounts.count == 1
+    assert {f.path: f.note for f in accounts.fields} == {
+        "account_id": "str",
+        "balances.current": "float",
+    }
+    assert "1000.0" not in repr(accounts)
+
+
+def test_holdings_and_securities_are_observed_separately() -> None:
+    """The source clock is split across the two lists (§8.1), so both are read."""
+    client, _ = sandbox_client()
+
+    observed = client.investments_holdings_get(
+        "access", holding_fields=_HOLDING_FIELDS, security_fields=_SECURITY_FIELDS
+    )
+
+    assert observed.holdings.name == "holdings"
+    assert observed.securities.name == "securities"
+    assert {f.path: f.note for f in observed.holdings.fields}["institution_price_as_of"] == "null"
+    assert {f.path: f.note for f in observed.securities.fields}["close_price_as_of"] == "null"
+
+
+def test_a_response_with_no_lists_at_all_is_zero_records_not_a_crash() -> None:
+    client, _ = sandbox_client(investments_holdings_get=SimpleNamespace())
+
+    observed = client.investments_holdings_get(
+        "access", holding_fields=_HOLDING_FIELDS, security_fields=_SECURITY_FIELDS
+    )
+
+    assert (observed.holdings.count, observed.securities.count) == (0, 0)
+
+
+def test_every_link_call_redacts_the_plaid_error_body() -> None:
+    """One assertion per call, because the redaction is per-call plumbing."""
+    exc = api_exception(400, '{"error_code":"INVALID_FIELD","secret":"never-print-me"}')
+    cases: list[tuple[str, Callable[[PlaidClient], object], dict[str, Any]]] = [
+        (
+            "institutions/get",
+            lambda c: c.first_institution_supporting(
+                products=("investments",), country_codes=("US",)
+            ),
+            {"institutions_get": exc},
+        ),
+        (
+            "sandbox/public_token/create",
+            lambda c: c.sandbox_public_token_create(
+                institution_id="ins_x", products=("investments",), username="u", password="p"
+            ),
+            {"sandbox_public_token_create": exc},
+        ),
+        (
+            "item/public_token/exchange",
+            lambda c: c.item_public_token_exchange("public-token"),
+            {"item_public_token_exchange": exc},
+        ),
+        (
+            "accounts/balance/get",
+            lambda c: c.accounts_balance_get("access", fields=("account_id",)),
+            {"accounts_balance_get": exc},
+        ),
+        (
+            "investments/holdings/get",
+            lambda c: c.investments_holdings_get(
+                "access", holding_fields=_HOLDING_FIELDS, security_fields=_SECURITY_FIELDS
+            ),
+            {"investments_holdings_get": exc},
+        ),
+    ]
+    for step, call, overrides in cases:
+        client, _ = sandbox_client(**overrides)
+        with pytest.raises(PlaidCallError) as raised:
+            call(client)
+        message = str(raised.value)
+        assert message.startswith(f"{step} failed: Plaid returned HTTP 400"), message
+        assert "never-print-me" not in message
+        assert "INVALID_FIELD" not in message
+
+
+def test_a_url_we_built_wrong_still_crashes_rather_than_reporting_a_call_failure() -> None:
+    """The one urllib3 member that is our bug — same carve-out `item_get` documents."""
+    client, _ = sandbox_client(
+        accounts_balance_get=urllib3.exceptions.LocationValueError("no host set")
+    )
+
+    with pytest.raises(urllib3.exceptions.LocationValueError):
+        client.accounts_balance_get("access", fields=("account_id",))
+
+
+def test_a_request_we_built_wrong_is_not_swallowed_as_a_call_failure() -> None:
+    """`ApiTypeError`/`ApiValueError` mean we built a bad request; they must crash."""
+    for exc in (ApiTypeError("bad type"), ApiValueError("bad value")):
+        client, _ = sandbox_client(accounts_balance_get=exc)
+        with pytest.raises((ApiTypeError, ApiValueError)):
+            client.accounts_balance_get("access", fields=("account_id",))

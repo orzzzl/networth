@@ -74,7 +74,7 @@ class Paths:
 def paths_for(
     environment: PlaidEnvironment,
     *,
-    secrets_dir: Path = SECRETS_DIR,
+    secrets_dir: Path | None = None,
     data_dir: Path | None = None,
 ) -> Paths:
     """The three paths section 15 pairs with ``environment``.
@@ -84,8 +84,14 @@ def paths_for(
     reads only its own directory and never falls back to the other's, because
     that fallback is how a path bug becomes "it worked on my machine" for a file
     holding access tokens (section 15, ``AGENTS.md`` rule 1).
+
+    ``None`` means :data:`SECRETS_DIR`, read **at call time** rather than bound
+    when this function was defined. That is not a nicety: an early-bound default
+    cannot be replaced, so the only way to exercise a caller that does not pass
+    the argument would be to let it read the real ``/etc/networth`` (task 06).
     """
     root = data_dir if data_dir is not None else Path.home() / DATA_DIR_NAME
+    secrets_dir = secrets_dir if secrets_dir is not None else SECRETS_DIR
     if environment is PlaidEnvironment.SANDBOX:
         return Paths(
             credentials=secrets_dir / "plaid-sandbox.env",
@@ -159,7 +165,7 @@ def selected_environment(env: dict[str, str] | None = None) -> PlaidEnvironment:
 def load_credentials(
     environment: PlaidEnvironment,
     *,
-    secrets_dir: Path = SECRETS_DIR,
+    secrets_dir: Path | None = None,
 ) -> PlaidCredentials:
     """Load the credential file this environment selects, and check it agrees.
 

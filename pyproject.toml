@@ -17,6 +17,16 @@ dev = [
     "ruff>=0.14",
     "mypy>=1.18",
 ]
+# Not used by this project's own build (hatchling, resolved by uv from the lock).
+# This group exists so that the *sandbox rehearsal runner* can pin the backend that
+# builds `plaid-python`, which ships an sdist and no wheel: without it, installing
+# the locked runtime on the host still fetches an unpinned setuptools inside pip's
+# build isolation, and "the reviewed commit" would be executing bytes nobody pinned.
+# See `scripts/sandbox-rehearsal.sh` and task 06.
+build = [
+    "setuptools>=80",
+    "wheel>=0.45",
+]
 
 [build-system]
 requires = ["hatchling"]

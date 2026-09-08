@@ -74,7 +74,7 @@ that row. He caught it, not us.)
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **DONE** (#46, 2026-09-07) |
 | 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **DONE** (#50, 2026-09-07) |
 | 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (00b-escrow, 16) |
-| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **READY** |
+| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **WIP** (claimed 2026-09-07) |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | BLOCKED (06) |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
@@ -1114,11 +1114,26 @@ exists.
 
 **Acceptance:**
 
-- [ ] A Sandbox Link completes with `user_good`/`pass_good`, the `public_token` is
-      exchanged, and holdings and balances are fetched.
+- [ ] A Sandbox Item is created with `user_good`/`pass_good` through
+      `/sandbox/public_token/create`, the `public_token` is exchanged, and holdings and
+      balances are fetched.
+
+      *This criterion used to read "a Sandbox Link completes". It was wrong, and the
+      correction matters more than the wording: Plaid documents that endpoint under
+      **"Bypassing Link"** and Sandbox Studio labels it **"Skip Link"** — it mints an
+      Item with no Link UI at all. Recording that as a completed Link would have let
+      `06` claim the one thing `06a` exists to prove, and `06a` would then have been
+      re-verifying a transcript rather than a browser. `06` still walks everything
+      after the `public_token` — exchange, `TokenStore`-before-`item` ordering, fetch —
+      which is the part Production must not be the first to try. (Codex, PR #49
+      pre-execution review, 2026-09-07.)*
 - [ ] **The fetched response is inspected for the fields net worth actually needs**, and
       what is present is recorded in `DESIGN.md` as an observation. This is one of the
-      empirical questions no document could answer.
+      empirical questions no document could answer. **All four of §8.1's source clocks
+      are observed**, including the two it reaches for first and that Plaid documents as
+      select-institution only — `balances.last_updated_datetime` and
+      `institution_price_datetime` — since a report that measured only the `*_as_of`
+      pair would show a complete source clock while the preferred fields went unmeasured.
 - [ ] `NETWORTH_ENV` selects the Sandbox credential file, items file and **database**
       together; a rehearsal **physically cannot** write into the Production history.
 - [ ] Starting with a Sandbox credential in a file labelled production is a **startup
