@@ -1,9 +1,17 @@
-"""The Sandbox rehearsal: Link, exchange, fetch — and what Sandbox actually returned.
+"""The Sandbox rehearsal: item, exchange, fetch — and what Sandbox actually returned.
 
 Task ``06``. Sandbox is free and unlimited; Production slots are permanent and are
 spent by a successful **Link**, not by the exchange (**F2a**). That asymmetry is the
 whole reason this rehearsal exists: Sandbox is the only place the boundary can be
 walked into without spending something that never comes back.
+
+**It does not run Link, and the distinction is load-bearing.**
+``/sandbox/public_token/create`` is documented by Plaid under *"Bypassing Link"* — it
+returns a ``public_token`` for a fresh Sandbox Item without the Link UI opening at
+all. What is rehearsed here is therefore every step *after* a ``public_token``
+exists. A completed **Hosted Link** is task ``06a``'s to prove; ``06``'s value is that
+the exchange, the ``TokenStore`` ordering and the fetch are walked before Production,
+and that is true whether or not a browser was involved.
 
 **This is orchestration, not a second Plaid client.** ``DESIGN.md`` §5 puts every raw
 endpoint call on :class:`~networth.plaid.client.PlaidClient`; what lives here is the
@@ -46,11 +54,19 @@ from networth.plaid.environment import PlaidCredentials, PlaidEnvironment
 from networth.plaid.observation import RecordSet
 from networth.tokenstore import SecretKind, TokenStore, new_flow_id
 
-# The Sandbox test user. Plaid's Link UI accepts these at any Sandbox institution,
-# and `/sandbox/public_token/create` takes the same pair through `options` — which is
-# how a rehearsal completes a Link with `user_good`/`pass_good` without a human at a
-# browser. They are not credentials: they are documented constants that unlock a fake
-# bank, and they are worthless against `production.plaid.com`.
+# The Sandbox test user. Plaid's Link UI accepts these at any Sandbox institution, and
+# `/sandbox/public_token/create` takes the same pair through `options`.
+#
+# **It does not run Link.** Plaid files that endpoint under "Bypassing Link", and
+# Sandbox Studio labels it "Skip Link": it mints a Sandbox Item and a `public_token`
+# without the Link UI ever opening. So what this module rehearses is everything *after*
+# the token exists — exchange, `TokenStore` ordering, fetch, and what the response
+# contains. Proving a real Hosted Link completes is task `06a`, which is the row that
+# owns it. Saying "Link completed" here would have recorded a bypass as the thing it
+# bypasses. (Codex, PR #49 pre-execution review, 2026-09-07.)
+#
+# They are not credentials: they are documented constants that unlock a fake bank, and
+# they are worthless against `production.plaid.com`.
 SANDBOX_USERNAME = "user_good"
 SANDBOX_PASSWORD = "pass_good"
 
@@ -58,9 +74,26 @@ SANDBOX_PASSWORD = "pass_good"
 REQUIRED_PRODUCTS = ("investments",)
 COUNTRY_CODES = ("US",)
 
-# The fields §8.1 and §10 actually need, as dotted paths into each response. The two
-# `*_as_of` entries are the source clock — the reason these lists exist at all, since
-# §8.1 refuses to derive an age from a call's success.
+# The fields §8.1 and §10 actually need, as dotted paths into each response. The
+# source-clock entries are the reason these lists exist at all, since §8.1 refuses to
+# derive an age from a call's success.
+#
+# §8.1's table names **four** clocks, not two, and the two extra ones are the fields
+# most likely to be absent — which is exactly why a rehearsal has to look for them:
+#
+#   * `balances.last_updated_datetime` is the *entire* source clock for a realtime
+#     cash balance. Plaid documents it as appearing "only when the institution is
+#     `ins_128026`", so §8.1's fallback is `fetched_at` and every other account sits
+#     at `UNKNOWN` under I5. Whether Sandbox supplies it decides how much of §8.1's
+#     realtime branch task `12` can ever exercise before Production.
+#   * `institution_price_datetime` is *preferred over* `institution_price_as_of` for
+#     holdings, and is likewise documented as select-institution only. §8.1 also warns
+#     that it "may contain default time values (such as 00:00:00)", so its presence
+#     and type is what tells task `14` whether it is reading an instant or a date.
+#
+# Observing only the `*_as_of` pair would have reported a complete source clock while
+# the two fields §8.1 reaches for *first* went unmeasured. (Codex caught that omission
+# in the PR #49 pre-execution review, 2026-09-07.)
 ACCOUNT_FIELDS = (
     "account_id",
     "name",
@@ -71,6 +104,7 @@ ACCOUNT_FIELDS = (
     "balances.limit",
     "balances.iso_currency_code",
     "balances.unofficial_currency_code",
+    "balances.last_updated_datetime",
 )
 HOLDING_FIELDS = (
     "account_id",
@@ -81,6 +115,7 @@ HOLDING_FIELDS = (
     "cost_basis",
     "iso_currency_code",
     "institution_price_as_of",
+    "institution_price_datetime",
 )
 SECURITY_FIELDS = (
     "security_id",

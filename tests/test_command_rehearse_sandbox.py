@@ -139,6 +139,32 @@ def test_a_run_reports_every_field_and_no_value(
     assert ACCESS_TOKEN not in out
 
 
+def test_the_report_does_not_claim_a_link_was_completed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`/sandbox/public_token/create` is Plaid's documented Link *bypass*.
+
+    Plaid files it under "Bypassing Link" and Sandbox Studio calls it "Skip Link": no
+    Link UI opens. The old output said ``link completed``, which would have let `06`
+    record the one thing task `06a` exists to prove — and `06a` would then be checking
+    a browser against a transcript that already claimed the answer. The transcript is
+    the artefact that outlives the run, so it has to say what actually happened.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    monkeypatch.setattr(rehearse_sandbox, "SandboxRehearsal", _rehearsal_over_a_fake_sdk)
+
+    assert rehearse_sandbox.run(_args()) == 0
+
+    out = capsys.readouterr().out
+    assert "link          completed" not in out
+    assert "/sandbox/public_token/create" in out
+    assert "Link bypass, not a Link run" in out
+    assert "task 06a" in out
+    # The test user is still named — the criterion asks for it — but as the thing
+    # handed to the bypass endpoint rather than as evidence of a Link session.
+    assert "user_good/pass_good" in out
+
+
 def test_the_verb_is_discovered_by_the_cli() -> None:
     """Auto-discovery is the contract (task 02): a file is a verb, with no list."""
     assert "rehearse-sandbox" in discover()

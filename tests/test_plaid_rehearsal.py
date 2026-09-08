@@ -23,8 +23,11 @@ from networth.plaid.client import ExchangedItem, HoldingsObservation, PlaidCallE
 from networth.plaid.environment import PlaidCredentials, PlaidEnvironment, paths_for
 from networth.plaid.observation import RecordSet, record_set
 from networth.plaid.rehearsal import (
+    ACCOUNT_FIELDS,
+    HOLDING_FIELDS,
     SANDBOX_PASSWORD,
     SANDBOX_USERNAME,
+    SECURITY_FIELDS,
     RehearsalError,
     SandboxRehearsal,
 )
@@ -145,6 +148,47 @@ def test_observations_record_the_type_that_decides_whether_money_is_a_float(
     balances = {o.path: o for o in outcome.accounts.fields}
     assert balances["balances.current"].type_name == "float"
     assert balances["balances.available"].note == "null"
+
+
+def test_every_source_clock_section_8_1_names_is_asked_for(tmp_path: Path) -> None:
+    """§8.1's table names four clocks; observing two of them is not observing it.
+
+    The two below are the ones §8.1 reaches for *first* — it prefers
+    ``institution_price_datetime`` over ``institution_price_as_of``, and a realtime
+    cash balance has no other clock than ``balances.last_updated_datetime``. Both are
+    documented by Plaid as select-institution only, which is exactly why a rehearsal
+    has to look: their absence is a finding for tasks ``12`` and ``14``, and a report
+    that never asked would have shown a complete source clock instead.
+    """
+    asked = set(ACCOUNT_FIELDS) | set(HOLDING_FIELDS) | set(SECURITY_FIELDS)
+
+    assert {
+        "balances.last_updated_datetime",
+        "institution_price_datetime",
+        "institution_price_as_of",
+        "close_price_as_of",
+    } <= asked
+
+
+def test_the_preferred_source_clocks_are_reported_when_a_response_supplies_them(
+    tmp_path: Path,
+) -> None:
+    """Asking is half of it: the observation has to reach the report as present.
+
+    Distinguishes the two answers the live run exists to tell apart — ``absent``
+    (Plaid does not supply the field) from a real type. At the head codex reviewed,
+    neither path was requested, so neither observation existed at all.
+    """
+    outcome = _rehearsal(tmp_path, FakeSandboxApi()).run()
+
+    accounts = {o.path: o for o in outcome.accounts.fields}
+    holdings = {o.path: o for o in outcome.holdings.fields}
+
+    assert accounts["balances.last_updated_datetime"].note == "datetime"
+    assert holdings["institution_price_datetime"].note == "datetime"
+    # The fallbacks stay observable in their own right: §8.1 uses `*_as_of` only when
+    # the preferred clock is missing, so "which one answered" is itself the finding.
+    assert holdings["institution_price_as_of"].note == "null"
 
 
 def test_the_outcome_never_renders_an_item_id_an_institution_or_a_secret_ref(

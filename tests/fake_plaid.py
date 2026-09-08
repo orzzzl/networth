@@ -12,6 +12,7 @@ per call — including with an exception instance, which is raised instead.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -37,6 +38,13 @@ def _accounts_response() -> Any:
                     limit=None,
                     iso_currency_code="USD",
                     unofficial_currency_code=None,
+                    # §8.1's realtime-balance source clock. Supplied here precisely
+                    # because Plaid documents it as appearing "only when the
+                    # institution is `ins_128026`": a fake that omitted it could not
+                    # tell "the rehearsal never looked" from "Sandbox does not send
+                    # it", and those are the two answers the live run has to
+                    # distinguish.
+                    last_updated_datetime=datetime(2026, 9, 7, 14, 30, tzinfo=UTC),
                 ),
             )
         ]
@@ -55,6 +63,11 @@ def _holdings_response() -> Any:
                 cost_basis=900.0,
                 iso_currency_code="USD",
                 institution_price_as_of=None,
+                # The clock §8.1 *prefers* over `institution_price_as_of`, and the
+                # one it warns "may contain default time values (such as 00:00:00)".
+                # Present-and-typed here so the suite can pin that the rehearsal asks
+                # for it; whether Sandbox answers is the live run's question.
+                institution_price_datetime=datetime(2026, 9, 5, 21, 0, tzinfo=UTC),
             )
         ],
         securities=[

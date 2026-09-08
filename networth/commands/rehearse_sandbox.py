@@ -1,4 +1,4 @@
-"""``networth rehearse-sandbox`` — task ``06``'s Link → exchange → fetch, in Sandbox.
+"""``networth rehearse-sandbox`` — task ``06``'s item → exchange → fetch, in Sandbox.
 
 This verb is the wiring, and the wiring *is* two of the four acceptance criteria:
 ``NETWORTH_ENV`` selects the credential file, the items file and the database
@@ -105,7 +105,16 @@ def run(args: argparse.Namespace) -> int:
         print(f"rehearsal failed: {exc}", file=sys.stderr)
         return 2
 
-    print(f"link          completed as {SANDBOX_USERNAME}/{SANDBOX_PASSWORD}")
+    # Not "link completed". `/sandbox/public_token/create` is Plaid's documented
+    # *Link bypass* ("Skip Link" in Sandbox Studio): it mints an Item and a
+    # `public_token` with no Link UI. Printing a completed Link here would record the
+    # bypass as the thing it bypasses, and task `06a` — which proves a real Hosted
+    # Link — would then be verifying something the transcript already claimed.
+    print(
+        f"item          created via /sandbox/public_token/create as "
+        f"{SANDBOX_USERNAME}/{SANDBOX_PASSWORD} — Plaid's Link bypass, not a Link run"
+    )
+    print("link (real)   not exercised here; a completed Hosted Link is task 06a's")
     print("exchange      access_token stored through TokenStore before any item row")
     print()
     print(_report(outcome))

@@ -1114,11 +1114,26 @@ exists.
 
 **Acceptance:**
 
-- [ ] A Sandbox Link completes with `user_good`/`pass_good`, the `public_token` is
-      exchanged, and holdings and balances are fetched.
+- [ ] A Sandbox Item is created with `user_good`/`pass_good` through
+      `/sandbox/public_token/create`, the `public_token` is exchanged, and holdings and
+      balances are fetched.
+
+      *This criterion used to read "a Sandbox Link completes". It was wrong, and the
+      correction matters more than the wording: Plaid documents that endpoint under
+      **"Bypassing Link"** and Sandbox Studio labels it **"Skip Link"** — it mints an
+      Item with no Link UI at all. Recording that as a completed Link would have let
+      `06` claim the one thing `06a` exists to prove, and `06a` would then have been
+      re-verifying a transcript rather than a browser. `06` still walks everything
+      after the `public_token` — exchange, `TokenStore`-before-`item` ordering, fetch —
+      which is the part Production must not be the first to try. (Codex, PR #49
+      pre-execution review, 2026-09-07.)*
 - [ ] **The fetched response is inspected for the fields net worth actually needs**, and
       what is present is recorded in `DESIGN.md` as an observation. This is one of the
-      empirical questions no document could answer.
+      empirical questions no document could answer. **All four of §8.1's source clocks
+      are observed**, including the two it reaches for first and that Plaid documents as
+      select-institution only — `balances.last_updated_datetime` and
+      `institution_price_datetime` — since a report that measured only the `*_as_of`
+      pair would show a complete source clock while the preferred fields went unmeasured.
 - [ ] `NETWORTH_ENV` selects the Sandbox credential file, items file and **database**
       together; a rehearsal **physically cannot** write into the Production history.
 - [ ] Starting with a Sandbox credential in a file labelled production is a **startup
