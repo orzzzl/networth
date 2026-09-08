@@ -50,7 +50,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
-| 00b | Install the constrained backup SSH transport and archive key on the VPS | 00a, 28 | **codex** | claude | **WIP** (claimed 2026-09-07) |
+| 00b | Install the constrained backup SSH transport and archive key on the VPS | 00a, 28 | **codex** | claude | **DONE** (#51, 2026-09-08) |
 | 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | **READY (owner)** |
 | 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` — *owner: a secret no agent may ever see* | 00 | **owner** | — | **DONE** (2026-09-05) |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
