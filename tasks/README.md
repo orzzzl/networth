@@ -51,7 +51,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
 | 00b | Install the constrained backup SSH transport and archive key on the VPS | 00a, 28 | **codex** | claude | **DONE** (#51, 2026-09-08) |
-| 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | **READY (owner)** |
+| 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | **DONE** (2026-09-08) |
 | 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` — *owner: a secret no agent may ever see* | 00 | **owner** | — | **DONE** (2026-09-05) |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
 
@@ -73,7 +73,7 @@ that row. He caught it, not us.)
 | 05a | `TokenStore` | 02 | **claude** | codex | **DONE** (#21, 2026-09-05) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **DONE** (#46, 2026-09-07) |
 | 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **DONE** (#50, 2026-09-07) |
-| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (00b-escrow, 16) |
+| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (16) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **DONE** (#49, 2026-09-08) |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | **READY** |
 
@@ -82,7 +82,7 @@ that row. He caught it, not us.)
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | BLOCKED (06a) |
-| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a, 00b-escrow) |
+| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **WIP** (claimed 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
@@ -485,6 +485,11 @@ above — by copying it into a password manager or writing it down. This is the 
 §19 step 1c item 3. **The `networth backup attest-key` run that *records* the escrow stays
 in step 1c**, where the rest of that step is, and is `03a-live`'s owner half; `03a`'s
 criterion 2 is satisfied by that run, not by this one.
+
+**Completed 2026-09-08.** The owner directly attested that the recovery key is stored off
+both project machines somewhere no agent can read. No agent inspected, read, copied,
+printed, hashed, transmitted, or changed the key. The later `attest-key` database record
+remains part of `03a-live`; this row records the off-machine escrow fact it will attest to.
 
 **Say the cost of the split out loud.** The escrow used to be brought forward to ride along
 with the `authorized_keys` paste, on the reasoning that the key exists by then and a second
