@@ -1627,7 +1627,11 @@ codex-only row.
 - [ ] **The units are installed and observed running on the provisioned host, and that
       observation is what gates `08`** — `systemctl is-active` on each unit and the timer's
       next elapse, captured, not assumed. A unit file merged into the repo is not a unit
-      that runs.
+      that runs. The same live evidence owns §19 step 3.4's one-time post-install check:
+      the non-loopback, non-tailnet listener set still equals the reviewed baseline
+      (`sshd` on `0.0.0.0:22` and `[::]:22`), and `tailscale funnel status` shows no
+      Funnel. Task `20` supplies the tested listener classification and owns the
+      forever-after bind invariant; this row records it on the actual host.
 
 - [ ] Due-ness is computed from **stored state**, not from "did the timer fire" — the
       catch-up predicate survives downtime.
@@ -1772,15 +1776,21 @@ re-encrypting**.
 
 **Normative:** §16, §6.4, §6.3.1, §15.1.
 
+This task owns §19 step 3.4's forever-after bind invariant. Task `16`, which depends on
+this row, owns the one-time live post-install comparison against the approved public
+surface and records the Funnel state.
+
 **Acceptance — the bind test, which is the one mistake here that silently publishes a
 private endpoint:**
 
 - [ ] **Assert our listener's address**, not the absence of a string. "Not `0.0.0.0`" is
       passed by the public IPv4, passed by `[::]` while still serving the world, and
       passed by loopback-only while making the phone unable to connect at all.
-- [ ] **The test is split: "our socket" + "a baseline".** Measured read-only on the live
-      VPS, `sshd` listens on `0.0.0.0:22` **and** `[::]:22`, so a whole-table criterion
-      fails before networth exists.
+- [ ] **The automated test is split: "our socket" + "a baseline".** Measured read-only on
+      the live VPS before networth existed, `sshd` listens on `0.0.0.0:22` **and**
+      `[::]:22`, so a whole-table criterion that expects no public listeners fails before
+      networth exists. The invariant is instead that networth's socket is tailnet-only and
+      the public-listener set does not grow beyond that approved baseline.
 - [ ] **The node has two tailnet addresses, not one** — `TailscaleIPs` is an array and
       includes an IPv6 (`fd7a:115c:a1e0::1d37:f526`). "*The* node's Tailscale address" is
       ambiguous.

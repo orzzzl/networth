@@ -4474,7 +4474,7 @@ That test, applied:
 | Accepting legal terms; creating accounts | Capturing evidence, verifying criteria |
 | Putting a key somewhere outside these machines (escrow) | Anything an agent already has the access to do |
 
-**Four steps failed that test, and all four are marked in place below rather
+**Five steps failed that test, and all five are marked in place below rather
 than deleted** — a correction that lands only in a section preamble is not read
 by whoever is halfway through the procedure. Each carries a blockquote naming the
 task and agent it moved to; the surrounding text stays, because *what* gets
@@ -4499,9 +4499,14 @@ section moved.
   It is a reviewed install over the administration access agents already hold,
   and every live observation it requires is machine-readable. No owner decision
   or owner-only secret is involved.
+- **Step 3.4** (record and re-check the approved public surface) → tasks `16`
+  and `20`, **codex**. Task `16` owns the live post-install evidence; task `20`
+  owns the forever-after bind test. Both read machine state through access the
+  agents already hold, and the baseline was captured before networth existed.
 
 **What stays his, and why each one survives the test:** the Plaid account and its
-terms (step 1); the Sandbox and Production secrets, which no agent may ever see;
+terms (step 1); the Sandbox and Production secrets, which no agent may ever see
+(step 3.3);
 the **escrow** of `networth-backup.key` and the `attest-key` run that records it
 (step 1c item 3) — an escrow an agent can read is not an escrow, and an agent
 running `attest-key` writes down a fact that did not happen; the restore drill
@@ -4819,8 +4824,8 @@ recoverable one is before Link opens**, and the only thing worth checking there
 is the mechanism itself, end to end.
 
 **Step 3 — Stand up the daemon on the VPS** (~20 min, once; agents prepare
-everything, the owner supplies only the secrets no agent may see — **3.1 and
-3.2 are no longer his; see each substep**)
+everything, the owner supplies only the secrets no agent may see — **3.1, 3.2
+and 3.4 are no longer his; see each substep**)
 
 *(Rev 10 replaced two mutually-exclusive step 3s — one per O5 branch — with this
 one. The Cloudflare branch's step 3a was the longest procedure in this document:
@@ -5015,6 +5020,13 @@ device. All of it is gone with the third party it protected.)*
    `sshd` on `0.0.0.0:22` and `[::]:22`, which is §15.1's single opening. The
    check from here on is that the set still **equals** the baseline, and
    `tailscale funnel status` shows no funnel.
+
+   > **This substep is no longer the owner's** *(2026-09-07 assignment audit)*.
+   > Task `16`, assigned to codex, captures the live post-install comparison and
+   > Funnel state; task `20`, also assigned to codex, owns the automated bind
+   > test that keeps the invariant true afterwards. Both use read-only evidence
+   > over administration access agents already hold. No owner decision or
+   > owner-only secret is involved.
 
    *(Rev 17, from review, and this is a correction to rev 16's own hardening
    step rather than a note about it. Rev 16 demanded that **no** non-loopback,
