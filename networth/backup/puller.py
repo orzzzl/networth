@@ -319,17 +319,6 @@ class BackupPuller:
                     raise ArchiveVerificationError(
                         "archive manifest does not match its transfer bookkeeping"
                     )
-                if (
-                    receipt is not None
-                    and not transferred
-                    and (
-                        receipt.archive_id != verified.manifest.archive_id
-                        or receipt.archive_sha256 != archive_sha256
-                    )
-                ):
-                    raise ArchiveVerificationError(
-                        "held archive does not match its durable local receipt"
-                    )
             except Exception:
                 if archive_id is not None:
                     recorded = queue_and_send_report(

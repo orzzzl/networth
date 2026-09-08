@@ -12,7 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from networth.backup.archive import ArchiveKind, BackupBuilder, ProbeOutcome
+from networth.backup.archive import (
+    ArchiveKind,
+    ArchiveVerificationError,
+    BackupBuilder,
+    ProbeOutcome,
+)
 from networth.backup.crypto import AuthenticationError
 from networth.backup.puller import (
     CURRENT_RECEIPT,
@@ -255,6 +260,32 @@ def test_failed_destination_verification_is_distinct_from_a_pull_that_never_ran(
             "SELECT pulled_verified_at, verify_error FROM backup_archive WHERE archive_id = ?",
             (archive_id,),
         ).fetchone() == (None, "destination verification failed")
+
+
+def test_pull_rejects_transport_identity_that_disagrees_with_sealed_manifest(
+    tmp_path: Path,
+) -> None:
+    current, probe, archive_id, _ = _archives(tmp_path)
+    transport_archive_id = "f" * 32 if archive_id != "f" * 32 else "e" * 32
+    transport = FakeTransport(current, transport_archive_id, probe)
+    destination = tmp_path / "mac-copy"
+    puller = BackupPuller(
+        transport=transport,
+        destination=destination,
+        backup_key=KEY,
+        clock=lambda: NOW,
+        power_reader=lambda: PowerSource.BATTERY,
+    )
+
+    with pytest.raises(ArchiveVerificationError, match="transfer bookkeeping"):
+        puller.run_once()
+
+    assert transport.pull_records == [(transport_archive_id, "FAILED")]
+    assert not (destination / "current.nwb").exists()
+    journal = json.loads((destination / PULL_JOURNAL).read_text().splitlines()[-1])
+    assert journal["archive_id"] == transport_archive_id
+    assert journal["recorded"] is True
+    assert journal["verified"] is False
 
 
 def test_bad_download_never_replaces_the_last_verified_copy(tmp_path: Path) -> None:

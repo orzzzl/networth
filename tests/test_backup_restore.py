@@ -379,3 +379,68 @@ def test_failed_drill_reports_failed_using_the_durable_pull_receipt(tmp_path: Pa
             "SELECT last_verified_restore_at, last_verified_restore_error "
             "FROM backup_state WHERE id = 1"
         ).fetchone() == (None, "restore verification failed")
+
+
+def test_drill_rejects_valid_archive_whose_id_disagrees_with_pull_receipt(
+    tmp_path: Path,
+) -> None:
+    archive = _archive(tmp_path)
+    body = archive.read_bytes()
+    verified = verify_archive(archive, KEY)
+    receipt_archive_id = "f" * 32 if verified.manifest.archive_id != "f" * 32 else "e" * 32
+    local = LocalBackupState(tmp_path / "mac-copy")
+    current = local.directory / CURRENT_ARCHIVE
+    current.write_bytes(body)
+    current.chmod(0o600)
+    local.replace_current_receipt(
+        CurrentReceipt(receipt_archive_id, hashlib.sha256(body).hexdigest())
+    )
+    transport = _DrillTransport(fail=False)
+
+    result = run_restore_drill(
+        archive=current,
+        backup_key=KEY,
+        local_state_directory=local.directory,
+        transport=transport,
+        now=NOW,
+    )
+
+    assert not result.verified
+    assert result.archive_id == receipt_archive_id
+    assert result.failure == "ArchiveVerificationError"
+    assert transport.records == [(receipt_archive_id, "FAILED")]
+
+
+def test_drill_rejects_same_id_when_valid_archive_bytes_disagree_with_receipt(
+    tmp_path: Path,
+) -> None:
+    archive = _archive(tmp_path)
+    original = archive.read_bytes()
+    verified = verify_archive(archive, KEY)
+    resealed = seal(open_sealed(original, KEY), KEY, nonce=b"\xff" * 12)
+    assert resealed != original
+    local = LocalBackupState(tmp_path / "mac-copy")
+    current = local.directory / CURRENT_ARCHIVE
+    current.write_bytes(resealed)
+    current.chmod(0o600)
+    assert verify_archive(current, KEY).manifest.archive_id == verified.manifest.archive_id
+    local.replace_current_receipt(
+        CurrentReceipt(
+            verified.manifest.archive_id,
+            hashlib.sha256(original).hexdigest(),
+        )
+    )
+    transport = _DrillTransport(fail=False)
+
+    result = run_restore_drill(
+        archive=current,
+        backup_key=KEY,
+        local_state_directory=local.directory,
+        transport=transport,
+        now=NOW,
+    )
+
+    assert not result.verified
+    assert result.archive_id == verified.manifest.archive_id
+    assert result.failure == "ArchiveVerificationError"
+    assert transport.records == [(verified.manifest.archive_id, "FAILED")]
