@@ -50,7 +50,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
-| 00b | Install the constrained backup SSH transport and archive key on the VPS | 00a, 28 | **codex** | claude | **WIP** (claimed 2026-09-07) |
+| 00b | Install the constrained backup SSH transport and archive key on the VPS | 00a, 28 | **codex** | claude | **DONE** (#51, 2026-09-08) |
 | 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | **READY (owner)** |
 | 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` — *owner: a secret no agent may ever see* | 00 | **owner** | — | **DONE** (2026-09-05) |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
@@ -73,7 +73,7 @@ that row. He caught it, not us.)
 | 05a | `TokenStore` | 02 | **claude** | codex | **DONE** (#21, 2026-09-05) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **DONE** (#46, 2026-09-07) |
 | 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **DONE** (#50, 2026-09-07) |
-| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (00b, 00b-escrow, 16) |
+| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (00b-escrow, 16) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **READY** |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | BLOCKED (06) |
 
@@ -400,9 +400,10 @@ the service account to exist first.
 Everything below describes both halves; the paragraph on the paste is `00b`'s and the
 paragraph on escrow is `00b-escrow`'s.
 
-**`00b` is blocked on `00a` alone.** `00a` produces the line. The dedicated service user the
-design requires the key to be installed under already exists — `28` is `DONE` (2026-09-05),
-so what used to be a second dependency is now a satisfied precondition. This entry used to
+**`00b` was blocked on `00a` alone.** `00a` produced the line. The dedicated service user
+the design requires the key to be installed under already existed — `28` was `DONE`
+(2026-09-05), so what used to be a second dependency was already a satisfied precondition.
+This entry used to
 be `00a` and used to read `BLOCKED (owner)`, which was false: it asked the owner to install
 a key that does not exist. Verified on the machines 2026-09-01 — `~/agents/secrets/` holds
 only `networth-vps.key(.pub)`, and `authorized_keys` on `tokyo-exit` holds exactly two
@@ -739,10 +740,11 @@ trust relationships.
 
 **This task stops at the last thing provable without the installed key; `03a-live` is the
 rest.** The split is not tidiness — it is what makes the graph executable. Several criteria
-below are live properties of an `authorized_keys` line that `00a` has not generated and
-`00b` has not installed: a real `ssh` refused a shell, a pull observed on battery, a drill
-against an archive that was actually transferred, an attestation of a key that is actually
-escrowed. Requiring those *here* while `00a` waits on this task is a cycle — the previous
+below were live properties of an `authorized_keys` line that `00a` had not generated and
+`00b` had not installed when this task was split: a real `ssh` refused a shell, a pull
+observed on battery, a drill against an archive that was actually transferred, and an
+attestation of a key that is actually escrowed. Requiring those *here* while `00a` waits on
+this task is a cycle — the previous
 revision moved it rather than removed it, which is what the review caught.
 
 The rule for deciding where a criterion belongs: **if it can only be observed after the
