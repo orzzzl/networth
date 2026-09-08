@@ -50,7 +50,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
-| 00b | Install the constrained backup SSH line and archive key on the VPS | 00a, 28 | **codex** | claude | **WIP** (claimed 2026-09-07) |
+| 00b | Install the constrained backup SSH transport and archive key on the VPS | 00a, 28 | **codex** | claude | **WIP** (claimed 2026-09-07) |
 | 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | **READY (owner)** |
 | 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` — *owner: a secret no agent may ever see* | 00 | **owner** | — | **DONE** (2026-09-05) |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
@@ -381,7 +381,7 @@ bank access is **automatic on the Trial** — no per-institution request (**F4**
 - **The Production secret must never reach an agent.** Agents write the command; the owner
   runs it on the VPS (§15).
 
-### 00b — Install the constrained backup SSH line and archive key — **codex** / 00b-escrow — **owner only**
+### 00b — Install the constrained backup SSH transport and archive key — **codex** / 00b-escrow — **owner only**
 
 **Split 2026-09-07, at the owner's instruction, against the criterion "only work an agent
 cannot or must not do."** This entry used to be one owner-only row and it failed that test
@@ -409,10 +409,11 @@ only `networth-vps.key(.pub)`, and `authorized_keys` on `tokyo-exit` holds exact
 entries, `tokyo-exit-tailscale` and `networth-daemon@claude-agents`. The interactive key is
 installed and working; the backup key is not, because there was never anything to install.
 
-**What codex does, once `00a` hands it both finished artifacts:** paste one
+**What codex does, once `00a` hands it both finished artifacts:** install one
 `authorized_keys` entry for `networth-backup-ssh.key`, already carrying its
 `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix, under the service
-user; then install the same archive-key bytes that `00a` generated on
+user; make `/bin/sh` that account's login shell; then install the same archive-key bytes
+that `00a` generated on
 `zelengs-macbook-air-2` at `/etc/networth/networth-backup.key`, owned by the service user
 and mode `0600`. The installed archive key is read back only through a digest comparison —
 never printed — so `00b` proves that the puller and host hold the same key without putting
@@ -422,25 +423,52 @@ step 1c was itself a 2026-09-01 correction; the wrong one had sent him to the st
 *confirms* the backup works in order to do the step that *installs* the key it pulls over.
 Both readings are now moot for him.)
 
+The shell change is part of the transport, not a relaxation discovered later. OpenSSH runs
+both ordinary remote commands and forced commands through the account's login shell with
+`-c` (`sshd(8)`). On the live host, `networth` currently has `/usr/sbin/nologin`; measured
+there, `/usr/sbin/nologin -c '<dispatcher>'` returns 1 / `This account is currently not
+available.` without invoking the dispatcher. `/bin/sh` is therefore installed **last**,
+after the finished restricted line is in place. The account's password stays locked,
+effective SSH password and keyboard-interactive authentication stay disabled, and the
+only non-comment key entry remains the `restrict,command=` line. A real shell is the
+mechanism OpenSSH needs to reach the dispatcher; it is not reachable through this key.
+
 **Acceptance — the host state, not the paste command:**
 
 - [ ] The service user's `.ssh` directory is owned by `networth:networth`, mode `0700`,
       and `authorized_keys` is a regular non-symlink owned by that user, mode `0600`.
 - [ ] `authorized_keys` contains `00a`'s finished line **exactly once and byte-for-byte**.
-      The same public key appears nowhere in an unrestricted entry, and every pre-existing
-      entry is preserved. The update is temp file → ownership/mode → `fsync` → atomic rename
-      in the destination directory → directory `fsync`; a failed write never truncates the
-      working file and a reported success survives a crash.
+      The same public key appears nowhere in an unrestricted entry. The live pre-execution
+      check found no file, so any non-comment entry that appears before execution is a state
+      change: stop and review it rather than deleting or preserving an unknown login. The
+      update is temp file → ownership/mode → `fsync` → atomic rename in the destination
+      directory → directory `fsync`; a failed write never truncates the working file and a
+      reported success survives a crash.
+- [ ] `getent passwd networth` names `/bin/sh`; `passwd -S networth` still reports a locked
+      password; and `sshd -T` still reports both `passwordauthentication no` and
+      `kbdinteractiveauthentication no`. The shell transition happens only after the
+      restricted key file is durable, so every intermediate state is fail-closed.
 - [ ] `/etc/networth/networth-backup.key` is a regular non-symlink owned by
-      `networth:networth`, mode `0600`, installed by the same atomic pattern. `03a`'s real
-      `load_backup_key` accepts it as exactly 32 bytes, and a local/remote digest comparison
-      proves it matches the Mac copy without printing either the bytes or either digest.
+      `networth:networth`, mode `0600`, installed by the same atomic pattern. On
+      `zelengs-macbook-air-2`, `03a`'s real `load_backup_key` accepts the **Mac source copy**
+      as exactly 32 bytes; a local/remote digest comparison then proves the installed host
+      file is byte-identical without needing the undeployed host runtime and without
+      printing either the bytes or either digest.
 - [ ] Running the installation a second time changes neither file and still passes every
       check. Idempotence must not duplicate the SSH line or replace unrelated entries.
+- [ ] **The installed line is exercised once from `zelengs-macbook-air-2`, before `16`:**
+      write down the expected result, then run `ssh -i
+      ~/agents/secrets/networth-backup-ssh.key -o IdentitiesOnly=yes -o BatchMode=yes
+      networth@100.102.245.37 'serve-archive current'`. The dispatcher is absent at the
+      reviewed pre-execution state, so the required result is exit 127 with the dispatcher
+      path reported missing. Exit 1 / `This account is currently not available.` means the
+      `nologin` defect remains and **00b does not go DONE**. A successful shell or execution
+      of the client-supplied command also fails the task.
 - [ ] The dispatcher is **not** smuggled into this task. Until task `16` installs both the
       durable `networth` runtime and `/usr/local/lib/networth/backup-ssh-dispatch`, the
-      forced line fails closed. `03a-live` depends on `16`, so an absent command cannot make
-      its negative-shell check green while the pull and drill remain impossible.
+      forced line fails closed with the distinct 127 / missing-path result above.
+      `03a-live` depends on `16`, so an absent command cannot make its negative-shell check
+      green while the pull and drill remain impossible.
 
 **What the owner does — `00b-escrow`, and it is the only thing left in this area that is
 his:** escrow `networth-backup.key` — the archive key, a different key from the SSH one
@@ -1641,14 +1669,14 @@ without depending on `28` — so the install existed in two entries and belonged
 and the verification that gates the only slot-spending task in the project had no owner.
 **Depends on `28` and `20`.** Task `20` supplies `networth-serve`; without it this task
 could install a unit file but could not satisfy its own requirement to observe that service
-running. The original dependency list omitted `20` even though §19 step 3.2 explicitly
+running. The original dependency list omitted `20` even though §19 step 1b.1 explicitly
 requires the live `networth-serve` socket.
 
 The live install was `DESIGN.md` §19 step 3.2 until the 2026-09-07 assignment audit found
 the same defect as step 3.1: it is a reviewed agent-run install over access the agents
 already hold, not a decision or a secret only the owner can supply. §19 now keeps the step
-as an operational record but explicitly assigns its execution and evidence to this
-codex-only row.
+as **step 1b.1**, ahead of the live-backup proof that needs it, and explicitly assigns its
+execution and evidence to this codex-only row.
 
 **Acceptance:**
 
