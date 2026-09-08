@@ -26,13 +26,18 @@ FULL_SHA = "0" * 40
 
 
 def ssh_stub(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """An ``ssh`` that records its argv and its stdin instead of connecting."""
+    """An ``ssh`` that records its argv and its stdin instead of connecting.
+
+    argv is recorded **one argument per line**. It used to be space-joined, and
+    that lost the only boundary that matters here: which argument a path came
+    from. See the assertion in the piping test for what that cost.
+    """
     stub_dir = tmp_path / "stub-bin"
     stub_dir.mkdir(exist_ok=True)
     argv_log = tmp_path / "ssh.argv"
     stdin_log = tmp_path / "ssh.stdin"
     stub = stub_dir / "ssh"
-    stub.write_text(f'#!/bin/sh\necho "$*" > {argv_log}\ncat > {stdin_log}\nexit 0\n')
+    stub.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {argv_log}\ncat > {stdin_log}\nexit 0\n")
     stub.chmod(0o755)
     return stub_dir, argv_log, stdin_log
 
@@ -129,14 +134,33 @@ def test_the_runner_is_piped_to_the_service_user_and_no_file_is_written(
     )
 
     assert result.returncode == 0, result.stderr
-    argv = argv_log.read_text()
-    assert "-i " + str(key) in argv
-    assert "IdentitiesOnly=yes" in argv
-    assert "BatchMode=yes" in argv
-    assert f"sudo -u networth -H bash -s -- {sha} --paths-only" in argv
-    # Not a temporary name, not a mktemp, not a chmod: no pathname at all.
-    assert "cat >" not in argv
-    assert "/tmp/" not in argv
+    argv = argv_log.read_text().splitlines()
+
+    # Checked as the exact argument vector, in two halves, rather than by
+    # searching the joined command line for suspicious spellings.
+    #
+    # The first version of this assertion did the latter — it rejected "/tmp/"
+    # anywhere in argv, meaning to catch a remote upload path. But `-i <key>` is
+    # a *local* path, and Linux pytest puts `tmp_path` under /tmp, so it failed
+    # in CI on the test's own scratch key while passing on macOS, where the
+    # same directory is spelled differently. A scan over a joined command line
+    # cannot tell which side of the connection a path belongs to; splitting at
+    # the destination can, because ssh's remote command is the argument after
+    # it. Equality is also the stronger check: "no file is written on the host"
+    # stops being a blocklist of spellings (`cat >`, `mktemp`, `chmod`) and
+    # becomes the remote command containing no pathname at all.
+    assert argv[:-1] == [
+        "-i",
+        str(key),
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "BatchMode=yes",
+        "root@198.51.100.1",
+    ], "the local transport options changed"
+    assert argv[-1] == f"sudo -u networth -H bash -s -- {sha} --paths-only", (
+        "the remote command changed"
+    )
 
     # And the bytes on stdin are the reviewed commit's runner, not the working tree's.
     expected = subprocess.run(
