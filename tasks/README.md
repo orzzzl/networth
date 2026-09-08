@@ -50,8 +50,8 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
-| 00b | Install the constrained backup SSH line and archive key on the VPS | 00a, 28 | **codex** | claude | BLOCKED (00a) |
-| 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | BLOCKED (00a) |
+| 00b | Install the constrained backup SSH line and archive key on the VPS | 00a, 28 | **codex** | claude | **READY** |
+| 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | **READY (owner)** |
 | 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` — *owner: a secret no agent may ever see* | 00 | **owner** | — | **DONE** (2026-09-05) |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
 
@@ -72,7 +72,7 @@ that row. He caught it, not us.)
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **DONE** (#29, 2026-09-01) |
 | 05a | `TokenStore` | 02 | **claude** | codex | **DONE** (#21, 2026-09-05) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **DONE** (#46, 2026-09-07) |
-| 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **WIP** (claimed 2026-09-07) |
+| 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **DONE** (#50, 2026-09-07) |
 | 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (00b, 00b-escrow) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **READY** |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | BLOCKED (06) |
@@ -878,25 +878,25 @@ by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked b
 
 **Acceptance:**
 
-- [ ] The private key is generated **on `zelengs-macbook-air-2`** and written to
+- [x] The private key is generated **on `zelengs-macbook-air-2`** and written to
       `~/agents/secrets/networth-backup-ssh.key`, mode `0600`. It is the puller's key and
       it belongs to the machine that pulls; it never exists on the VPS, and never in this
       repository (`AGENTS.md` rule 1).
-- [ ] The archive key is generated independently on `zelengs-macbook-air-2`, written to
+- [x] The archive key is generated independently on `zelengs-macbook-air-2`, written to
       `~/agents/secrets/networth-backup.key` as one mode-`0600` ASCII line, and accepted by
       `03a`'s real `load_backup_key` implementation as exactly 32 bytes. Neither its bytes
       nor a reversible encoding appears in git, a PR, the mailbox, or a log. This is the
       artifact `00b` installs and `00b-escrow` moves off both project machines.
-- [ ] The output handed to `00b` is **one line** at
+- [x] The output handed to `00b` is **one line** at
       `~/agents/secrets/networth-backup-ssh.authorized_keys`, complete with its
       `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix. Not a
       procedure, not a key plus instructions to prepend something. *(This said "handed to
       the owner" until the 2026-09-07 audit moved the paste to codex. It is the same
       artifact and the same bar: "one line, pasted without editing" is a property of the
       line, not a concession to who is holding the keyboard.)*
-- [ ] The `command=` string matches the dispatcher path `03a` actually installs, checked
+- [x] The `command=` string matches the dispatcher path `03a` actually installs, checked
       against `03a`'s implementation rather than against this sentence.
-- [ ] The line is checked **as text**, here: it begins with `restrict`, it carries the
+- [x] The line is checked **as text**, here: it begins with `restrict`, it carries the
       `command=`, and the command is the dispatcher path — asserted against `03a`'s
       installed path, not against this sentence. That the key **cannot obtain a shell** is
       the property the two-key split exists for and it is asserted rather than assumed —
@@ -904,6 +904,13 @@ by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked b
       This task cannot make that check: nothing is installed yet when it runs, and a
       generator that tested its own output by pasting it would be doing `00b`'s job on the
       owner's host.
+
+**Completed 2026-09-07.** All four files exist only under `~/agents/secrets/` on
+`zelengs-macbook-air-2`; the private and archive keys are mode `0600`. The public half
+derived from the private key matches both the `.pub` file and the key embedded in the
+one-line restricted artifact. The archive key was accepted by `03a`'s real
+`load_backup_key` as exactly 32 bytes. These checks compared structure and derived material
+without printing any key bytes or reversible encoding.
 
 **Must not:**
 
