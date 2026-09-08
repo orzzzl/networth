@@ -3933,6 +3933,17 @@ The gain is real and the cost is one extra line in `authorized_keys`. The
 interactive key stays for `link.sh` and ordinary administration, where a human is
 present.
 
+**The service account needs a real login shell for the forced command to run.**
+OpenSSH does not execute `command=` directly: `sshd(8)` runs the selected command
+through the account's login shell with `-c`. On `tokyo-exit`, the deliberately
+provisioned `/usr/sbin/nologin` returns 1 / `This account is currently not
+available.` for that invocation and never reaches the dispatcher. Task `00b`
+therefore changes the locked-password account to `/bin/sh`, but only after its
+finished `restrict,command=` line is durable. SSH password and
+keyboard-interactive authentication remain disabled, and that line is the only
+key entry for the account. The shell is how OpenSSH reaches the allow-list; the
+backup key still cannot reach the shell itself.
+
 **The forced command is a dispatcher, not a single command, and rev 15's version
 could not have worked.** *(Rev 16, from review.)* Through rev 15 the line read
 `restrict,command="networth backup serve-archive"`, while §14a required the same
@@ -4495,7 +4506,7 @@ section moved.
   → task `03a-live`, **codex**; this is **issue #30**. Installing is one
   re-runnable reviewed command, and the battery evidence is read out of the pull
   journal rather than watched.
-- **Step 3.2** (install and verify the systemd units) → task `16`, **codex**.
+- **Step 1b.1** (install and verify the runtime, dispatcher and systemd units) → task `16`, **codex**.
   It is a reviewed install over the administration access agents already hold,
   and every live observation it requires is machine-readable. No owner decision
   or owner-only secret is involved.
@@ -4586,6 +4597,16 @@ codex on 2026-09-07 and is kept below as the record of what gets installed.
    unattended job then cannot open a shell on the host holding the Plaid master
    credential; the interactive key stays for `link.sh` and administration, where
    you are present.
+
+   The service user's login shell changes from `/usr/sbin/nologin` to `/bin/sh`
+   **after** that restricted line is durable. OpenSSH invokes even a forced
+   command through the login shell with `-c`; leaving `nologin` in place makes
+   the key inert rather than constrained. The password remains locked, password
+   and keyboard-interactive SSH authentication remain disabled, and the line is
+   exercised before this task is recorded complete: while task `16`'s dispatcher
+   is still absent, `serve-archive current` must reach the shell and fail 127 on
+   the missing dispatcher path, not fail 1 with nologin's account-unavailable
+   message.
 
    > **This substep is no longer the owner's** *(rev 22, 2026-09-07, by owner
    > instruction — see this section's membership rule above)*. It generates a
@@ -4678,6 +4699,29 @@ clothes, and it caught this project's own status reporting twice in one day — 
 opposite directions, first believing an absent machine was present, then
 believing three present machines were absent. Both were caught by the owner
 rather than by us.*
+
+**Step 1b.1 — Install the reviewed runtime, backup dispatcher, and two units**
+(§13; once, by task `16`, **before** step 1c): put
+`scripts/backup-ssh-dispatch` at
+`/usr/local/lib/networth/backup-ssh-dispatch`, backed by the same deployed
+`networth` runtime the units invoke, then install
+`networth-sync.timer`/`.service` and `networth-serve.service`. The dispatcher
+is task `16`'s install, not task `00b`'s: the latter installs and exercises the
+forced SSH transport, while `03a-live` waits on both tasks before proving the
+positive backup path. Confirm with `ss -ltnp` that the **`networth-serve`
+process's** socket is bound to one of the addresses in `TailscaleIPs` from
+`tailscale status --json` — this node has **two**, an IPv4 and an IPv6 — and
+not to `0.0.0.0`, the public IPv4, `[::]`, any public IPv6, or loopback. This is
+the one misconfiguration that silently publishes the endpoint, so it is checked
+by hand once here and by a test forever after.
+
+> **This substep is not the owner's** *(2026-09-07 assignment audit)*. Task
+> `16`, assigned to codex, owns the runtime, dispatcher and unit install plus
+> the evidence that they are running. Installing reviewed files over the
+> administration key agents already hold and reading `systemctl`, `ss` and
+> Tailscale state require neither an owner decision nor an owner-only secret.
+> Its old position as step 3.2 contradicted this runbook: step 1c required a
+> working dispatcher before step 2 while placing the dispatcher after step 2.
 
 **Step 1c — Confirm backups actually work** (~5 min, once; **before** Step 2, and
 the ordering is the whole point — §14a.1)
@@ -4992,24 +5036,12 @@ device. All of it is gone with the third party it protected.)*
       himself. If he declines, that is recorded as his decision on his own
       machine, not worked around. *Hardening that can strand the owner is not
       hardening.*
-2. **Install the two units** (§13): `networth-sync.timer`/`.service` and
-   `networth-serve.service`. Confirm with `ss -ltnp` that the **`networth-serve`
-   process's** socket is bound to one of the addresses in `TailscaleIPs` from
-   `tailscale status --json` — this node has **two**, an IPv4 and an IPv6 — and
-   not to `0.0.0.0`, the public IPv4, `[::]`, any public IPv6, or loopback.
-   *(Rev 16 said "must not show it on `0.0.0.0`", which the public IPv4 and the
-   IPv6 wildcard both pass. Rev 17 fixes the opposite error in the same
-   sentence — see step 4 — and identifies the socket by **process**, because
-   "something is on that port" is not the fact being checked; §13.)* This is the
-   one misconfiguration that silently publishes the endpoint, so it is checked by
-   hand once here and by a test forever after.
-
-   > **This substep is no longer the owner's** *(2026-09-07 assignment audit)*.
-   > Task `16`, assigned to codex, already owns the unit files, their live install
-   > and the evidence that they are running. Installing reviewed files over the
-   > administration key agents already hold and reading `systemctl`, `ss` and
-   > Tailscale state require neither an owner decision nor an owner-only secret.
-   > The text stays here as the operational contract, not as an instruction to him.
+2. **Already completed before step 1c:** the reviewed runtime, backup dispatcher
+   and units are installed and observed under step 1b.1. This numbered place is
+   retained so older records naming §19 step 3.2 still resolve, but there is no
+   second install and no action here. `08` depends on `03a-live`, so moving the
+   install earlier does not weaken §14a.1's surviving invariant: the live backup
+   proof still passes before step 2 can spend a permanent Production Item slot.
 
 3. **Put the secrets in place** under the service user (§15), mode 600 — both
    `plaid.env` and `plaid-sandbox.env`, since a rehearsal needs its own

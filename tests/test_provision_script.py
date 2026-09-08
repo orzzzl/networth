@@ -375,6 +375,28 @@ def test_nothing_asks_for_a_password(provision: Script) -> None:
         assert not _PASSWD_COMMAND.search(line), f"changes or sets a password: {line!r}"
 
 
+def test_the_service_shell_accepts_only_the_forced_command_contract(
+    provision: Script,
+) -> None:
+    """Task 00b deliberately gives the locked account the shell sshd needs.
+
+    The provisioner is re-runnable after that transition, so it must not tell an
+    operator to undo the forced-command transport.  ``/bin/sh`` is the one
+    reviewed exception; the existing catch-all warning must remain for every
+    other login-capable shell.
+    """
+    shell_lines = [line.strip() for line in provision.code if "login shell is" in line]
+
+    assert any(
+        line.startswith('/bin/sh) ok "') and "task 00b" in line and "forced command" in line
+        for line in shell_lines
+    ), "the provisioner does not explain why task 00b requires /bin/sh"
+    assert any(
+        line.startswith('*) warn "') and "permits an interactive login" in line
+        for line in shell_lines
+    ), "an unreviewed login shell no longer warns"
+
+
 # --- root must not follow a link the service account can plant ---------------
 #
 # Found by codex reviewing PR #34. After run 1 the unprivileged `networth`

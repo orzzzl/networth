@@ -306,6 +306,7 @@ if getent passwd "$SERVICE_USER" >/dev/null; then
 	[[ $current_home == "$SERVICE_HOME" ]] ||
 		warn "home is $current_home, not $SERVICE_HOME — the database path follows the home directory; not changed by this script"
 	case $current_shell in
+	/bin/sh) ok "login shell is /bin/sh — task 00b requires it for the restricted SSH forced command" ;;
 	*/nologin | */false) ok "login shell is $current_shell" ;;
 	*) warn "login shell is $current_shell, which permits an interactive login; not changed by this script" ;;
 	esac
