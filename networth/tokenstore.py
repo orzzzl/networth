@@ -60,6 +60,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
+from networth.filelock import exclusive_file_lock
+
 #: On-disk record format. Bumped when the record's shape changes, so a reader
 #: that predates the change refuses it rather than misreading a field.
 RECORD_SCHEMA = 1
@@ -264,9 +266,32 @@ class TokenStore:
     def directory(self) -> Path:
         return self._dir
 
+    @property
+    def lock_path(self) -> Path:
+        """The lock shared with :class:`BackupBuilder` (``DESIGN.md`` §14a)."""
+
+        # Production stores are named beneath /etc/networth; the lock belongs
+        # beside them at the design's fixed /etc/networth/.tokenstore.lock.
+        # Keeping it outside the credential directory also means it can never
+        # be mistaken for archive payload.
+        return self._dir.parent / ".tokenstore.lock"
+
     # --- writing ---------------------------------------------------------------
 
     def put(
+        self,
+        kind: SecretKind,
+        flow_id: str,
+        material: str,
+        *,
+        item_id: str | None = None,
+    ) -> str:
+        """Write one credential while excluding a cross-process backup capture."""
+
+        with exclusive_file_lock(self.lock_path):
+            return self._put_unlocked(kind, flow_id, material, item_id=item_id)
+
+    def _put_unlocked(
         self,
         kind: SecretKind,
         flow_id: str,
@@ -457,6 +482,12 @@ class TokenStore:
     # --- deleting --------------------------------------------------------------
 
     def delete(self, secret_ref: str) -> bool:
+        """Remove material while excluding a cross-process backup capture."""
+
+        with exclusive_file_lock(self.lock_path):
+            return self._delete_unlocked(secret_ref)
+
+    def _delete_unlocked(self, secret_ref: str) -> bool:
         """Remove material. Returns whether anything was there.
 
         Idempotent on purpose. The crash this store is built around leaves a
@@ -503,7 +534,13 @@ class TokenStore:
         orphan, which is material no row mentions and nothing will ever reap. The
         first is a repair; the second is a credential that lives on disk forever.
         """
-        yield self.delete(secret_ref)
+        # The lock deliberately spans the caller's database update.  Releasing
+        # it after unlink but before ``secret_ref`` is cleared would let a
+        # builder snapshot the forbidden half-state: an Item row whose token is
+        # absent.  The inverse half-state (an orphan token) remains safe because
+        # ``put`` publishes material before the caller commits its Item row.
+        with exclusive_file_lock(self.lock_path):
+            yield self._delete_unlocked(secret_ref)
 
     # --- internals -------------------------------------------------------------
 

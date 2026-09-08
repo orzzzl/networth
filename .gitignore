@@ -21,6 +21,7 @@ snapshot*.json
 *.json.enc
 *.enc
 *.age
+*.nwb
 backups/
 exports/
 *.csv

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Installed by task 16 at /usr/local/lib/networth/backup-ssh-dispatch.
+# OpenSSH supplies SSH_ORIGINAL_COMMAND; Python applies the exact grammar and
+# never evaluates it as shell input.
+set -euo pipefail
+exec networth backup ssh-dispatch
