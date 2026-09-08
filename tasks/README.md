@@ -83,7 +83,7 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | BLOCKED (06a) |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a) |
-| 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **WIP** (claimed 2026-09-08) |
+| 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
 | 12b | Replacement-Item reconcile flow | 04, 09 | **claude** | codex | BLOCKED (09) |
@@ -1388,6 +1388,24 @@ capture is issue **#14**.
 - [ ] `access_token` **and** `item_id` are written, `fsync`ed, **read back**, and only then
       is recovery reported successful. Also persist `link_session_id` and the exchange
       `request_id` (issue #14) — in this scenario the support ticket is the fallback.
+- [ ] **The recovered `item_id` is written back onto the originating `link_flow` row, and
+      recovery is not reported successful until it is.** `26a` (#54) reconciles the `item`
+      and `link_flow` tables **by Item identity**; a recovery that stores the credential and
+      leaves its flow row nameless is indistinguishable from an ordinary stranded flow —
+      nameless is the *expected* shape for one — so the same slot is counted **twice**,
+      silently, and the owner is told he has one fewer lifetime Item than he does. (If that
+      row reached `EXCHANGED` the read refuses outright instead; the quiet
+      double-count is the likelier shape here, since the VPS died before it could get
+      there.) `26a` cannot detect either case from inside itself, which is why this is this
+      script's criterion and not that module's.
+      **The write-back has two destinations and the script must say which one it used**:
+      onto the restored `link_flow` copy when recovery lands on a replacement host, or
+      carried inside the Mac-side emergency artifact and applied during restore when the
+      originating row is simply gone with the VPS. An artifact that carries the credential
+      without the pairing recreates the defect one step later.
+      *(Added 2026-09-08 alongside `26a`, whose module docstring now **states** this
+      precondition instead of silently depending on it — the `#36` lesson: a module that is
+      correct only because of a fact it never asserts is one edit away from not being.)*
 - [ ] Crash injection **after the exchange response and before, during, and after** the
       emergency write; each leaves a state the next run can classify correctly.
 - [ ] The full path is rehearsed end-to-end in Sandbox **with the VPS `TokenStore`
@@ -1479,6 +1497,32 @@ consumes it, and the surfaces consume it later, when they exist.**
   is the reason for this split, not a casualty of it.
 - Do not print anything or add a CLI verb. If you are formatting for a human, you are in
   `26`.
+
+**Landed as #54, merged `1b760b8` (2026-09-08)** — `networth/item_budget.py` and its tests,
+no other file. `read_item_budget(connection) -> ItemBudget`, where every unit of cost is one
+entry in `spent` carrying its own provenance, so `remaining` is the length of its own
+evidence and the number cannot disagree with the explanation printed beside it.
+
+**Two things the shipped module does that the acceptance above does not say. Both were
+argued and agreed in review; read them before auditing the code against this row, because
+the first one looks like a defect against criterion 2 and is not.**
+
+- **The in-flight states are counted.** §7's state table marks `SUCCESS_PENDING_EXCHANGE`
+  and `EXCHANGING` slot-spent, while its prose two lines below names only `TOKEN_EXPIRED`
+  and `EXCHANGE_UNCERTAIN` *"because only they follow a completed Link"* — which cannot be
+  right, since `EXCHANGED` follows a completed Link too. They are counted, under their own
+  `in_flight` heading so §7's literal number stays derivable without a second source.
+  Excluding them is optimistic for the ~30 minutes to `token_exchange_expires_at`, which is
+  the exact window `08` asks for the count in, and optimistic is the "runs out without
+  warning" direction. The §7 wording amendment is issue **#55**, deliberately separate.
+- **The read raises instead of answering when the count is unknowable.** An `EXCHANGED`
+  flow row that recorded no `item_id`, *beside at least one stored `item` row*, may be that
+  Item's own flow or a second spent slot — one database, two counts — so it raises
+  `ItemBudgetError` there and only there. With no `item` row stored there is nothing to
+  duplicate, the count is exactly 1, and refusing would withhold a known number. The line
+  it draws, which its callers inherit: an annotation may carry an uncertain *explanation*,
+  never an uncertain *count*, because a caller cannot tell a guessed integer from a
+  measured one and is handed the integer either way.
 
 ### 08 — `scripts/link.sh`, the owner-run Production Link — **claude** writes it, **owner** runs it
 
