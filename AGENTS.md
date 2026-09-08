@@ -47,8 +47,12 @@ long-lived and grant read access to real financial accounts.
   and committed code reading `~/agents/secrets/` — which told VPS code to open a
   file on a laptop.)*
 - **No agent ever asks the owner for a password** — for the sync host or
-  anything else. Agents authenticate with their own key, which the owner installs
-  himself.
+  anything else. Agents authenticate with their own key. The owner installed the
+  first one himself, which is what bootstrapped the access; every key installed
+  since arrives over that access, by an agent (`tasks/README.md` `00b`). *(The
+  second half of this bullet used to read "which the owner installs himself" and
+  the 2026-09-07 assignment audit made it false. The rule that matters is the
+  first sentence — it was never conditional on who did the installing.)*
 - **Nothing secret is ever compiled into the app.** The phone receives its
   payload key by runtime pairing and stores it in the platform keystore
   (`DESIGN.md` §6.3). No `--dart-define` of a credential, no key in a Dart

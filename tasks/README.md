@@ -211,8 +211,9 @@ this machine.
 `28` (host provisioning) is the one row that does not follow from that split: it moved to
 claude on 2026-09-01 for load balancing, and it is named here so the exception is visible
 rather than looking like drift. It is the cheapest row to move because **nothing else of
-codex's reads its files** — its dependents (`16`, `20`, and the owner's `00b`) consume a
-provisioned host, not its code. One side effect worth recording without overselling it:
+codex's reads its files** — its dependents (`16`, `20`, and `00b`, which was the owner's
+at the time and is codex's since the 2026-09-07 audit) consume a provisioned host, not its
+code. One side effect worth recording without overselling it:
 `16` now installs and verifies units on a host a *different* agent provisioned, where
 before both were codex's. That is not the "not its sole implementer" rule above being
 satisfied — that rule is about the author of a contested design decision, and `28` invents
@@ -341,12 +342,24 @@ hold, onto a host they already have root on, is not owner-only work; it is `00b`
 belongs to codex. The escrow that used to ride along in the same row is the part that
 survives the test, and it is now its own row.
 
-**An owner row is a row he can act on today.** Everything that has to be built before he
-can act belongs to an agent, in the phase where that work lives, blocked on the task that
-defines it — `00a` is the worked example. Marking the owner's half `BLOCKED (owner)` while
-the agent half does not exist yet parks the task where nobody looks and asks him for
-something impossible; it cost this project a task sitting in Phase 0 until he checked the
-machines himself and told us (2026-09-01).
+**An owner row is never asked of him before it is possible, and its status must say which
+it is.** Everything that has to be built before he can act belongs to an agent, in the
+phase where that work lives, blocked on the task that defines it — `00a` is the worked
+example. Marking the owner's half `BLOCKED (owner)` while the agent half does not exist yet
+parks the task where nobody looks and asks him for something impossible; it cost this
+project a task sitting in Phase 0 until he checked the machines himself and told us
+(2026-09-01).
+
+*(Sharpened 2026-09-07, in review: this used to open "**an owner row is a row he can act on
+today**", and the audit above then added `00b-escrow`, an owner row sitting
+`BLOCKED (00a)` — so the rule as written forbade a row the same commit created. The literal
+version was always too strong. `00c` was a `READY` owner row for days before he ran it, and
+nothing was wrong with that. What the 2026-09-01 incident actually established is narrower
+and survives intact: **never blame the owner in a status field for work that is an
+agent's**, and never hand him a row whose prerequisites do not exist. `BLOCKED (00a)` on an
+owner row obeys both — it names an agent task, it is visible on the board as not-his-yet,
+and nobody will put it in front of him until `00a` merges. `BLOCKED (owner)` on a row whose
+agent half is unwritten violates both.)*
 
 ---
 
@@ -666,8 +679,8 @@ trust relationships.
 
 **This task stops at the last thing provable without the installed key; `03a-live` is the
 rest.** The split is not tidiness — it is what makes the graph executable. Several criteria
-below are live properties of an `authorized_keys` line that `00a` has not generated and the
-owner has not installed: a real `ssh` refused a shell, a pull observed on battery, a drill
+below are live properties of an `authorized_keys` line that `00a` has not generated and
+`00b` has not installed: a real `ssh` refused a shell, a pull observed on battery, a drill
 against an archive that was actually transferred, an attestation of a key that is actually
 escrowed. Requiring those *here* while `00a` waits on this task is a cycle — the previous
 revision moved it rather than removed it, which is what the review caught.
@@ -728,7 +741,8 @@ a shell, validates every argument by pattern, and logs rejections.
       (another machine). The check runs on **every pull** and **fails closed**:
       `pulled_verified_at` stays `NULL` unless the Mac holds the archive, decrypted it,
       and reconciled it.
-- [ ] **(2)** — **`03a-live`'s** (needs a key that is actually escrowed, which is `00b`).
+- [ ] **(2)** — **`03a-live`'s** (needs a key that is actually escrowed, which is
+      `00b-escrow`).
       `networth backup attest-key` records `key_escrow_confirmed_at` — an **attestation,
       not a proof**. The runtime key is `/etc/networth/networth-backup.key`; the owner's
       escrow copy is not a second runtime location. *Here:* the command exists and is
@@ -809,11 +823,15 @@ unconditional passes case 1 and fails them:
       run time, not inferred. Without it, `03a-live`'s battery criterion can only be met by
       a person happening to watch the right run, which is not a criterion anybody can
       execute — the same defect this board keeps finding in acceptance text.
-- [ ] **The LaunchAgent installs in one command** the owner can run and re-run — it writes
-      the plist, loads it, and prints what it did. §19 step 1c item 2 is *his* step
-      (`03a-live`), so the thing this task hands him is a command, never a plist to
-      hand-write into `~/Library/LaunchAgents/` and a `launchctl` incantation to get right.
-      Re-running it after a failed load must converge, not stack a second copy.
+- [ ] **The LaunchAgent installs in one command** that can be run and re-run — it writes
+      the plist, loads it, and prints what it did. Never a plist to hand-write into
+      `~/Library/LaunchAgents/` plus a `launchctl` incantation to get right. Re-running it
+      after a failed load must converge, not stack a second copy. *(This criterion was
+      written for the owner, because §19 step 1c item 2 was his; the 2026-09-07 audit moved
+      that step to codex in `03a-live` precisely **because** this task had already reduced
+      it to one reviewed command. The requirement is unchanged and is not weaker for the
+      executor being an agent — a one-command install is what makes the step re-runnable
+      after a failure at 3 a.m.)*
 
 **Must not:**
 
@@ -857,9 +875,12 @@ by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked b
       `~/agents/secrets/networth-backup-ssh.key`, mode `0600`. It is the puller's key and
       it belongs to the machine that pulls; it never exists on the VPS, and never in this
       repository (`AGENTS.md` rule 1).
-- [ ] The output handed to the owner is **one line**, complete with its
+- [ ] The output handed to `00b` is **one line**, complete with its
       `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix. Not a
-      procedure, not a key plus instructions to prepend something.
+      procedure, not a key plus instructions to prepend something. *(This said "handed to
+      the owner" until the 2026-09-07 audit moved the paste to codex. It is the same
+      artifact and the same bar: "one line, pasted without editing" is a property of the
+      line, not a concession to who is holding the keyboard.)*
 - [ ] The `command=` string matches the dispatcher path `03a` actually installs, checked
       against `03a`'s implementation rather than against this sentence.
 - [ ] The line is checked **as text**, here: it begins with `restrict`, it carries the
@@ -879,21 +900,27 @@ by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked b
   master credential for the whole window. One step, already constrained.
 - Ask the owner for a password, or install anything on the VPS on his behalf (§15.1).
 
-### 03a-live — `03a`'s acceptance over the installed restricted key — **codex** (the wire and the records) / **owner** (runs §19 step 1c)
+### 03a-live — `03a`'s acceptance over the installed restricted key — **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only)
 
 **What to do.** No new component. This is the half of `03a` that is a fact about the
-running system rather than about our code, and it can only be executed after the owner has
-pasted `00a`'s line (`00b`) onto a host that has the service account (`28`). It exists as
+running system rather than about our code, and it can only be executed after `00b` has
+pasted `00a`'s line onto a host that has the service account (`28`). It exists as
 its own row because the alternative — leaving these criteria inside `03a` — is the cycle
 this board has now had twice: `03a` blocked on a key that `00a` cannot generate until `03a`
 is done.
 
-**Deps:** `03a` (the code), `00b` (the installed key and the escrowed backup key), and
-through `00b`, `28` (the service user the key is installed under).
+**Deps:** `03a` (the code), `00b` (the installed SSH key — codex's since the 2026-09-07
+audit), `00b-escrow` (the *archive* key actually escrowed, which is what `attest-key` below
+attests to), and through `00b`, `28` (the service user the key is installed under, `DONE`).
+*(`00b-escrow` became a separate dependency in the same audit; before it, "the escrowed
+backup key" was folded into `00b` and this row could have been read as satisfied by an
+`authorized_keys` paste that escrows nothing.)*
 
-**Who executes what, because three of these criteria are `DESIGN.md` §19 steps** *(added
+**Who executes what, because two of these criteria are `DESIGN.md` §19 steps** *(added
 2026-09-01; this row previously named codex alone, which told an agent to perform step 1c
-while §19's preamble says agents never perform it)*:
+while §19's preamble says agents never perform it. It said **three** until 2026-09-07, when
+the audit removed the LaunchAgent install from §19 rather than reassigning it inside the
+row — the count follows §19's membership, so it has to move when §19 does)*:
 
 | Act | Who | Why |
 |---|---|---|
@@ -902,12 +929,16 @@ while §19's preamble says agents never perform it)*:
 | The restore drill with the VPS unreachable | **owner** | §19 step 1c items 4/4a — the criterion is *no network path to the VPS at all*, and an agent session needs the very network it would have to switch off. This is a genuine "cannot", not a formality; the drill logic itself is built and tested in `03a` |
 | Everything over the wire, and every check that a fact was **recorded** | **codex** | not in §19; it is `ssh` and `sqlite`, and it touches neither the host's config nor a key |
 
-**His half is two visits, not one, and the gap between them is a wait nobody can shorten.**
-Installing the puller comes first; the offline drill restores the archive **as pulled**, so
-it cannot run until a pull has actually landed, and the battery run has to wait for the
-laptop to be on battery — which happens on its own. `attest-key` is the only one of the
-three that can be done at either visit. Say this to him when handing the task over; a
-runbook step that silently contains a wait reads as a stall.
+**His half is now one visit, but it still cannot be scheduled freely, and that is the part
+to say out loud when handing the row over.** The offline drill restores the archive **as
+pulled**, so it cannot run until a pull has actually landed — which needs codex's install
+to have happened and then a run to have occurred, and the battery run additionally waits
+for the laptop to be on battery, which happens on its own. `attest-key` has no such gate
+and can ride along with the drill or precede it. So: **do not ask him for anything until a
+pull is on record**, then ask once. *(This paragraph read "two visits" until the 2026-09-07
+audit; the first of the two was installing the puller, which is no longer his. The wait
+between them did not disappear, it moved inside codex's half — a runbook step that silently
+contains a wait reads as a stall no matter whose it is.)*
 
 **Codex installs the puller — this is issue #30, and the owner decided it.** Agents
 installed the ticker LaunchAgents on `zelengs-macbook-air-2` themselves, so this one was
@@ -939,13 +970,14 @@ the host. That is a genuine "must not", not a formality.
       wire. The dispatcher-level versions already passed in `03a`; this proves the
       `authorized_keys` line, which is a different artifact and the one that actually
       protects the host.
-- [ ] **owner, then codex — A pull observed while on battery**, by the `KeepAlive`
-      LaunchAgent, over this key — not a manual run, and not on power. This is the
-      criterion the owner's standing battery rule turns into a real check. **The owner's
-      part ends when the puller is installed and has run**; codex's part is reading it off
-      the record, because `03a`'s puller stamps the power source on every run. Nobody has
-      to be watching at the moment it happens, and nobody is asked to unplug on cue — a
-      criterion that needs a person present at 3 a.m. is not a criterion.
+- [ ] **codex — A pull observed while on battery**, by the `KeepAlive` LaunchAgent, over
+      this key — not a manual run, and not on power. This is the criterion the owner's
+      standing battery rule turns into a real check. **Codex installs the puller with
+      `03a`'s one-command installer and reads the result off the record**, because `03a`'s
+      puller stamps the power source on every run. Nobody has to be watching at the moment
+      it happens, and nobody is asked to unplug on cue — a criterion that needs a person
+      present at 3 a.m. is not a criterion. *(Read `owner, then codex` until 2026-09-07;
+      the owner's half of it was the install, and it failed §19's membership test.)*
 - [ ] **owner — `03a` criterion (3): the offline drill**, on `zelengs-macbook-air-2`
       (`100.96.163.67`), against the archive **as pulled** into its own destination
       directory, with no network path to the VPS. Verdict produced offline; `record-drill`
@@ -955,8 +987,12 @@ the host. That is a genuine "must not", not a formality.
       tailnet, which silently breaks the backup this drill exists to prove *and* both
       agents' route to the host.
 - [ ] **owner, then codex — `03a` criterion (2): `networth backup attest-key`** records
-      `key_escrow_confirmed_at` against the key the owner actually escrowed in `00b`. He
-      runs it; codex checks the column is non-`NULL` before this row is called done.
+      `key_escrow_confirmed_at` against the key the owner actually escrowed in
+      **`00b-escrow`**. He runs it; codex checks the column is non-`NULL` before this row
+      is called done. *(The row named `00b` until 2026-09-07, when the escrow was split out
+      of it. That pointer now matters more than it looks: `00b` is codex's, and an escrow
+      criterion pointing at an agent's row is exactly the reading that lets a `NULL` look
+      satisfied.)*
 - [ ] **codex — A verified pull writes back**, and a verified pull whose write-back fails
       leaves `pulled_verified_at` `NULL` and re-records on the next run — observed here
       over the real transport, having been proven against a fake one in `03a`.
@@ -966,13 +1002,20 @@ the host. That is a genuine "must not", not a formality.
 - **Fix code here.** A failure in this task is a defect in `03a` (or in `00a`'s line); the
   repair lands there and this task re-runs. A task whose acceptance is "observe the system"
   must not become the place where the system quietly changes.
-- Ask the owner to re-paste anything to make a check pass. If the installed line is wrong,
-  `00a` produced a wrong line — say so, regenerate, and hand him one corrected line.
-- **Perform his half for him** — install the LaunchAgent, run `attest-key`, or take this
-  Mac off the tailnet to produce the offline verdict. Blocked waiting on the owner is the
-  correct state for this row to sit in; an agent-produced `key_escrow_confirmed_at` is
-  worse than a `NULL` one, because `08`'s gate then reads as satisfied by a backup nobody
-  can decrypt.
+- Re-paste anything here to make a check pass. If the installed line is wrong, `00a`
+  produced a wrong line — say so, regenerate there, and let `00b` install the corrected
+  one. *(Read "ask the owner to re-paste" until the 2026-09-07 audit. The rule was never
+  about protecting his time: it is that this row **observes** and never repairs, so a
+  fix-in-place hides the defect from the task that owns it. That is unchanged now that the
+  keyboard is codex's — if anything it is easier to violate, which is why it stays.)*
+- **Perform his half for him** — run `attest-key`, or take this Mac off the tailnet to
+  produce the offline verdict. Blocked waiting on the owner is the correct state for this
+  row to sit in; an agent-produced `key_escrow_confirmed_at` is worse than a `NULL` one,
+  because `08`'s gate then reads as satisfied by a backup nobody can decrypt. *(This rule
+  listed the LaunchAgent install until 2026-09-07. It is now codex's — the audit moved it —
+  and the two remaining items are the ones an agent genuinely cannot do rather than
+  merely should not: one records a human's confirmation, the other needs the network the
+  agent is running over.)*
 
 ### 06 — Sandbox end-to-end rehearsal of the Link flow — **claude**
 
