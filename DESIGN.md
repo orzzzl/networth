@@ -4457,6 +4457,59 @@ is a path this design does not take.
 
 Agents must never perform these. Everything before and after is automated.
 
+**What is allowed to be in this section** *(rev 19, after the owner asked why he
+was handed §19 step 3.1: "这么琐碎的事为啥要交给我来做" — and he was right)*:
+
+> **A human pasting a command block he does not read is not a safety control.**
+> If the owner is not evaluating the commands, his keypress adds latency and
+> nothing else. A step belongs to him only when an agent **physically cannot**
+> do it, or **must not**.
+
+That test, applied:
+
+| Genuinely his | Not his |
+|---|---|
+| Installing or entering a secret **no agent may ever see** | Running a reviewed script |
+| Typing bank credentials and MFA into Plaid Link | Copying files, reading diffs |
+| Accepting legal terms; creating accounts | Capturing evidence, verifying criteria |
+| Putting a key somewhere outside these machines (escrow) | Anything an agent already has the access to do |
+
+**Three steps failed that test, and all three are marked in place below rather
+than deleted** — a correction that lands only in a section preamble is not read
+by whoever is halfway through the procedure. Each carries a blockquote naming the
+task and agent it moved to; the surrounding text stays, because *what* gets
+installed on the host is still worth having written down. Nothing else in this
+section moved.
+
+- **Step 3.1** (provision the host) → task `28`, **claude**, and it has since been
+  run and verified. `scripts/provision-host.sh` states at its line 17 and again
+  at line 425 that it **never modifies `PermitRootLogin`** — "read only; this
+  script does not change it, ever" — so the lockout risk that would have
+  justified a human at the keyboard was **already designed out**. What remained
+  was running a reviewed script over a key the agents already hold, against a
+  host they already reach, and then diffing two files.
+- **Step 1a item 3** (generate and install the restricted backup key) → tasks
+  `00a` and `00b`, **codex**. The private half already lives on a Mac the agents
+  work on, and the public half goes onto a host they already hold root on.
+- **Step 1c item 2** (install the puller LaunchAgent; observe a pull on battery)
+  → task `03a-live`, **codex**; this is **issue #30**. Installing is one
+  re-runnable reviewed command, and the battery evidence is read out of the pull
+  journal rather than watched.
+
+**What stays his, and why each one survives the test:** the Plaid account and its
+terms (step 1); the Sandbox and Production secrets, which no agent may ever see;
+the **escrow** of `networth-backup.key` and the `attest-key` run that records it
+(step 1c item 3) — an escrow an agent can read is not an escrow, and an agent
+running `attest-key` writes down a fact that did not happen; the restore drill
+with the VPS unreachable (step 1c items 4/4a), which needs the very network an
+agent session runs on; and Link itself (step 2), where he types real bank
+credentials and MFA.
+
+This is the **membership** rule for §19, and it is the one that was missing. The
+rule that a §19 step makes a task row *shared* (`tasks/README.md`) stays exactly
+as it was and is not weakened by this: the fix is that fewer things are §19
+steps, never that a §19 step may quietly be done by an agent.
+
 **Step 1 — Create the Plaid account** — ✅ **DONE 2026-08-30.** Kept because it
 records a trap, not because there is work left.
 
@@ -4503,9 +4556,10 @@ records a trap, not because there is work left.
    (§12) is the plan, it needs no request and no Item, and the request would cost
    up to six weeks for something that may not surface the award account anyway.
 
-**Step 1a — Give the agents a key to the VPS** (~5 min, once; **this is the one
-step everything else on the host waits for**) — **half done: item 2 is ✅ DONE
-and verified 2026-08-31; item 3 is outstanding.**
+**Step 1a — Give the agents a key to the VPS** (~5 min, once; **this was the one
+step everything else on the host waits for**) — ✅ **nothing here is his any
+more.** Item 2 is **DONE** and verified 2026-08-31; item 3 was reassigned to
+codex on 2026-09-07 and is kept below as the record of what gets installed.
 1. An `ed25519` keypair already exists on `zelengs-macbook-air-2`:
    `~/agents/secrets/networth-vps.key` (private, mode 600, never leaves that
    machine, never in git, a PR or a log) and `…​.key.pub`.
@@ -4516,23 +4570,37 @@ and verified 2026-08-31; item 3 is outstanding.**
    unprivileged service user and everything the daemon does runs as that user,
    so this key being root's is an *administration* fact and must not become the
    account the daemon uses.
-3. **Outstanding.** Add a **second, restricted** key for the unattended backup
-   pull (§15): generate `networth-backup-ssh.key` on the same Mac and install its
-   public half with
-   `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"`. *(Rev 16
-   changed this line: it used to force `networth backup serve-archive` directly,
-   which made the pull's write-back impossible — `command=` ignores the client's
-   command, so `record-pull` could never run. §15 specifies the dispatcher and
-   the **four** verbs it allows: `build-probe`, `serve-archive`, `record-pull`,
-   `record-drill`. Rev 17 corrects "two" — a stale count left over from before
-   the dispatcher existed, in the step the owner actually executes — and narrows
-   the first verb: **`build-archive current` is not on this key at all**.)* The unattended job then cannot open a shell on the
-   host holding the Plaid master credential; the interactive key stays for
-   `link.sh` and administration, where you are present. **Install this one under
-   the service user, not `root`** — it has no administrative purpose.
-4. Tell the agents it is done. **No agent will ever ask you for a password**, for
-   this host or any other — that is a standing rule, not a preference for this
-   step (§15.1).
+3. A **second, restricted** key for the unattended backup pull (§15):
+   `networth-backup-ssh.key`, generated on the same Mac, its public half
+   installed with `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"`
+   under the service user, not `root` — it has no administrative purpose. The
+   unattended job then cannot open a shell on the host holding the Plaid master
+   credential; the interactive key stays for `link.sh` and administration, where
+   you are present.
+
+   > **This substep is no longer the owner's** *(rev 22, 2026-09-07, by owner
+   > instruction — see this section's membership rule above)*. It generates a
+   > keypair on a Mac the agents already work on and pastes one reviewed line
+   > onto a host they already hold root on, so his keypress added latency and
+   > nothing else; it failed the membership test on both halves. Tasks `00a`
+   > (generate and pin the line) and `00b` (install it) own it, both assigned to
+   > codex. It is kept here as the record of **what gets installed and why**,
+   > **not as an instruction to him**. What is still his in this area is the
+   > *escrow* of the separate archive key — `00b-escrow`, and step 1c item 3
+   > below — because an escrow an agent can read is not an escrow.
+
+   *(Rev 16 changed this line: it used to force `networth backup serve-archive`
+   directly, which made the pull's write-back impossible — `command=` ignores the
+   client's command, so `record-pull` could never run. §15 specifies the
+   dispatcher and the **four** verbs it allows: `build-probe`, `serve-archive`,
+   `record-pull`, `record-drill`. Rev 17 corrects "two" — a stale count left over
+   from before the dispatcher existed, and at that revision it sat in the step the
+   owner executed, which is what made the count urgent — and narrows the first
+   verb: **`build-archive current` is not on this key at all**.)*
+4. **No agent will ever ask you for a password**, for this host or any other —
+   that is a standing rule, not a preference for this step (§15.1). *(Rev 22
+   dropped "tell the agents it is done" from this item: with item 3 reassigned,
+   there is nothing left here for you to report.)*
 
 **Step 1b — Put the backup machine on the tailnet** (~5 min, once) — ✅ **DONE
 2026-08-30, verified.** Kept because it now records two corrections, both of
@@ -4598,10 +4666,20 @@ rather than by us.*
 the ordering is the whole point — §14a.1)
 1. **O8 is decided: `zelengs-macbook-air-2` pulls from the VPS over the
    tailnet.** Nothing to choose; this step is confirming it works.
-2. Install the puller on this Mac: a **`KeepAlive` LaunchAgent**, not a
+2. The puller on this Mac is a **`KeepAlive` LaunchAgent**, not a
    `StartInterval` one. (launchd defers interval timers on battery — a sibling
    project on this machine proved it, and a backup that only runs plugged in is
-   a backup that does not run.) Confirm one pull happens **while on battery**.
+   a backup that does not run.) One pull must be observed **while on battery**.
+
+   > **This substep is no longer the owner's** *(rev 22, 2026-09-07, by owner
+   > instruction — see this section's membership rule above; it is what **issue
+   > #30** asked for)*. Installing is running one reviewed command —
+   > `networth backup install-puller`, re-runnable, built by `03a` — and the
+   > battery evidence is **read out of the pull journal**, which `03a` stamps
+   > with the power source at run time precisely so that nobody has to be
+   > watching at the moment it happens. It failed the membership test on both
+   > halves. Task `03a-live` owns it, assigned to codex. Kept here as the record
+   > of what the puller must be, **not as an instruction to him**.
 3. Copy `networth-backup.key` into a password manager or write it down, then run
    `networth backup attest-key`. It records only the date of your confirmation.
    Without this, the archive and its key die together.
@@ -4729,7 +4807,8 @@ recoverable one is before Link opens**, and the only thing worth checking there
 is the mechanism itself, end to end.
 
 **Step 3 — Stand up the daemon on the VPS** (~20 min, once; agents prepare
-everything, the owner runs it)
+everything, the owner runs it — **except 3.1, which is no longer his; see the
+substep**)
 
 *(Rev 10 replaced two mutually-exclusive step 3s — one per O5 branch — with this
 one. The Cloudflare branch's step 3a was the longest procedure in this document:
@@ -4742,6 +4821,15 @@ device. All of it is gone with the third party it protected.)*
    public inbound service at all (§8.4) — unattended
    security upgrades, and a dedicated unprivileged service user that owns the
    database and the secrets.
+
+   > **This substep is no longer the owner's, and it is `DONE`** *(rev 22,
+   > 2026-09-07, by owner instruction — see this section's membership rule
+   > above)*. It was run and verified on 2026-09-05; `host-state-1.txt` and
+   > `host-state-2.txt` came back byte-identical. It is kept here as the record
+   > of what was done to the host, **not as an instruction to him**. The script
+   > never touches `PermitRootLogin`, so the lockout risk that would have put a
+   > human at this keyboard was already designed out — which is exactly why it
+   > failed the membership test. Task `28` owns it, assigned to claude.
 
    **The script is `scripts/provision-host.sh`** *(rev 19, task `28`)* — one
    file, no dependency beyond the base system, so no checkout of this repository
