@@ -113,7 +113,7 @@ def test_no_institution_is_named_by_this_program(tmp_path: Path) -> None:
     _rehearsal(tmp_path, api).run()
 
     asked = api.request_for("institutions_get")
-    assert [str(product.value) for product in asked.products] == ["investments"]
+    assert [str(product.value) for product in asked.options.products] == ["investments"]
     used = api.request_for("sandbox_public_token_create")
     assert used.institution_id == INSTITUTION  # from the response, not from a constant
 

@@ -31,6 +31,7 @@ redact identically: no response body, no headers, no credential.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -43,6 +44,7 @@ from plaid.exceptions import ApiException
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
+from plaid.model.institutions_get_request_options import InstitutionsGetRequestOptions
 from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
@@ -84,6 +86,40 @@ _TRANSPORT_ERRORS = (urllib3.exceptions.HTTPError, OSError)
 # `item.error` those are opposite facts: absent means the response was not the
 # shape we understand, None means Plaid affirmatively reported no error.
 _MISSING = object()
+
+
+# A Plaid request id is the handle the dashboard indexes errors by, and
+# `PlaidCallError` has always told the reader to use one — without ever printing
+# it, which made the instruction unfollowable. The first live Sandbox run hit
+# exactly that: an HTTP 400 with no way to look it up (task 06, 2026-09-08).
+#
+# **This is the one field lifted out of a body the class refuses to show, so it
+# is validated rather than trusted.** The body is attacker-shaped in the general
+# case and this string gets printed, logged and pasted into PRs. Anything that is
+# not a short plain token is reported as absent, which keeps the redaction
+# promise total: no free text from a Plaid body can reach a log through here.
+_REQUEST_ID = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+
+
+def _request_id_of(exc: ApiException) -> str | None:
+    body = getattr(exc, "body", None)
+    if isinstance(body, bytes | bytearray):
+        try:
+            body = body.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(body, str):
+        return None
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    reference = payload.get("request_id")
+    if isinstance(reference, str) and _REQUEST_ID.match(reference):
+        return reference
+    return None
 
 
 class PlaidCallError(RuntimeError):
@@ -276,9 +312,15 @@ class PlaidClient:
             # failure it would read as Plaid being unreachable.
             raise
         except ApiException as exc:
+            reference = _request_id_of(exc)
+            where = (
+                f"look it up by request id {reference}"
+                if reference is not None
+                else "the body carried no request id"
+            )
             raise PlaidCallError(
                 f"{step} failed: Plaid returned HTTP {exc.status} "
-                f"(body not shown — read it from the Plaid dashboard by request id)"
+                f"(body not shown — {where} in the Plaid dashboard)"
             ) from None
         except _TRANSPORT_ERRORS as exc:
             raise PlaidCallError(f"{step} failed: {type(exc).__name__}") from None
@@ -377,12 +419,26 @@ class PlaidClient:
         when the institution is a fake bank, and asking is also more honest —
         it establishes that an institution supporting these products exists,
         instead of asserting one that might not.
+
+        **``products`` goes inside ``options``, and the first live call is what
+        proved it.** This method used to pass ``products=`` at the top level,
+        where ``/institutions/get`` does not define it, and Plaid answered HTTP
+        400. It survived every offline test because
+        ``InstitutionsGetRequest.additional_properties_type`` accepts arbitrary
+        attributes: the SDK took the undeclared keyword without complaint,
+        serialised it as a top-level JSON key, and the test then read
+        ``request.products`` back and found what it had just set. An assertion
+        that round-trips through a permissive model cannot fail, so it confirmed
+        the bug instead of catching it. The regression test pins the *serialised*
+        request now, which is the only form Plaid ever sees.
         """
         request = InstitutionsGetRequest(
             count=1,
             offset=0,
             country_codes=[CountryCode(code) for code in country_codes],
-            products=[Products(name) for name in products],
+            options=InstitutionsGetRequestOptions(
+                products=[Products(name) for name in products],
+            ),
         )
         response = self._call("institutions/get", self._api.institutions_get, request)
         institutions = getattr(response, "institutions", None) or []

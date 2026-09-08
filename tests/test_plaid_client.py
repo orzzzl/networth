@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 import urllib3.exceptions
 from plaid.exceptions import ApiException, ApiTypeError, ApiValueError
+from plaid.model_utils import model_to_dict
 
 from networth.plaid.client import PlaidCallError, PlaidClient
 from networth.plaid.environment import PlaidCredentials, PlaidEnvironment
@@ -461,8 +462,34 @@ def test_an_institution_is_discovered_with_the_products_the_caller_asked_for() -
 
     assert institution_id == INSTITUTION
     asked = api.request_for("institutions_get")
-    assert [str(p.value) for p in asked.products] == ["investments"]
+    assert [str(p.value) for p in asked.options.products] == ["investments"]
     assert [str(c.value) for c in asked.country_codes] == ["US"]
+
+
+def test_the_institutions_request_puts_products_where_plaid_defines_it() -> None:
+    """The regression test for the first live Sandbox failure (task 06, HTTP 400).
+
+    The previous version of the test above asserted ``request.products`` — the
+    same undeclared attribute the code had just set. ``InstitutionsGetRequest``
+    permits arbitrary attributes (``additional_properties_type``), so setting and
+    reading one back always agrees with itself: the assertion could not fail, and
+    it certified a request Plaid rejects.
+
+    So this asserts the **serialised** request instead, which is the only form
+    Plaid is given, and it asserts the negative — ``products`` is not a top-level
+    key — because that, not the presence of ``options``, is what produced the 400.
+    """
+    client, api = sandbox_client()
+
+    client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+    wire = model_to_dict(api.request_for("institutions_get"), serialize=True)
+
+    assert wire["options"]["products"] == ["investments"]
+    assert "products" not in wire, (
+        "products at the top level is what /institutions/get answers HTTP 400 to; "
+        f"the serialised request was {wire}"
+    )
 
 
 def test_an_empty_institution_list_is_a_failure_not_an_empty_string() -> None:
@@ -479,6 +506,61 @@ def test_an_institution_without_an_id_is_a_failure() -> None:
 
     with pytest.raises(PlaidCallError, match="no institution_id"):
         client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+
+def raising_sandbox_client(exc: Exception) -> PlaidClient:
+    def boom(_request: Any) -> Any:
+        raise exc
+
+    return PlaidClient(CREDENTIALS, api=SimpleNamespace(institutions_get=boom))
+
+
+def test_an_http_error_names_the_request_id_it_tells_the_reader_to_look_up() -> None:
+    """The message has always said "read it from the dashboard by request id" and
+    never printed one, so the first live HTTP 400 was undiagnosable (task 06)."""
+    client = raising_sandbox_client(
+        api_exception(400, json.dumps({"request_id": "abc123XYZ", "error_code": "INVALID_FIELD"}))
+    )
+
+    with pytest.raises(PlaidCallError) as caught:
+        client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+    assert "abc123XYZ" in str(caught.value)
+    assert "HTTP 400" in str(caught.value)
+
+
+def test_a_body_with_no_usable_request_id_says_so_instead_of_inventing_one() -> None:
+    for body in (None, "", "not json at all", "[]", json.dumps({"error_code": "INVALID_FIELD"})):
+        client = raising_sandbox_client(api_exception(400, body))
+
+        with pytest.raises(PlaidCallError) as caught:
+            client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+        assert "carried no request id" in str(caught.value), body
+
+
+def test_nothing_but_a_plain_token_escapes_the_body_the_error_refuses_to_show() -> None:
+    """The request id is the single field lifted out of a redacted body, so it is
+    validated rather than trusted: a body is attacker-shaped in the general case,
+    and this string is printed, logged and pasted into PRs."""
+    smuggled = (
+        "secret sandbox-abc123 leaked",
+        "x" * 65,
+        "has\nnewline",
+        {"nested": "object"},
+        1234,
+        None,
+    )
+    for reference in smuggled:
+        client = raising_sandbox_client(api_exception(400, json.dumps({"request_id": reference})))
+
+        with pytest.raises(PlaidCallError) as caught:
+            client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+        message = str(caught.value)
+        assert "carried no request id" in message, reference
+        assert "leaked" not in message
+        assert "nested" not in message
 
 
 def test_a_public_token_that_did_not_come_back_is_a_failure() -> None:
