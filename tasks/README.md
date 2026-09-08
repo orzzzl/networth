@@ -50,7 +50,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
-| 00b | Install the constrained backup SSH line and archive key on the VPS | 00a, 28 | **codex** | claude | **READY** |
+| 00b | Install the constrained backup SSH line and archive key on the VPS | 00a, 28 | **codex** | claude | **WIP** (claimed 2026-09-07) |
 | 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | **READY (owner)** |
 | 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` — *owner: a secret no agent may ever see* | 00 | **owner** | — | **DONE** (2026-09-05) |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
@@ -73,7 +73,7 @@ that row. He caught it, not us.)
 | 05a | `TokenStore` | 02 | **claude** | codex | **DONE** (#21, 2026-09-05) |
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **DONE** (#46, 2026-09-07) |
 | 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **DONE** (#50, 2026-09-07) |
-| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (00b, 00b-escrow) |
+| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (00b, 00b-escrow, 16) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **READY** |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | BLOCKED (06) |
 
@@ -421,6 +421,26 @@ at all — it failed the membership rule §19 now carries. (The pointer to step 
 step 1c was itself a 2026-09-01 correction; the wrong one had sent him to the step that
 *confirms* the backup works in order to do the step that *installs* the key it pulls over.
 Both readings are now moot for him.)
+
+**Acceptance — the host state, not the paste command:**
+
+- [ ] The service user's `.ssh` directory is owned by `networth:networth`, mode `0700`,
+      and `authorized_keys` is a regular non-symlink owned by that user, mode `0600`.
+- [ ] `authorized_keys` contains `00a`'s finished line **exactly once and byte-for-byte**.
+      The same public key appears nowhere in an unrestricted entry, and every pre-existing
+      entry is preserved. The update is temp file → ownership/mode → `fsync` → atomic rename
+      in the destination directory → directory `fsync`; a failed write never truncates the
+      working file and a reported success survives a crash.
+- [ ] `/etc/networth/networth-backup.key` is a regular non-symlink owned by
+      `networth:networth`, mode `0600`, installed by the same atomic pattern. `03a`'s real
+      `load_backup_key` accepts it as exactly 32 bytes, and a local/remote digest comparison
+      proves it matches the Mac copy without printing either the bytes or either digest.
+- [ ] Running the installation a second time changes neither file and still passes every
+      check. Idempotence must not duplicate the SSH line or replace unrelated entries.
+- [ ] The dispatcher is **not** smuggled into this task. Until task `16` installs both the
+      durable `networth` runtime and `/usr/local/lib/networth/backup-ssh-dispatch`, the
+      forced line fails closed. `03a-live` depends on `16`, so an absent command cannot make
+      its negative-shell check green while the pull and drill remain impossible.
 
 **What the owner does — `00b-escrow`, and it is the only thing left in this area that is
 his:** escrow `networth-backup.key` — the archive key, a different key from the SSH one
@@ -932,7 +952,8 @@ is done.
 
 **Deps:** `03a` (the code), `00b` (the installed SSH key — codex's since the 2026-09-07
 audit), `00b-escrow` (the *archive* key actually escrowed, which is what `attest-key` below
-attests to), and through `00b`, `28` (the service user the key is installed under, `DONE`).
+attests to), and `16` (the durable `networth` runtime plus the dispatcher the forced line
+executes); through `00b`, `28` supplies the service user (`DONE`).
 *(`00b-escrow` became a separate dependency in the same audit; before it, "the escrowed
 backup key" was folded into `00b` and this row could have been read as satisfied by an
 `authorized_keys` paste that escrows nothing.)*
@@ -1631,6 +1652,13 @@ codex-only row.
 
 **Acceptance:**
 
+- [ ] The reviewed runtime installation places `scripts/backup-ssh-dispatch` at
+      `/usr/local/lib/networth/backup-ssh-dispatch`, owned by `root:root` and mode `0755`,
+      and its `networth backup ssh-dispatch` resolves to the same deployed runtime as the
+      units. Its installed bytes match the reviewed source without printing executable or
+      credential material. This is the command `00b`'s forced key invokes; `03a-live` is
+      explicitly blocked on this task so the key's shell refusal cannot hide an absent
+      backup path.
 - [ ] **The units are installed and observed running on the provisioned host, and that
       observation is what gates `08`** — `systemctl is-active` on each unit and the timer's
       next elapse, captured, not assumed. A unit file merged into the repo is not a unit

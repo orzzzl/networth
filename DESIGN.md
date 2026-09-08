@@ -4992,8 +4992,13 @@ device. All of it is gone with the third party it protected.)*
       himself. If he declines, that is recorded as his decision on his own
       machine, not worked around. *Hardening that can strand the owner is not
       hardening.*
-2. **Install the two units** (§13): `networth-sync.timer`/`.service` and
-   `networth-serve.service`. Confirm with `ss -ltnp` that the **`networth-serve`
+2. **Install the reviewed runtime, backup dispatcher, and two units** (§13): put
+   `scripts/backup-ssh-dispatch` at
+   `/usr/local/lib/networth/backup-ssh-dispatch`, backed by the same deployed `networth`
+   runtime the units invoke, then install `networth-sync.timer`/`.service` and
+   `networth-serve.service`. The dispatcher is task `16`'s install, not task `00b`'s: the
+   latter installs the forced SSH line and archive key, while `03a-live` waits on both
+   tasks before exercising that line. Confirm with `ss -ltnp` that the **`networth-serve`
    process's** socket is bound to one of the addresses in `TailscaleIPs` from
    `tailscale status --json` — this node has **two**, an IPv4 and an IPv6 — and
    not to `0.0.0.0`, the public IPv4, `[::]`, any public IPv6, or loopback.
