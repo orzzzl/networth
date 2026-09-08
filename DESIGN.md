@@ -2234,9 +2234,17 @@ above takes the *older* of the price clock and
 `status.investments.last_successful_update`, which comes from `/item/get` — a
 call task `05` implemented and this rehearsal does not make. The four fields
 §8.1 names on the **response bodies** are answered above; the item-status clock
-is not, so the "older of" comparison itself is still unexercised. Whether to
-extend the rehearsal or leave that to `07` is raised in `06`'s review rather than
-settled here — it is a scope call on the task, not one of §18's owner decisions.
+is not, so the "older of" comparison itself is still unexercised.
+
+**Task `06` does not grow to cover it.** Its criterion 2 is the four clocks §8.1
+names on the response bodies, and the approved run measured all four. The
+item-status clock is captured by task `10`, whose acceptance names that field
+outright, and **task `12` — normative on §8.1, and the task that combines the
+holdings clocks — must fixture-test the older-of comparison** against it.
+Fixture-driven because `06` did not live-observe an item-status value, **not**
+because Sandbox cannot produce one: unlike the realtime-balance branch above,
+this one is unmeasured rather than unavailable, and the two gaps must not be
+read as the same shape.
 
 ### 8.2 Axis A: connection state, per Item
 
