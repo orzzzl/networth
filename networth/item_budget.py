@@ -18,6 +18,20 @@ from **all** of them at once. Reading whichever row was written first made the
 same pair of rows report two different things depending on their insertion
 order, which is not a fact about the Item.
 
+Reconciling needs an Item identity to reconcile *by*, so a row that reached
+``EXCHANGED`` without recording one cannot be placed: it may be the flow behind
+a stored Item, or a slot of its own whose ``item`` row was never written. Where
+that is genuinely ambiguous this read raises rather than answers. The count is
+the one thing here that must never be a guess — a caller cannot tell a guessed
+integer from a measured one, and every annotation beside it would still be true.
+
+The precondition that follows, stated rather than assumed: **whatever stores an
+Item must record its `item_id` on the flow row that bought it**, task 07b's
+recovery from a second host included. A recovery that writes the ``item`` row
+and leaves its flow row nameless is indistinguishable from an ordinary stranded
+flow — nameless is the *expected* shape for one — and this read would count that
+Item twice without any evidence that it had.
+
 Section 7's state table is the authority on which states those are, and it is
 narrower than it looks.  A URL the owner never opened (``URL_MINTED``,
 ``URL_EXPIRED``), a session he exited (``SESSION_EXITED``) and a flow he
@@ -80,15 +94,16 @@ class SlotEvidence(StrEnum):
     #: ``SUCCESS_PENDING_EXCHANGE`` or ``EXCHANGING``: spent, outcome not known
     #: yet. Each becomes either a usable Item or a stranded slot.
     IN_FLIGHT_FLOW = "IN_FLIGHT_FLOW"
-    #: An ``EXCHANGED`` row this read could not match to an ``item`` row —
-    #: either it names no Item or it names one with no row. Section 7 makes that
-    #: state terminal and says the ``item`` row was committed *before* it was
-    #: entered, so the stored rows contradict each other. The slot is spent
-    #: either way (**F2a**); what is unknown is whether the Item is usable, and
-    #: an unnamed Item may also already be counted through its own row. Both
-    #: directions of error are possible here, which is exactly why this is
-    #: reported as a fault to look at rather than folded into a neighbouring
-    #: state and guessed at.
+    #: An ``EXCHANGED`` row this read could not match to an ``item`` row.
+    #: Section 7 makes that state terminal and says the ``item`` row was
+    #: committed *before* it was entered, so the stored rows contradict each
+    #: other. The slot is spent either way (**F2a**) and here it costs exactly
+    #: one: the row either names the Item it bought, or there is no stored Item
+    #: it could be describing. What is unknown is only whether that Item is
+    #: usable — an explanation to look at, not a number to doubt. A *nameless*
+    #: ``EXCHANGED`` row beside stored Items is the case where the count itself
+    #: stops being knowable, and :func:`read_item_budget` refuses there rather
+    #: than labelling a number it cannot stand behind.
     ORPHANED_FLOW = "ORPHANED_FLOW"
 
 
@@ -97,9 +112,9 @@ class SpentSlot:
     """One lifetime slot that is gone, and the evidence that it is gone."""
 
     evidence: SlotEvidence
-    #: Plaid's `item_id`. ``None`` only for a flow that failed before the
-    #: exchange returned one — the slot is still spent (**F2a**), it simply
-    #: cannot be named to Plaid support.
+    #: Plaid's `item_id`. ``None`` for a flow row that never recorded one —
+    #: usually one that failed before the exchange returned it. The slot is
+    #: still spent (**F2a**); it simply cannot be named to Plaid support.
     plaid_item_id: str | None
     #: The ``link_flow.flow_id`` this was read from; ``None`` for ITEM evidence.
     flow_id: str | None
@@ -304,6 +319,24 @@ def read_item_budget(connection: sqlite3.Connection) -> ItemBudget:
         )
 
         if flow.item_id is None:
+            if flow.state == "EXCHANGED" and known_item_ids:
+                # Section 7 writes `item_id` in the same exchange that commits
+                # the `item` row, so this row cannot say which Item it bought —
+                # and any stored Item may be that one. The evidence is equally
+                # consistent with the slot already being counted above and with
+                # its being a second slot whose `item` row was never written,
+                # so there is no number here to return. This is the line: an
+                # annotation may carry an uncertain *explanation* (see
+                # ORPHANED_FLOW), never an uncertain count. Counting it as a
+                # slot of its own would report one fewer remaining than the
+                # owner may actually have — the pessimistic direction, which
+                # issue #7 names as the harmful one because it stops a Link he
+                # could still make.
+                raise ItemBudgetError(
+                    f"link_flow {flow.flow_id!r} is EXCHANGED but names no Item, so it "
+                    f"cannot be told apart from the {len(known_item_ids)} stored item "
+                    "row(s) it may already be counted by"
+                )
             # No Item identity to reconcile against, so this row is its own
             # slot: two rows sharing a NULL are two separate Link successes.
             slots_of_flows.append([flow])

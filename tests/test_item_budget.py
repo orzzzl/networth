@@ -339,24 +339,48 @@ def test_an_exchanged_flow_without_its_item_row_costs_and_says_it_is_wrong(
     assert slot.state == "EXCHANGED"
 
 
-def test_an_exchanged_flow_that_names_no_item_is_also_reported_as_wrong(
+def test_a_nameless_exchanged_flow_beside_a_stored_item_has_no_count_to_return(
     db: sqlite3.Connection,
 ) -> None:
-    """The same contradiction, reached the other way.
+    """The same contradiction reached the other way, and it costs the *number*.
 
     ``item_id`` is written by the exchange that also writes the ``item`` row, so
-    an ``EXCHANGED`` row without one cannot be reconciled against anything: this
-    slot may be the same one the ``item`` row beside it already accounts for.
-    That makes the count possibly *pessimistic* here rather than optimistic —
-    which is still a fault to surface, not a direction to pick silently.
+    an ``EXCHANGED`` row without one names nothing to reconcile against: it may
+    be the flow that bought the Item stored beside it, or a second slot whose
+    row was never written. One database, two possible counts.
+
+    An ``orphaned`` annotation cannot repair that. The caller is still handed a
+    definite ``remaining`` that may be one too low, and issue #7 names that
+    direction as the harmful one — it stops a Link the owner could still make.
+    So this is the case that refuses, as a broken replacement chain does.
     """
 
     add_item(db, "linked")
     add_flow(db, "nameless", "EXCHANGED")
 
+    # Both halves: the right row, and refused for the ambiguity rather than for
+    # some other complaint that happens to name it.
+    with pytest.raises(ItemBudgetError, match=r"flow-nameless.*names no Item"):
+        read_item_budget(db)
+
+
+def test_a_nameless_exchanged_flow_with_no_item_to_confuse_it_still_costs_one(
+    db: sqlite3.Connection,
+) -> None:
+    """And the refusal is exactly as wide as the ambiguity, not wider.
+
+    With no ``item`` row stored, the same row cannot be describing one: Link
+    succeeded, so the slot is spent (**F2a**), and one is the only count this
+    evidence admits. Refusing here as well would withhold a number that *is*
+    known — from task 08's point of view the owner is blocked either way, so a
+    refusal has to be paid for by a real ambiguity.
+    """
+
+    add_flow(db, "nameless", "EXCHANGED")
+
     budget = read_item_budget(db)
 
-    assert budget.spent_count == 2
+    assert budget.remaining == 9
     (slot,) = budget.orphaned
     assert slot.plaid_item_id is None
     assert slot.flow_id == "flow-nameless"
