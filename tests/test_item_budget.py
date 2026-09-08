@@ -8,6 +8,7 @@ without spending the resource it counts.
 from __future__ import annotations
 
 import io
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import redirect_stdout
@@ -16,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from networth.item_budget import (
+    _CLASSIFIED_STATES,
     LIFETIME_ITEM_SLOTS,
     ItemBudget,
     ItemBudgetError,
@@ -252,16 +254,51 @@ def test_an_item_recovered_by_07b_costs_one_slot_not_two(db: sqlite3.Connection)
     assert budget.usable[0].plaid_item_id == "plaid-item-recovered"
 
 
-def test_two_flow_rows_naming_one_item_are_one_slot(db: sqlite3.Connection) -> None:
-    """A retried exchange writes a second row; the Item behind it is still one."""
+@pytest.mark.parametrize("order", [("uncertain", "exchanged"), ("exchanged", "uncertain")])
+def test_two_flow_rows_naming_one_item_read_the_same_in_either_order(
+    db: sqlite3.Connection, order: tuple[str, str]
+) -> None:
+    """A retried exchange writes a second row; the Item behind it is still one.
 
-    add_flow(db, "first", "EXCHANGE_UNCERTAIN", item_id="plaid-item-retried")
-    add_flow(db, "second", "EXCHANGED", item_id="plaid-item-retried")
+    And *which* row was written first is not a fact about the Item. Classifying
+    the earliest row and stopping reported this same pair as ``STRANDED_FLOW``
+    or ``ORPHANED_FLOW`` purely by insertion order, so a caller explaining the
+    number could be told two different things about one database.
+    """
+
+    states = {"uncertain": "EXCHANGE_UNCERTAIN", "exchanged": "EXCHANGED"}
+    for suffix in order:
+        add_flow(db, suffix, states[suffix], item_id="plaid-item-retried")
 
     budget = read_item_budget(db)
 
     assert budget.remaining == 9
     assert budget.spent_count == 1
+    (slot,) = budget.orphaned
+    assert slot.state == "EXCHANGED"
+    assert slot.flow_id == "flow-exchanged"
+    assert budget.stranded == ()
+    assert budget.in_flight == ()
+
+
+@pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])
+def test_duplicate_rows_of_one_state_always_name_the_same_flow(
+    db: sqlite3.Connection, order: tuple[str, str]
+) -> None:
+    """The tie-break is the flow's own name, not the order the rows arrived in.
+
+    Two rows of the same state agree about the label, so only the *named* flow
+    could still move; pinning it keeps the whole answer a function of the data.
+    """
+
+    for suffix in order:
+        add_flow(db, suffix, "EXCHANGE_UNCERTAIN", item_id="plaid-item-retried")
+
+    budget = read_item_budget(db)
+
+    assert budget.spent_count == 1
+    (slot,) = budget.stranded
+    assert slot.flow_id == "flow-a"
 
 
 def test_flows_without_an_item_id_each_cost_their_own_slot(db: sqlite3.Connection) -> None:
@@ -280,15 +317,49 @@ def test_flows_without_an_item_id_each_cost_their_own_slot(db: sqlite3.Connectio
     assert budget.spent_count == 2
 
 
-def test_an_exchanged_flow_without_its_item_row_still_costs(db: sqlite3.Connection) -> None:
-    """The slot is spent whether or not the row that proves it was committed."""
+def test_an_exchanged_flow_without_its_item_row_costs_and_says_it_is_wrong(
+    db: sqlite3.Connection,
+) -> None:
+    """The slot is spent whether or not the row that proves it was committed.
+
+    But section 7 enters ``EXCHANGED`` only *after* committing that row, so its
+    absence is a contradiction rather than an exchange still in progress.
+    Calling it ``IN_FLIGHT_FLOW`` gave task 26 a diagnosis — "wait, it may still
+    resolve" — that the state machine says can never come true.
+    """
 
     add_flow(db, "orphan", "EXCHANGED", item_id="plaid-item-orphan")
 
     budget = read_item_budget(db)
 
     assert budget.remaining == 9
-    assert budget.in_flight[0].plaid_item_id == "plaid-item-orphan"
+    assert budget.in_flight == ()
+    (slot,) = budget.orphaned
+    assert slot.plaid_item_id == "plaid-item-orphan"
+    assert slot.state == "EXCHANGED"
+
+
+def test_an_exchanged_flow_that_names_no_item_is_also_reported_as_wrong(
+    db: sqlite3.Connection,
+) -> None:
+    """The same contradiction, reached the other way.
+
+    ``item_id`` is written by the exchange that also writes the ``item`` row, so
+    an ``EXCHANGED`` row without one cannot be reconciled against anything: this
+    slot may be the same one the ``item`` row beside it already accounts for.
+    That makes the count possibly *pessimistic* here rather than optimistic —
+    which is still a fault to surface, not a direction to pick silently.
+    """
+
+    add_item(db, "linked")
+    add_flow(db, "nameless", "EXCHANGED")
+
+    budget = read_item_budget(db)
+
+    assert budget.spent_count == 2
+    (slot,) = budget.orphaned
+    assert slot.plaid_item_id is None
+    assert slot.flow_id == "flow-nameless"
 
 
 # --- Replacements (acceptance criterion 3) -------------------------------------------
@@ -360,6 +431,9 @@ def test_a_mixed_database_counts_every_slot_exactly_once(db: sqlite3.Connection)
     assert len(budget.stranded) == 1
     assert len(budget.in_flight) == 1
     assert len(budget.replacements) == 1
+    # Nothing ordinary is read as a contradiction: every row above is one
+    # section 7 can produce, including the recovered Item's stale flow state.
+    assert budget.orphaned == ()
 
 
 def test_the_count_is_the_length_of_its_own_evidence(db: sqlite3.Connection) -> None:
@@ -368,11 +442,14 @@ def test_the_count_is_the_length_of_its_own_evidence(db: sqlite3.Connection) -> 
     add_item(db, "a")
     add_flow(db, "b", "TOKEN_EXPIRED")
     add_flow(db, "c", "EXCHANGING")
+    add_flow(db, "d", "EXCHANGED", item_id="plaid-item-missing")
 
     budget = read_item_budget(db)
 
     assert budget.remaining == budget.capacity - len(budget.spent)
-    assert budget.spent_count == len(budget.usable + budget.stranded + budget.in_flight)
+    assert budget.spent_count == len(
+        budget.usable + budget.stranded + budget.in_flight + budget.orphaned
+    )
 
 
 def test_reading_the_budget_prints_nothing(db: sqlite3.Connection) -> None:
@@ -406,23 +483,69 @@ def test_the_read_writes_nothing(db: sqlite3.Connection) -> None:
     )
 
 
-def test_every_one_of_the_ten_states_is_classified(db: sqlite3.Connection) -> None:
+def _link_flow_ddl(connection: sqlite3.Connection) -> str:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'link_flow'"
+    ).fetchone()
+    assert row is not None, "the migration no longer creates link_flow"
+    return str(row[0])
+
+
+def _states_the_schema_admits(ddl: str) -> set[str]:
+    """Every literal in ``link_flow``'s ``state IN (...)`` CHECK, read whole.
+
+    Searching the DDL for the names this file already knows can only confirm
+    what it already believes: an eleventh state would leave every assertion
+    below green while the production query silently dropped it, which is the
+    exact failure the guard exists to stop.
+    """
+
+    match = re.search(r"state\s+IN\s*\(([^)]*)\)", ddl)
+    assert match is not None, "link_flow no longer constrains `state` with an IN list"
+    return set(re.findall(r"'([^']+)'", match.group(1)))
+
+
+def test_the_schema_and_this_module_classify_the_same_states(db: sqlite3.Connection) -> None:
     """The schema's CHECK is the authority on how many states exist.
 
     A state added to the schema without a decision here would otherwise default
-    to costing nothing, which is the optimistic direction.
+    to costing nothing, which is the optimistic direction. Both comparisons run
+    in both directions, and the second one is against the *module's* own
+    classification rather than this file's — a test that shares its expectation
+    with nothing but itself cannot see production fall behind the schema.
     """
 
-    classified = set(SPENDS_NOTHING) | set(STRANDS_A_SLOT) | set(SPENDS_WHILE_UNRESOLVED)
-    classified.add("EXCHANGED")
+    admitted = _states_the_schema_admits(_link_flow_ddl(db))
+    documented = set(SPENDS_NOTHING) | set(STRANDS_A_SLOT) | set(SPENDS_WHILE_UNRESOLVED)
+    documented.add("EXCHANGED")
 
-    sql = db.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'link_flow'"
-    ).fetchone()[0]
-    in_schema = {state for state in classified if f"'{state}'" in sql}
+    assert admitted == documented
+    assert admitted == set(_CLASSIFIED_STATES)
+    assert len(admitted) == 10
 
-    assert in_schema == classified
-    assert len(classified) == 10
+
+def test_an_unclassified_state_added_to_the_schema_is_caught(db: sqlite3.Connection) -> None:
+    """The guard above must be able to go red, so make it.
+
+    A green check that cannot fail is not evidence. This builds the eleventh
+    state the guard is meant to catch, from the real DDL, and asserts the
+    mutation applied before asserting the consequence — a renamed state would
+    otherwise turn the mutation into a no-op and pass this vacuously.
+    """
+
+    ddl = _link_flow_ddl(db)
+    mutated = ddl.replace("'ABANDONED'", "'ABANDONED',\n            'INVENTED_STATE'", 1)
+    assert mutated != ddl, "the mutation did not apply; this test would prove nothing"
+
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.execute(mutated)
+        admitted = _states_the_schema_admits(_link_flow_ddl(scratch))
+    finally:
+        scratch.close()
+
+    assert admitted - set(_CLASSIFIED_STATES) == {"INVENTED_STATE"}
+    assert admitted != set(_CLASSIFIED_STATES)
 
 
 # --- Record invariants ----------------------------------------------------------------
