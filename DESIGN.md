@@ -4474,7 +4474,7 @@ That test, applied:
 | Accepting legal terms; creating accounts | Capturing evidence, verifying criteria |
 | Putting a key somewhere outside these machines (escrow) | Anything an agent already has the access to do |
 
-**Three steps failed that test, and all three are marked in place below rather
+**Four steps failed that test, and all four are marked in place below rather
 than deleted** — a correction that lands only in a section preamble is not read
 by whoever is halfway through the procedure. Each carries a blockquote naming the
 task and agent it moved to; the surrounding text stays, because *what* gets
@@ -4489,12 +4489,16 @@ section moved.
   was running a reviewed script over a key the agents already hold, against a
   host they already reach, and then diffing two files.
 - **Step 1a item 3** (generate and install the restricted backup key) → tasks
-  `00a` and `00b`, **codex**. The private half already lives on a Mac the agents
+  `00a` and `00b`, **codex**. The private half is generated on a Mac the agents
   work on, and the public half goes onto a host they already hold root on.
 - **Step 1c item 2** (install the puller LaunchAgent; observe a pull on battery)
   → task `03a-live`, **codex**; this is **issue #30**. Installing is one
   re-runnable reviewed command, and the battery evidence is read out of the pull
   journal rather than watched.
+- **Step 3.2** (install and verify the systemd units) → task `16`, **codex**.
+  It is a reviewed install over the administration access agents already hold,
+  and every live observation it requires is machine-readable. No owner decision
+  or owner-only secret is involved.
 
 **What stays his, and why each one survives the test:** the Plaid account and its
 terms (step 1); the Sandbox and Production secrets, which no agent may ever see;
@@ -4588,6 +4592,14 @@ codex on 2026-09-07 and is kept below as the record of what gets installed.
    > **not as an instruction to him**. What is still his in this area is the
    > *escrow* of the separate archive key — `00b-escrow`, and step 1c item 3
    > below — because an escrow an agent can read is not an escrow.
+
+   The same agent sequence owns the separate archive key that this transport
+   protects: task `00a` generates one 32-byte key at
+   `~/agents/secrets/networth-backup.key`, and task `00b` installs those same
+   bytes at `/etc/networth/networth-backup.key` under the service user. The
+   owner receives the Mac copy only for the off-machine escrow in step 1c item 3;
+   he is not asked to create or deploy a key that the reviewed runtime already
+   defines and both agents must handle to test.
 
    *(Rev 16 changed this line: it used to force `networth backup serve-archive`
    directly, which made the pull's write-back impossible — `command=` ignores the
@@ -4807,8 +4819,8 @@ recoverable one is before Link opens**, and the only thing worth checking there
 is the mechanism itself, end to end.
 
 **Step 3 — Stand up the daemon on the VPS** (~20 min, once; agents prepare
-everything, the owner runs it — **except 3.1, which is no longer his; see the
-substep**)
+everything, the owner supplies only the secrets no agent may see — **3.1 and
+3.2 are no longer his; see each substep**)
 
 *(Rev 10 replaced two mutually-exclusive step 3s — one per O5 branch — with this
 one. The Cloudflare branch's step 3a was the longest procedure in this document:
@@ -4986,6 +4998,14 @@ device. All of it is gone with the third party it protected.)*
    "something is on that port" is not the fact being checked; §13.)* This is the
    one misconfiguration that silently publishes the endpoint, so it is checked by
    hand once here and by a test forever after.
+
+   > **This substep is no longer the owner's** *(2026-09-07 assignment audit)*.
+   > Task `16`, assigned to codex, already owns the unit files, their live install
+   > and the evidence that they are running. Installing reviewed files over the
+   > administration key agents already hold and reading `systemctl`, `ss` and
+   > Tailscale state require neither an owner decision nor an owner-only secret.
+   > The text stays here as the operational contract, not as an instruction to him.
+
 3. **Put the secrets in place** under the service user (§15), mode 600 — both
    `plaid.env` and `plaid-sandbox.env`, since a rehearsal needs its own
    credential and its own database.

@@ -50,7 +50,7 @@ a judgement call. **No agent reviews a task it was assigned.**
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 00 | Plaid account + Trial plan + O2 verification | — | **owner** | — | **DONE** (2026-08-30) |
-| 00b | Install the constrained backup key's `authorized_keys` line on the VPS | 00a, 28 | **codex** | claude | BLOCKED (00a) |
+| 00b | Install the constrained backup SSH line and archive key on the VPS | 00a, 28 | **codex** | claude | BLOCKED (00a) |
 | 00b-escrow | Escrow `networth-backup.key` off these machines — *owner: it must land somewhere no agent can read, which is the whole point of an escrow* | 00a | **owner** | — | BLOCKED (00a) |
 | 00c | Install the Plaid **Sandbox** secret at `/etc/networth/plaid-sandbox.env` — *owner: a secret no agent may ever see* | 00 | **owner** | — | **DONE** (2026-09-05) |
 | 01 | UI target | — | — | — | **ANSWERED** — Flutter, Android only |
@@ -71,9 +71,9 @@ that row. He caught it, not us.)
 | 04 | Domain model + `Store` repositories | 03 | **codex** | claude | **DONE** (#36, 2026-09-02) |
 | 05 | `PlaidClient` wrapper + error taxonomy | 02 | **claude** | codex | **DONE** (#29, 2026-09-01) |
 | 05a | `TokenStore` | 02 | **claude** | codex | **DONE** (#21, 2026-09-05) |
-| 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **WIP** (claimed 2026-09-05) |
-| 00a | Generate the constrained backup keypair; pin its `command=` | 03a | **codex** | claude | BLOCKED (03a) |
-| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (03a, 00b, 00b-escrow) |
+| 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **DONE** (#46, 2026-09-07) |
+| 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **WIP** (claimed 2026-09-07) |
+| 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (00b, 00b-escrow) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **READY** |
 | 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | BLOCKED (06) |
 
@@ -98,7 +98,7 @@ that row. He caught it, not us.)
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED (12) |
 | 15 | Alerts: payload-carried delivery | 11 | **codex** | claude | BLOCKED (11) |
-| 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 28 | **codex** | claude | BLOCKED |
+| 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
 | 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | BLOCKED (15) |
 
 ### Phase 4 — getting the number onto the phone
@@ -381,7 +381,7 @@ bank access is **automatic on the Trial** — no per-institution request (**F4**
 - **The Production secret must never reach an agent.** Agents write the command; the owner
   runs it on the VPS (§15).
 
-### 00b — Install the constrained backup key — **codex** / 00b-escrow — **owner only**
+### 00b — Install the constrained backup SSH line and archive key — **codex** / 00b-escrow — **owner only**
 
 **Split 2026-09-07, at the owner's instruction, against the criterion "only work an agent
 cannot or must not do."** This entry used to be one owner-only row and it failed that test
@@ -409,14 +409,18 @@ only `networth-vps.key(.pub)`, and `authorized_keys` on `tokyo-exit` holds exact
 entries, `tokyo-exit-tailscale` and `networth-daemon@claude-agents`. The interactive key is
 installed and working; the backup key is not, because there was never anything to install.
 
-**What codex does, once `00a` hands it the finished line:** paste one `authorized_keys`
-entry for `networth-backup-ssh.key`, already carrying its
+**What codex does, once `00a` hands it both finished artifacts:** paste one
+`authorized_keys` entry for `networth-backup-ssh.key`, already carrying its
 `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix, under the service
-user. This was `DESIGN.md` **§19 step 1a, item 3** and is no longer a §19 step at all — it
-failed the membership rule §19 now carries. (The pointer to step 1a rather than step 1c was
-itself a 2026-09-01 correction; the wrong one had sent him to the step that *confirms* the
-backup works in order to do the step that *installs* the key it pulls over. Both readings
-are now moot for him.)
+user; then install the same archive-key bytes that `00a` generated on
+`zelengs-macbook-air-2` at `/etc/networth/networth-backup.key`, owned by the service user
+and mode `0600`. The installed archive key is read back only through a digest comparison —
+never printed — so `00b` proves that the puller and host hold the same key without putting
+the key in a log. This was `DESIGN.md` **§19 step 1a, item 3** and is no longer a §19 step
+at all — it failed the membership rule §19 now carries. (The pointer to step 1a rather than
+step 1c was itself a 2026-09-01 correction; the wrong one had sent him to the step that
+*confirms* the backup works in order to do the step that *installs* the key it pulls over.
+Both readings are now moot for him.)
 
 **What the owner does — `00b-escrow`, and it is the only thing left in this area that is
 his:** escrow `networth-backup.key` — the archive key, a different key from the SSH one
@@ -854,13 +858,16 @@ permanent Item slot (**F2**, **F2a**, **F6**). This cannot wait for Phase 5. **T
 `03a-live`, not this task** — `08` spends the irreversible resource, so what has to exist
 before it runs is a backup that was observed to work, not one that passes its own tests.
 
-### 00a — Generate the constrained backup keypair; pin its `command=` — **codex**
+### 00a — Generate the constrained backup SSH keypair and archive key; pin its `command=` — **codex**
 
-**What to build.** The thing `00b` is waiting for: one `networth-backup-ssh` keypair, and
-one finished `authorized_keys` line that is pasted without editing. (`00b` is codex's since
-the 2026-09-07 audit; the "without editing" requirement survives the reassignment unchanged
-— a line that needs editing at the keyboard is a line whose review did not cover what
-lands on the host.)
+**What to build.** The three artifacts the two downstream rows are waiting for: one
+`networth-backup-ssh` keypair; one finished `authorized_keys` line that `00b` pastes without
+editing; and one independently random archive key at
+`~/agents/secrets/networth-backup.key`. `00b` installs the same archive-key bytes on the VPS;
+`00b-escrow` gives the owner the Mac copy to put somewhere no agent can read. (`00b` is
+codex's since the 2026-09-07 audit; the "without editing" requirement survives the
+reassignment unchanged — a line that needs editing at the keyboard is a line whose review
+did not cover what lands on the host.)
 
 **It sits here, after `03a`, because the ordering runs the other way from how the board
 used to read it.** `00a` was numbered as a Phase 0 owner gate, so `03a` depended on it —
@@ -875,7 +882,13 @@ by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked b
       `~/agents/secrets/networth-backup-ssh.key`, mode `0600`. It is the puller's key and
       it belongs to the machine that pulls; it never exists on the VPS, and never in this
       repository (`AGENTS.md` rule 1).
-- [ ] The output handed to `00b` is **one line**, complete with its
+- [ ] The archive key is generated independently on `zelengs-macbook-air-2`, written to
+      `~/agents/secrets/networth-backup.key` as one mode-`0600` ASCII line, and accepted by
+      `03a`'s real `load_backup_key` implementation as exactly 32 bytes. Neither its bytes
+      nor a reversible encoding appears in git, a PR, the mailbox, or a log. This is the
+      artifact `00b` installs and `00b-escrow` moves off both project machines.
+- [ ] The output handed to `00b` is **one line** at
+      `~/agents/secrets/networth-backup-ssh.authorized_keys`, complete with its
       `restrict,command="/usr/local/lib/networth/backup-ssh-dispatch"` prefix. Not a
       procedure, not a key plus instructions to prepend something. *(This said "handed to
       the owner" until the 2026-09-07 audit moved the paste to codex. It is the same
@@ -898,7 +911,8 @@ by `03a`. `00a` could not be written until `03a` existed, and `03a` was marked b
   unrestricted key installed today and restricted later inverts the security property
   outright, because a compromised laptop would hold shell access to the host with the Plaid
   master credential for the whole window. One step, already constrained.
-- Ask the owner for a password, or install anything on the VPS on his behalf (§15.1).
+- Ask the owner for a password, or silently fold `00b`'s separately reviewed VPS state
+  change into this generation task (§15.1).
 
 ### 03a-live — `03a`'s acceptance over the installed restricted key — **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only)
 
@@ -1597,7 +1611,16 @@ Before this revision, `28` promised to install "whatever unit set `16` settles o
 depending on `16`, and `16` required itself to be "installed and running" before `08`
 without depending on `28` — so the install existed in two entries and belonged to neither,
 and the verification that gates the only slot-spending task in the project had no owner.
-**Depends on `28`.**
+**Depends on `28` and `20`.** Task `20` supplies `networth-serve`; without it this task
+could install a unit file but could not satisfy its own requirement to observe that service
+running. The original dependency list omitted `20` even though §19 step 3.2 explicitly
+requires the live `networth-serve` socket.
+
+The live install was `DESIGN.md` §19 step 3.2 until the 2026-09-07 assignment audit found
+the same defect as step 3.1: it is a reviewed agent-run install over access the agents
+already hold, not a decision or a secret only the owner can supply. §19 now keeps the step
+as an operational record but explicitly assigns its execution and evidence to this
+codex-only row.
 
 **Acceptance:**
 
