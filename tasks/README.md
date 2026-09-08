@@ -74,8 +74,8 @@ that row. He caught it, not us.)
 | 03a | Encrypted archive + Mac-initiated pull + restore drill — **built and tested without the installed key** | 03, 05a | **codex** | claude | **DONE** (#46, 2026-09-07) |
 | 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **DONE** (#50, 2026-09-07) |
 | 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (00b-escrow, 16) |
-| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **WIP** (claimed 2026-09-07) |
-| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | BLOCKED (06) |
+| 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **DONE** (#49, 2026-09-08) |
+| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | **READY** |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
 
@@ -83,7 +83,7 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | BLOCKED (06a) |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a, 00b-escrow) |
-| 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **READY** |
+| 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **WIP** (claimed 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
 | 12b | Replacement-Item reconcile flow | 04, 09 | **claude** | codex | BLOCKED (09) |
@@ -93,11 +93,11 @@ that row. He caught it, not us.)
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 10 | Item health poller | 04, 05 | **codex** | claude | **DONE** (#38, 2026-09-02) |
-| 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | **WIP** (PR #41) |
-| 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | BLOCKED (11) |
+| 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | **DONE** (#41, 2026-09-07) |
+| 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | **READY** |
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED (12) |
-| 15 | Alerts: payload-carried delivery | 11 | **codex** | claude | BLOCKED (11) |
+| 15 | Alerts: payload-carried delivery | 11 | **codex** | claude | **READY** |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
 | 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | BLOCKED (15) |
 
