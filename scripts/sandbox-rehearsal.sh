@@ -10,10 +10,34 @@
 # brings its own way to execute, and deliberately not a durable one: nothing this
 # script builds outlives it, so it cannot become the install that task 16 owns.
 #
+# WHAT "THE REVIEWED COMMIT" MEANS HERE, AND WHY IT TOOK TWO TRIES. The first
+# version installed `networth @ git+<url>@<sha>` and then read pip's
+# `direct_url.json` back to prove the commit. That proves which *source* commit
+# was checked out and nothing else: pip had already resolved, downloaded, built
+# and executed a dependency tree by then. `pyproject.toml` has open lower bounds
+# (`plaid-python>=43.0.0`, `urllib3>=2.7.0`), so a new SDK release, a new
+# transitive dependency or a different build backend all change what the
+# "reviewed" commit executes, and none of them are the reviewed commit. (Codex
+# caught this in the PR #49 pre-execution review, 2026-09-07.) So now:
+#
+#   * the source arrives over `git`, which verifies object hashes for us, and
+#     HEAD is asserted to be the requested commit;
+#   * the dependencies are the exact set in the reviewed `uv.lock` — exported to
+#     `requirements-{build,runtime}.txt`, every distribution pinned with `==` and
+#     a sha256, installed with `--require-hashes --no-deps` so pip resolves
+#     nothing and cannot fetch anything the lock does not name;
+#   * `plaid-python` ships an sdist and no wheel, so a build backend really does
+#     execute on this host. `--no-build-isolation` over a hash-pinned setuptools
+#     is what keeps that backend inside the pinned set instead of being fetched
+#     unpinned by pip at build time;
+#   * and this package itself is never built at all. It runs from the verified
+#     checkout over `PYTHONPATH`, which removes `hatchling` — the last unpinned
+#     participant — from the execution path entirely.
+#
 # WHAT IT REFUSES, AND WHY EACH REFUSAL IS HERE RATHER THAN IN THE CALLER:
 #
 #   * A ref that is not a full 40-character commit. A branch or a tag moves; what
-#     was reviewed is a commit. `pip install …@main` on a host holding the Plaid
+#     was reviewed is a commit. Installing `@main` on a host holding the Plaid
 #     master credential installs whatever main says at that second.
 #   * NETWORTH_ENV set to anything but sandbox. A Link is what spends a lifetime
 #     Item slot (F2a), so the refusal has to land before anything is installed,
@@ -21,23 +45,33 @@
 #   * root. The database and the token store belong to the service user; a run as
 #     root leaves root-owned files in both, and the daemon that comes later
 #     cannot write them.
+#   * A checkout whose requirement files are missing, or carry a requirement that
+#     is not `==`-pinned with a hash. `--require-hashes` would refuse those too;
+#     this refuses them by name, before a network fetch, and is what the offline
+#     tests drive.
 #
 # WHAT IT NEVER PRINTS. Whatever `networth rehearse-sandbox` prints, which is
 # presence and type per field — no balance, no institution, no item_id, no token,
-# no Plaid response body. This script adds the commit, the paths and the identity
-# it ran as, and nothing else.
+# no Plaid response body. This script adds the commit, the origin, the paths and
+# the identity it ran as, and nothing else.
 #
 # Usage, on the host, as the service user:
 #
 #   ./sandbox-rehearsal.sh <40-hex-commit> [--paths-only]
 #
-# `--paths-only` builds the venv and asks the verb which paths the environment
-# selects, then stops. It makes no Plaid call, so it is the safe first run.
+# `--paths-only` builds the environment and asks the verb which paths it selects,
+# then stops. It makes no Plaid call, so it is the safe first run.
 
 set -euo pipefail
 
-readonly REPO_URL="https://github.com/orzzzl/networth"
+# Overridable so the offline tests can point at a local fixture repository
+# instead of the network. It is *printed* below rather than trusted silently: a
+# run against a non-default origin says so in the transcript, which is the
+# artefact that outlives the run.
+readonly REPO_URL="${NETWORTH_REHEARSAL_ORIGIN:-https://github.com/orzzzl/networth}"
 readonly CREDENTIAL="/etc/networth/plaid-sandbox.env"
+readonly BUILD_REQUIREMENTS="requirements-build.txt"
+readonly RUNTIME_REQUIREMENTS="requirements-runtime.txt"
 
 die() {
 	printf 'sandbox-rehearsal: %s\n' "$1" >&2
@@ -73,45 +107,86 @@ if [ "$mode" != "--paths-only" ] && [ ! -r "$CREDENTIAL" ]; then
 fi
 
 command -v python3 >/dev/null || die "no python3 on this host"
+command -v git >/dev/null || die "no git on this host; the reviewed source arrives as git objects so that their hashes are checked rather than trusted"
 
-venv="$(mktemp -d "${TMPDIR:-/tmp}/networth-rehearsal.XXXXXX")"
+# Every requirement is `==`-pinned and carries at least one sha256. Reported per
+# requirement rather than as a count, because "as many hashes as requirements" is
+# satisfied by one requirement carrying two and another carrying none.
+assert_fully_pinned() {
+	local file="$1" offenders
+	[ -r "$file" ] || die "$file is missing from the reviewed commit; the locked dependency set is what makes this an install of reviewed bytes rather than of whatever resolved today"
+	offenders="$(
+		awk '
+			/^[[:space:]]*#/ { next }
+			/^[[:space:]]*$/ { next }
+			/^[^[:space:]]/ {
+				if (seen && !hashed) { print name }
+				name = $1; seen = 1; hashed = 0
+				if (name !~ /==/) { print name " (not ==-pinned)" }
+				next
+			}
+			/--hash=sha256:/ { hashed = 1 }
+			END { if (seen && !hashed) { print name } }
+		' "$file"
+	)"
+	[ -z "$offenders" ] || die "$file has requirements that are not pinned with a hash: $(printf '%s' "$offenders" | tr '\n' ' ')"
+	grep -qE '^[^[:space:]#]' "$file" || die "$file lists no requirements at all; an empty lock cannot be the reviewed dependency set"
+}
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/networth-rehearsal.XXXXXX")"
 # On success or failure, and on an interrupt: the executable environment is the
 # ephemeral part. Whatever the run wrote into the Sandbox database and token
 # store is the result and stays.
-trap 'rm -rf "$venv"' EXIT INT TERM
+trap 'rm -rf "$work"' EXIT INT TERM
+src="$work/src"
+venv="$work/venv"
 
 printf 'commit        %s\n' "$commit"
+printf 'origin        %s\n' "$REPO_URL"
 printf 'identity      %s (uid %s), HOME=%s\n' "$(id -un)" "$(id -u)" "${HOME:-<unset>}"
-printf 'venv          %s (removed on exit)\n' "$venv"
+printf 'workspace     %s (removed on exit)\n' "$work"
+
+# Fetch exactly one commit. git verifies the object hashes on the way in, so the
+# tree either is the reviewed one or the fetch fails — a stronger claim than
+# asking a resolver afterwards what it thinks it installed.
+mkdir -p "$src"
+git init --quiet "$src"
+git -C "$src" remote add origin "$REPO_URL"
+git -C "$src" fetch --quiet --depth 1 origin "$commit" ||
+	die "could not fetch $commit from $REPO_URL; a commit that is not pushed cannot be the one that was reviewed"
+git -C "$src" checkout --quiet --detach FETCH_HEAD
+head="$(git -C "$src" rev-parse HEAD)"
+[ "$head" = "$commit" ] || die "the checkout is at '$head', not '$commit'"
+printf 'source        verified at %s\n' "$head"
+
+assert_fully_pinned "$src/$BUILD_REQUIREMENTS"
+assert_fully_pinned "$src/$RUNTIME_REQUIREMENTS"
 
 python3 -m venv "$venv"
 # --no-cache-dir keeps the claim honest: a pip cache in the service user's home
 # is a durable artefact of a run that promised to leave nothing behind.
-"$venv/bin/pip" install --quiet --no-cache-dir --disable-pip-version-check \
-	"networth @ git+$REPO_URL@$commit"
-
-# Prove the bytes are the reviewed ones rather than trusting the resolver: pip
-# records what it actually checked out, and a full commit id must come back
-# unchanged. This is the check that makes "install the reviewed commit" a fact
-# about the installed tree instead of a claim about the command line.
-installed="$("$venv/bin/python" - <<'PY'
-import json, pathlib, sys
-roots = [p for p in pathlib.Path(sys.prefix).rglob("networth-*.dist-info/direct_url.json")]
-if len(roots) != 1:
-    sys.exit(f"expected one networth direct_url.json, found {len(roots)}")
-print(json.loads(roots[0].read_text()).get("vcs_info", {}).get("commit_id", ""))
-PY
-)"
-[ "$installed" = "$commit" ] || die "the installed tree records commit '$installed', not '$commit'"
-printf 'installed     verified at %s\n\n' "$installed"
+pip_install() {
+	"$venv/bin/pip" install --quiet --no-cache-dir --disable-pip-version-check \
+		--require-hashes --no-deps "$@"
+}
+# The build backend first, and pinned, because `plaid-python` has no wheel: with
+# build isolation pip would go and fetch a setuptools nobody reviewed in order to
+# build it.
+pip_install -r "$src/$BUILD_REQUIREMENTS"
+pip_install --no-build-isolation -r "$src/$RUNTIME_REQUIREMENTS"
+printf 'dependencies  installed from the reviewed lock, hash-verified\n\n'
 
 # Deliberately not `exec`: `exec` replaces this process, and a replaced process
-# runs no EXIT trap — the venv would outlive the run that promised to remove it,
-# which is the one property this whole script exists to provide.
+# runs no EXIT trap — the workspace would outlive the run that promised to remove
+# it, which is the one property this whole script exists to provide.
+#
+# `-m networth` over the verified checkout, not an installed console script: this
+# package is never built here, so no build backend of ours executes on the host
+# and the bytes that run are the git objects checked above.
 status=0
 if [ "$mode" = "--paths-only" ]; then
-	"$venv/bin/networth" rehearse-sandbox --print-paths-only || status=$?
+	PYTHONPATH="$src" "$venv/bin/python" -m networth rehearse-sandbox --print-paths-only || status=$?
 else
-	"$venv/bin/networth" rehearse-sandbox || status=$?
+	PYTHONPATH="$src" "$venv/bin/python" -m networth rehearse-sandbox || status=$?
 fi
 exit "$status"
