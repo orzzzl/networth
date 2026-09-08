@@ -435,28 +435,36 @@ mechanism OpenSSH needs to reach the dispatcher; it is not reachable through thi
 
 **Acceptance — the host state, not the paste command:**
 
-- [ ] The service user's `.ssh` directory is owned by `networth:networth`, mode `0700`,
+- **Executed 2026-09-08 from `zelengs-macbook-air-2`.** The administration SSH peer
+  observed `100.96.163.67`; `tokyo-exit` reported the expected pre-state before any
+  write. Both artifacts were installed through a temp file in the destination directory,
+  then ownership/mode, file `fsync`, atomic rename and directory `fsync`. The real
+  restricted-key probe returned 127 with
+  `/usr/local/lib/networth/backup-ssh-dispatch: not found`, and did not return nologin's
+  account-unavailable message. The checks below print no key bytes, fingerprint, digest or
+  reversible encoding.
+- [x] The service user's `.ssh` directory is owned by `networth:networth`, mode `0700`,
       and `authorized_keys` is a regular non-symlink owned by that user, mode `0600`.
-- [ ] `authorized_keys` contains `00a`'s finished line **exactly once and byte-for-byte**.
+- [x] `authorized_keys` contains `00a`'s finished line **exactly once and byte-for-byte**.
       The same public key appears nowhere in an unrestricted entry. The live pre-execution
       check found no file, so any non-comment entry that appears before execution is a state
       change: stop and review it rather than deleting or preserving an unknown login. The
       update is temp file → ownership/mode → `fsync` → atomic rename in the destination
       directory → directory `fsync`; a failed write never truncates the working file and a
       reported success survives a crash.
-- [ ] `getent passwd networth` names `/bin/sh`; `passwd -S networth` still reports a locked
+- [x] `getent passwd networth` names `/bin/sh`; `passwd -S networth` still reports a locked
       password; and `sshd -T` still reports both `passwordauthentication no` and
       `kbdinteractiveauthentication no`. The shell transition happens only after the
       restricted key file is durable, so every intermediate state is fail-closed.
-- [ ] `/etc/networth/networth-backup.key` is a regular non-symlink owned by
+- [x] `/etc/networth/networth-backup.key` is a regular non-symlink owned by
       `networth:networth`, mode `0600`, installed by the same atomic pattern. On
       `zelengs-macbook-air-2`, `03a`'s real `load_backup_key` accepts the **Mac source copy**
       as exactly 32 bytes; a local/remote digest comparison then proves the installed host
       file is byte-identical without needing the undeployed host runtime and without
       printing either the bytes or either digest.
-- [ ] Running the installation a second time changes neither file and still passes every
+- [x] Running the installation a second time changes neither file and still passes every
       check. Idempotence must not duplicate the SSH line or replace unrelated entries.
-- [ ] **The installed line is exercised once from `zelengs-macbook-air-2`, before `16`:**
+- [x] **The installed line is exercised once from `zelengs-macbook-air-2`, before `16`:**
       write down the expected result, then run `ssh -i
       ~/agents/secrets/networth-backup-ssh.key -o IdentitiesOnly=yes -o BatchMode=yes
       networth@100.102.245.37 'serve-archive current'`. The dispatcher is absent at the
@@ -464,7 +472,7 @@ mechanism OpenSSH needs to reach the dispatcher; it is not reachable through thi
       path reported missing. Exit 1 / `This account is currently not available.` means the
       `nologin` defect remains and **00b does not go DONE**. A successful shell or execution
       of the client-supplied command also fails the task.
-- [ ] The dispatcher is **not** smuggled into this task. Until task `16` installs both the
+- [x] The dispatcher is **not** smuggled into this task. Until task `16` installs both the
       durable `networth` runtime and `/usr/local/lib/networth/backup-ssh-dispatch`, the
       forced line fails closed with the distinct 127 / missing-path result above.
       `03a-live` depends on `16`, so an absent command cannot make its negative-shell check
