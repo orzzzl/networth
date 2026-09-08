@@ -4474,7 +4474,7 @@ That test, applied:
 | Accepting legal terms; creating accounts | Capturing evidence, verifying criteria |
 | Putting a key somewhere outside these machines (escrow) | Anything an agent already has the access to do |
 
-**Three steps failed that test, and all three are marked in place below rather
+**Five steps failed that test, and all five are marked in place below rather
 than deleted** — a correction that lands only in a section preamble is not read
 by whoever is halfway through the procedure. Each carries a blockquote naming the
 task and agent it moved to; the surrounding text stays, because *what* gets
@@ -4489,15 +4489,24 @@ section moved.
   was running a reviewed script over a key the agents already hold, against a
   host they already reach, and then diffing two files.
 - **Step 1a item 3** (generate and install the restricted backup key) → tasks
-  `00a` and `00b`, **codex**. The private half already lives on a Mac the agents
+  `00a` and `00b`, **codex**. The private half is generated on a Mac the agents
   work on, and the public half goes onto a host they already hold root on.
 - **Step 1c item 2** (install the puller LaunchAgent; observe a pull on battery)
   → task `03a-live`, **codex**; this is **issue #30**. Installing is one
   re-runnable reviewed command, and the battery evidence is read out of the pull
   journal rather than watched.
+- **Step 3.2** (install and verify the systemd units) → task `16`, **codex**.
+  It is a reviewed install over the administration access agents already hold,
+  and every live observation it requires is machine-readable. No owner decision
+  or owner-only secret is involved.
+- **Step 3.4** (record and re-check the approved public surface) → tasks `16`
+  and `20`, **codex**. Task `16` owns the live post-install evidence; task `20`
+  owns the forever-after bind test. Both read machine state through access the
+  agents already hold, and the baseline was captured before networth existed.
 
 **What stays his, and why each one survives the test:** the Plaid account and its
-terms (step 1); the Sandbox and Production secrets, which no agent may ever see;
+terms (step 1); the Sandbox and Production secrets, which no agent may ever see
+(step 3.3);
 the **escrow** of `networth-backup.key` and the `attest-key` run that records it
 (step 1c item 3) — an escrow an agent can read is not an escrow, and an agent
 running `attest-key` writes down a fact that did not happen; the restore drill
@@ -4588,6 +4597,14 @@ codex on 2026-09-07 and is kept below as the record of what gets installed.
    > **not as an instruction to him**. What is still his in this area is the
    > *escrow* of the separate archive key — `00b-escrow`, and step 1c item 3
    > below — because an escrow an agent can read is not an escrow.
+
+   The same agent sequence owns the separate archive key that this transport
+   protects: task `00a` generates one 32-byte key at
+   `~/agents/secrets/networth-backup.key`, and task `00b` installs those same
+   bytes at `/etc/networth/networth-backup.key` under the service user. The
+   owner receives the Mac copy only for the off-machine escrow in step 1c item 3;
+   he is not asked to create or deploy a key that the reviewed runtime already
+   defines and both agents must handle to test.
 
    *(Rev 16 changed this line: it used to force `networth backup serve-archive`
    directly, which made the pull's write-back impossible — `command=` ignores the
@@ -4807,8 +4824,8 @@ recoverable one is before Link opens**, and the only thing worth checking there
 is the mechanism itself, end to end.
 
 **Step 3 — Stand up the daemon on the VPS** (~20 min, once; agents prepare
-everything, the owner runs it — **except 3.1, which is no longer his; see the
-substep**)
+everything, the owner supplies only the secrets no agent may see — **3.1, 3.2
+and 3.4 are no longer his; see each substep**)
 
 *(Rev 10 replaced two mutually-exclusive step 3s — one per O5 branch — with this
 one. The Cloudflare branch's step 3a was the longest procedure in this document:
@@ -4986,6 +5003,14 @@ device. All of it is gone with the third party it protected.)*
    "something is on that port" is not the fact being checked; §13.)* This is the
    one misconfiguration that silently publishes the endpoint, so it is checked by
    hand once here and by a test forever after.
+
+   > **This substep is no longer the owner's** *(2026-09-07 assignment audit)*.
+   > Task `16`, assigned to codex, already owns the unit files, their live install
+   > and the evidence that they are running. Installing reviewed files over the
+   > administration key agents already hold and reading `systemctl`, `ss` and
+   > Tailscale state require neither an owner decision nor an owner-only secret.
+   > The text stays here as the operational contract, not as an instruction to him.
+
 3. **Put the secrets in place** under the service user (§15), mode 600 — both
    `plaid.env` and `plaid-sandbox.env`, since a rehearsal needs its own
    credential and its own database.
@@ -4995,6 +5020,13 @@ device. All of it is gone with the third party it protected.)*
    `sshd` on `0.0.0.0:22` and `[::]:22`, which is §15.1's single opening. The
    check from here on is that the set still **equals** the baseline, and
    `tailscale funnel status` shows no funnel.
+
+   > **This substep is no longer the owner's** *(2026-09-07 assignment audit)*.
+   > Task `16`, assigned to codex, captures the live post-install comparison and
+   > Funnel state; task `20`, also assigned to codex, owns the automated bind
+   > test that keeps the invariant true afterwards. Both use read-only evidence
+   > over administration access agents already hold. No owner decision or
+   > owner-only secret is involved.
 
    *(Rev 17, from review, and this is a correction to rev 16's own hardening
    step rather than a note about it. Rev 16 demanded that **no** non-loopback,
