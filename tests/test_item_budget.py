@@ -500,7 +500,10 @@ def _states_the_schema_admits(ddl: str) -> set[str]:
     exact failure the guard exists to stop.
     """
 
-    match = re.search(r"state\s+IN\s*\(([^)]*)\)", ddl)
+    # `\b` and not just `state`: a later column named `..._state` with its own
+    # IN list would otherwise be matched first, and this guard would then check
+    # the wrong constraint while still looking like it passed.
+    match = re.search(r"\bstate\s+IN\s*\(([^)]*)\)", ddl)
     assert match is not None, "link_flow no longer constrains `state` with an IN list"
     return set(re.findall(r"'([^']+)'", match.group(1)))
 
