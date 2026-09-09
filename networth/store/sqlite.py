@@ -416,8 +416,9 @@ class AccountRepository:
 
         ``NEW`` accounts are included: task 12 records what Plaid returned, while
         task 14 is the boundary that prevents an unreconciled account from
-        contributing to a total. Archived accounts are history and must not keep
-        producing observations after their replacement is confirmed.
+        contributing to a total. Either archive marker excludes an account:
+        inconsistent transition state must fail closed instead of refreshing
+        history after its replacement is confirmed.
         """
 
         rows = _rows(
@@ -429,6 +430,7 @@ class AccountRepository:
                   AND a.plaid_account_id IS NOT NULL
                   AND a.freshness_policy IN ('SYNCED_HOLDINGS', 'SYNCED_BALANCE')
                   AND a.reconciliation_state <> 'ARCHIVED'
+                  AND a.archived_at IS NULL
                 ORDER BY a.item_id, a.id
                 """
             )

@@ -1,7 +1,7 @@
 """Domain types whose shape preserves money provenance."""
 
-from networth.model.alert import Alert, AlertDraft, AlertKind
 from networth.model.account import LinkedAccount, ReconciliationState
+from networth.model.alert import Alert, AlertDraft, AlertKind
 from networth.model.figure import (
     AggregateSourceClock,
     SnapshotAge,

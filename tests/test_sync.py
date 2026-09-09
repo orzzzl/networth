@@ -373,11 +373,6 @@ def test_failed_fetch_carries_the_whole_previous_observation_without_advancing_e
             is_carried_forward=False,
         )
     )
-    store.accounts.record_fetch(
-        account_id,
-        fetched_at=OLDER_FETCH,
-        source_as_of=OLDER_SOURCE,
-    )
     add_run(db, "run-carry")
     client = FakeClient(db, realtime=RuntimeError("response detail must not escape"))
 
@@ -396,7 +391,7 @@ def test_failed_fetch_carries_the_whole_previous_observation_without_advancing_e
     clocks = db.execute(
         "SELECT last_fetch_at, last_source_as_of FROM account WHERE id = ?", (account_id,)
     ).fetchone()
-    assert clocks == (_db_time(OLDER_FETCH), _db_time(OLDER_SOURCE))
+    assert clocks == (None, None)
 
 
 def test_failure_without_history_is_reported_and_does_not_invent_an_observation(
@@ -459,7 +454,7 @@ def test_one_product_failure_does_not_discard_the_other_product(
     assert result.carried_forward_count == 1
 
 
-def test_sync_targets_are_discovered_live_and_exclude_manual_and_archived_accounts(
+def test_sync_targets_are_discovered_live_and_honor_each_archive_marker(
     db: sqlite3.Connection,
 ) -> None:
     item_id = add_item(db, "targets")
@@ -468,11 +463,10 @@ def test_sync_targets_are_discovered_live_and_exclude_manual_and_archived_accoun
     add_account(
         db,
         item_id,
-        "archived",
+        "state-archived",
         reconciliation="ARCHIVED",
-        archived_at=NOW,
     )
-    add_account(db, None, "manual", policy=FreshnessPolicy.MANUAL_STATIC)
+    add_account(db, item_id, "time-archived", archived_at=NOW)
     add_run(db, "run-targets")
     client = FakeClient(
         db,
@@ -483,3 +477,18 @@ def test_sync_targets_are_discovered_live_and_exclude_manual_and_archived_accoun
 
     assert result.attempted_count == 2
     assert {row.account_id for row in result.observations} == {confirmed, new}
+
+
+def test_sync_targets_exclude_manual_policy_independently_of_linkage(
+    db: sqlite3.Connection,
+) -> None:
+    item_id = add_item(db, "policy")
+    synced = add_account(db, item_id, "synced")
+    add_account(db, item_id, "linked-manual", policy=FreshnessPolicy.MANUAL_STATIC)
+    add_run(db, "run-policy")
+    client = FakeClient(db, realtime=(balance("synced"),))
+
+    result = sync_for(db, client, mode=BalanceMode.REALTIME).run("run-policy", at=NOW)
+
+    assert result.attempted_count == 1
+    assert {row.account_id for row in result.observations} == {synced}
