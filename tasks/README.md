@@ -94,9 +94,9 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 10 | Item health poller | 04, 05 | **codex** | claude | **DONE** (#38, 2026-09-02) |
 | 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | **DONE** (#41, 2026-09-07) |
-| 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | **WIP** (#62) |
+| 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | **DONE** (#62, 2026-09-09) |
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
-| 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED (12) |
+| 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | **READY** |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
 | 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | **READY** |
@@ -1727,14 +1727,14 @@ runbook contradict each other in rev 2.
 
 **Normative:** §8.1, §7, **F5**.
 
-**Acceptance:**
+**Acceptance:** *(all four met in #62, merged `a089372`)*
 
-- [ ] Records `fetched_at` and `source_as_of` **separately**, plus which evidence produced
+- [x] Records `fetched_at` and `source_as_of` **separately**, plus which evidence produced
       the latter.
-- [ ] Holdings take the **oldest** contributing `institution_price_*`.
-- [ ] Balances use `/accounts/balance/get` under `balance_mode: realtime` (**F5**) and are
+- [x] Holdings take the **oldest** contributing `institution_price_*`.
+- [x] Balances use `/accounts/balance/get` under `balance_mode: realtime` (**F5**) and are
       `UNKNOWN` under `cached`.
-- [ ] Sets `is_carried_forward` honestly, and **a carried-forward row never advances its
+- [x] Sets `is_carried_forward` honestly, and **a carried-forward row never advances its
       source clock**.
 
 **Must not:** infer a source clock when none is available. `UNKNOWN` is a correct answer.
@@ -1777,6 +1777,12 @@ observations" would reintroduce exactly the retroactive deformation §12 rules o
 
 **Must not:** provide a convenience accessor that strips the age. That accessor is the bug
 this project exists to prevent.
+
+**Question carried from #62.** A holding whose institution date is a weekend or market
+holiday currently makes the account source clock `UNKNOWN`, even when other holdings have
+usable dates. Task 14 must deliberately decide whether the headline stays undateable or
+whether task 12 needs a distinct representation for "dated, but no matching market
+session"; it must not silently treat that input as the same fact as a missing date.
 
 ### 15 — Alerts: payload-carried delivery — **claude** *(reassigned from codex, 2026-09-09)*
 
