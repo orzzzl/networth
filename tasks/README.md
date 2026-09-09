@@ -107,14 +107,14 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | BLOCKED (14) |
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | BLOCKED (17) |
-| 19 | Payload schema + `Publisher` (encrypt) | 17 | **codex** | claude | BLOCKED (17) |
+| 19 | Payload schema + `Publisher` (encrypt) | 17, 26a | **codex** | claude | BLOCKED (17) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (19) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | BLOCKED (20) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | BLOCKED (19) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | BLOCKED (21) |
 | 24 | Release signing + APK delivery | 20, 21, 22 | **claude** | codex | BLOCKED |
-| 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 22 | **claude** | codex | BLOCKED |
+| 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 19, 22 | **claude** | codex | BLOCKED |
 
 ### Phase 5 — operations
 
@@ -1906,6 +1906,17 @@ fact this host cannot observe — the two `doctor`s are **split by host** (issue
       **envelope and canonical length-delimited AAD encoding of §6.1** — both ends must
       build those bytes identically or nothing decrypts.
 - [ ] The payload carries the total's age as task `14`'s tagged `(age_state, as_of)`.
+- [ ] **The payload carries `26a`'s Item-budget result, tagged available or unavailable.**
+      The phone cannot call `26a` — it is host-side Python reading the host's SQLite — so
+      the number reaches the app only if `Publisher` puts it here, and task `26` is
+      unbuildable without it. `26a` refuses to answer rather than return a count its stored
+      rows cannot support, and **that refusal has to survive the wire as a refusal**: a
+      field that can only hold an integer forces the publisher to invent one at the moment
+      the truth is "we do not know", which is the single thing `26a` exists not to do.
+      Tagged for the same reason the age above is tagged — `null` and `0` are one careless
+      decode apart on the far end, and they mean opposite things about the owner's
+      remaining Items (**F2**). This lands before `19` ships, so it is part of the first
+      `schema_version` rather than a bump.
 - [ ] `last_seq` is **pairing-scoped**. The epoch is **not** part of `seq` (issue #8);
       `publish_epoch` is a diagnostic only.
 - [ ] The five §9.3a restore cases pass separately — see `03a`.
@@ -2059,6 +2070,16 @@ delivered app has a real transport.
 subcommand (`18`) and the app (`22`). Running out of slots is invisible until it isn't
 (**F2**), and a number nobody sees is not surfacing.
 
+**One result, two transports — and only one of them is a function call.** `doctor` runs on
+the sync host and calls `26a` directly. The app cannot: it is Flutter on the phone and
+`26a` is host-side Python over the host's SQLite. The app's copy arrives in `19`'s payload,
+which is why `19` now depends on `26a` and carries the tagged result. *(This row used to
+say both surfaces "call `26a`", which was not buildable as written — there was no route by
+which the app obtained the number at all. Found while amending this row for the refusal
+contract, 2026-09-08.)* That asymmetry is the whole risk here: two transports is how two
+answers get born, so what travels is **`26a`'s result**, never a number re-derived at
+either end.
+
 **Why it is here and not in Phase 2.** Its consumers are here. This task used to hold both
 the arithmetic and the display and to depend on `08`, which needs the arithmetic — so it
 was upstream and downstream of the same task. The count moved to `26a`, before `08`; what
@@ -2068,16 +2089,20 @@ is left is the presentation, and presentation lands with the surfaces that prese
 
 **Acceptance:**
 
-- [ ] `doctor` and the app **agree on the number**, because both call `26a` — verified by a
-      test that changes the underlying state and asserts both surfaces move together, not
-      by two implementations that happen to match on the day they were written.
+- [ ] `doctor` and the app **agree on the number** — `doctor` by calling `26a`, the app by
+      rendering what `19`'s payload carried. Verified **end to end**: change the underlying
+      state, publish, decode, and assert both surfaces moved together. Two implementations
+      that happen to match on the day they were written is exactly what this must not be,
+      and with two transports that is the likelier outcome, not the unlikelier one.
 - [ ] **They agree when there is no number, either.** `26a` (#54) raises `ItemBudgetError`
       rather than returning a count its stored rows cannot support, so "unavailable, and
       here is the condition" is a third state both surfaces must render — and **neither may
       fall back to an integer**, not to the last known count and not to zero. A fallback is
       the hardest of these failures to notice, because the surface it produces looks exactly
-      like a working one. Verified the same way as the criterion above: one underlying
-      state, both surfaces asserted together.
+      like a working one. **Run the same end-to-end path for this case**: publish an
+      unavailable result, decode it, and assert both surfaces render a refusal. A test that
+      only covers the numeric case leaves the wire format's unavailable branch unexercised
+      on the one path that has to carry it across a process boundary.
 - [ ] The number is shown with what it means: a remaining count of zero says the account is
       at its lifetime ceiling and that `/item/remove` will not free one (**F2**), rather
       than showing a bare `0`.
@@ -2088,6 +2113,10 @@ is left is the presentation, and presentation lands with the surfaces that prese
 
 - Do not compute anything. If this task needs a rule about what counts, the rule belongs in
   `26a` and this task calls it. Two sources means two answers.
+- **Do not give the app a second route to the number** — no HTTP query of its own, no
+  recount from whatever else the payload carries. `19`'s field is the only one, for the
+  same reason `26a` is the only source: a fallback route is a second source wearing a
+  different hat, and it will be the one that runs on the day they disagree.
 - Do not present the count without its provenance (`AGENTS.md` rule 4).
 
 ---
