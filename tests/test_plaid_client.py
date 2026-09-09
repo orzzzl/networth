@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -132,6 +133,9 @@ class FakeApi:
 
     def accounts_balance_get(self, accounts_balance_get_request: Any) -> Any:
         raise AssertionError("an item-status test must not call /accounts/balance/get")
+
+    def accounts_get(self, accounts_get_request: Any) -> Any:
+        raise AssertionError("an item-status test must not call /accounts/get")
 
     def investments_holdings_get(self, investments_holdings_get_request: Any) -> Any:
         raise AssertionError("an item-status test must not call /investments/holdings/get")
@@ -777,3 +781,55 @@ def test_a_request_we_built_wrong_is_not_swallowed_as_a_call_failure() -> None:
         client, _ = sandbox_client(accounts_balance_get=exc)
         with pytest.raises((ApiTypeError, ApiValueError)):
             client.accounts_balance_get("access", fields=("account_id",))
+
+
+def test_value_fetches_use_the_explicit_balance_endpoints_and_owned_types() -> None:
+    client, api = sandbox_client()
+
+    realtime = client.fetch_realtime_balances("access")
+    cached = client.fetch_cached_balances("access")
+
+    assert api.called[-2:] == ["accounts_balance_get", "accounts_get"]
+    assert realtime == cached
+    assert realtime[0].current == Decimal("1000.0")
+    assert realtime[0].last_updated_datetime == datetime(2026, 9, 7, 14, 30, tzinfo=UTC)
+    assert "acct-1" not in repr(realtime)
+    assert "1000.0" not in repr(realtime)
+
+
+def test_holdings_fetch_returns_account_totals_and_clock_evidence() -> None:
+    client, api = sandbox_client()
+
+    investments = client.fetch_holdings("access")
+
+    assert api.called[-1] == "investments_holdings_get"
+    assert investments.accounts[0].current == Decimal("1000.0")
+    assert investments.holdings[0].institution_value == Decimal("1000.0")
+    assert investments.holdings[0].institution_price_datetime == datetime(
+        2026, 9, 5, 21, 0, tzinfo=UTC
+    )
+    assert "acct-1" not in repr(investments)
+    assert "1000.0" not in repr(investments)
+
+
+def test_value_fetch_refuses_unusable_provider_fields_without_echoing_them() -> None:
+    malformed = SimpleNamespace(
+        accounts=[
+            SimpleNamespace(
+                account_id="sensitive-account",
+                balances=SimpleNamespace(
+                    current=4321.99,
+                    iso_currency_code="not-a-currency",
+                    last_updated_datetime=None,
+                ),
+            )
+        ]
+    )
+    client, _ = sandbox_client(accounts_balance_get=malformed)
+
+    with pytest.raises(PlaidCallError) as raised:
+        client.fetch_realtime_balances("access")
+
+    assert str(raised.value) == "accounts/balance/get returned an unusable account record"
+    assert "sensitive-account" not in str(raised.value)
+    assert "4321.99" not in str(raised.value)

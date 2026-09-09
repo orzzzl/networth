@@ -143,6 +143,7 @@ def _accounts_response() -> Any:
 
 def _holdings_response() -> Any:
     return SimpleNamespace(
+        accounts=_accounts_response().accounts,
         holdings=[
             SimpleNamespace(
                 account_id="acct-1",
@@ -266,6 +267,9 @@ class FakeSandboxApi:
         return self._answer(
             "accounts_balance_get", _accounts_response(), accounts_balance_get_request
         )
+
+    def accounts_get(self, accounts_get_request: Any) -> Any:
+        return self._answer("accounts_get", _accounts_response(), accounts_get_request)
 
     def investments_holdings_get(self, investments_holdings_get_request: Any) -> Any:
         return self._answer(

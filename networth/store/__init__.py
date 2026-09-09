@@ -1,6 +1,7 @@
 """SQLite Store facade and repository errors."""
 
 from networth.store.sqlite import (
+    AccountRepository,
     AlertAlreadyOpenError,
     AlertNotFoundError,
     AlertRepository,
@@ -18,6 +19,7 @@ from networth.store.sqlite import (
 )
 
 __all__ = [
+    "AccountRepository",
     "AlertAlreadyOpenError",
     "AlertNotFoundError",
     "AlertRepository",

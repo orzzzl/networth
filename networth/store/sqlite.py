@@ -17,12 +17,15 @@ from networth.model import (
     Alert,
     AlertDraft,
     AlertKind,
+    FreshnessPolicy,
     ItemHealth,
     ItemHealthUpdate,
     ItemState,
+    LinkedAccount,
     Observation,
     ObservationDraft,
     ObservationSource,
+    ReconciliationState,
     Snapshot,
     SnapshotAge,
     SnapshotAgeState,
@@ -92,6 +95,11 @@ _ITEM_COLUMNS = """
 _ALERT_COLUMNS = """
     id, kind, created_at, message, item_id, account_id,
     raised_source_as_of, notified_at, acknowledged_at, resolved_at
+"""
+
+_ACCOUNT_COLUMNS = """
+    a.id, a.item_id, a.plaid_account_id, a.currency,
+    a.freshness_policy, a.reconciliation_state
 """
 
 
@@ -209,6 +217,22 @@ def _alert_from_row(row: tuple[object, ...]) -> Alert:
         )
     except (IndexError, TypeError, ValueError) as exc:
         raise StoredDataError("alert row violates the domain model") from exc
+
+
+def _linked_account_from_row(row: tuple[object, ...]) -> LinkedAccount:
+    try:
+        return LinkedAccount(
+            id=_integer(row[0], field="account.id"),
+            item_id=_integer(row[1], field="account.item_id"),
+            plaid_account_id=_text(row[2], field="account.plaid_account_id"),
+            currency=_text(row[3], field="account.currency"),
+            freshness_policy=FreshnessPolicy(_text(row[4], field="account.freshness_policy")),
+            reconciliation_state=ReconciliationState(
+                _text(row[5], field="account.reconciliation_state")
+            ),
+        )
+    except (IndexError, TypeError, ValueError) as exc:
+        raise StoredDataError("account row violates the linked-account model") from exc
 
 
 def _observation_from_row(row: tuple[object, ...]) -> Observation:
@@ -376,6 +400,76 @@ class ItemRepository:
         if current is None:
             raise ItemNotFoundError(f"item {item_id} does not exist")
         return current
+
+
+class AccountRepository:
+    """Read active linked-account sync targets and their last fetch clocks."""
+
+    __slots__ = ("_connection",)
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        _require_foreign_keys(connection)
+        self._connection = connection
+
+    def syncable(self) -> tuple[LinkedAccount, ...]:
+        """Every non-archived Plaid account, discovered from the live table.
+
+        ``NEW`` accounts are included: task 12 records what Plaid returned, while
+        task 14 is the boundary that prevents an unreconciled account from
+        contributing to a total. Either archive marker excludes an account:
+        inconsistent transition state must fail closed instead of refreshing
+        history after its replacement is confirmed.
+        """
+
+        rows = _rows(
+            self._connection.execute(
+                f"""
+                SELECT {_ACCOUNT_COLUMNS}
+                FROM account AS a
+                WHERE a.item_id IS NOT NULL
+                  AND a.plaid_account_id IS NOT NULL
+                  AND a.freshness_policy IN ('SYNCED_HOLDINGS', 'SYNCED_BALANCE')
+                  AND a.reconciliation_state <> 'ARCHIVED'
+                  AND a.archived_at IS NULL
+                ORDER BY a.item_id, a.id
+                """
+            )
+        )
+        return tuple(_linked_account_from_row(row) for row in rows)
+
+    def record_fetch(
+        self,
+        account_id: int,
+        *,
+        fetched_at: datetime,
+        source_as_of: datetime | None,
+    ) -> None:
+        """Advance summary clocks after a freshly fetched observation only.
+
+        A later fetch may legitimately carry an older or absent source clock;
+        that is frozen or unknown data, not a reason to retain a more flattering
+        previous value. An out-of-order older fetch cannot overwrite the summary.
+        """
+
+        if not isinstance(account_id, int) or isinstance(account_id, bool):
+            raise TypeError("account_id must be an integer")
+        if account_id <= 0:
+            raise ValueError("account_id must be positive")
+        fetched = _timestamp_to_db(fetched_at)
+        self._connection.execute(
+            """
+            UPDATE account
+               SET last_fetch_at = ?, last_source_as_of = ?
+             WHERE id = ?
+               AND (last_fetch_at IS NULL OR last_fetch_at <= ?)
+            """,
+            (
+                fetched,
+                _optional_timestamp_to_db(source_as_of),
+                account_id,
+                fetched,
+            ),
+        )
 
 
 class ObservationRepository:
@@ -834,8 +928,9 @@ class Store:
     so the Store asserts it instead of mutating caller-owned connection state.
     """
 
-    __slots__ = ("alerts", "items", "observations", "snapshots")
+    __slots__ = ("accounts", "alerts", "items", "observations", "snapshots")
 
+    accounts: AccountRepository
     alerts: AlertRepository
     items: ItemRepository
     observations: ObservationRepository
@@ -843,6 +938,7 @@ class Store:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         _require_foreign_keys(connection)
+        self.accounts = AccountRepository(connection)
         self.alerts = AlertRepository(connection)
         self.items = ItemRepository(connection)
         self.observations = ObservationRepository(connection)
