@@ -94,7 +94,7 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 10 | Item health poller | 04, 05 | **codex** | claude | **DONE** (#38, 2026-09-02) |
 | 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | **DONE** (#41, 2026-09-07) |
-| 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | **READY** |
+| 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | **WIP** (#62) |
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED (12) |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **WIP** (claude, 2026-09-09) |
