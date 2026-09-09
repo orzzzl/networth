@@ -34,7 +34,8 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Protocol, cast
 
@@ -43,6 +44,7 @@ import urllib3.exceptions
 from plaid.api import plaid_api
 from plaid.exceptions import ApiException
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
+from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
 from plaid.model.institutions_get_request_options import InstitutionsGetRequestOptions
@@ -160,6 +162,7 @@ class _PlaidApi(Protocol):
     def accounts_balance_get(
         self, accounts_balance_get_request: AccountsBalanceGetRequest
     ) -> Any: ...
+    def accounts_get(self, accounts_get_request: AccountsGetRequest) -> Any: ...
     def investments_holdings_get(
         self, investments_holdings_get_request: InvestmentsHoldingsGetRequest
     ) -> Any: ...
@@ -444,6 +447,205 @@ class HoldingsObservation:
 
     holdings: RecordSet
     securities: RecordSet
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class BalanceRecord:
+    """One account balance after raw SDK values have crossed the seam.
+
+    Money is a :class:`~decimal.Decimal`, never the SDK's float. The account id
+    and amount are both omitted from ``repr`` so rendering a batch or exception
+    cannot disclose an institution account or a real figure.
+    """
+
+    account_id: str
+    current: Decimal
+    currency: str
+    last_updated_datetime: datetime | None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.account_id, str)
+            or not self.account_id
+            or self.account_id != self.account_id.strip()
+        ):
+            raise ValueError("account_id must be non-empty with no surrounding whitespace")
+        if not isinstance(self.current, Decimal) or not self.current.is_finite():
+            raise ValueError("current must be a finite Decimal")
+        if not isinstance(self.currency, str) or re.fullmatch(r"[A-Z]{3}", self.currency) is None:
+            raise ValueError("currency must be a three-letter uppercase code")
+        if self.last_updated_datetime is not None and (
+            not isinstance(self.last_updated_datetime, datetime)
+            or self.last_updated_datetime.utcoffset() is None
+        ):
+            raise ValueError("last_updated_datetime must be an aware datetime")
+
+    def __repr__(self) -> str:
+        return (
+            "BalanceRecord(account_id=<redacted>, current=<redacted>, "
+            f"currency={self.currency!r}, "
+            f"last_updated_datetime={self.last_updated_datetime!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class HoldingRecord:
+    """One contributing holding, converted out of Plaid's SDK types."""
+
+    account_id: str
+    institution_value: Decimal
+    currency: str
+    institution_price_datetime: datetime | None
+    institution_price_as_of: date | None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.account_id, str)
+            or not self.account_id
+            or self.account_id != self.account_id.strip()
+        ):
+            raise ValueError("account_id must be non-empty with no surrounding whitespace")
+        if (
+            not isinstance(self.institution_value, Decimal)
+            or not self.institution_value.is_finite()
+        ):
+            raise ValueError("institution_value must be a finite Decimal")
+        if not isinstance(self.currency, str) or re.fullmatch(r"[A-Z]{3}", self.currency) is None:
+            raise ValueError("currency must be a three-letter uppercase code")
+        if self.institution_price_datetime is not None and (
+            not isinstance(self.institution_price_datetime, datetime)
+            or self.institution_price_datetime.utcoffset() is None
+        ):
+            raise ValueError("institution_price_datetime must be an aware datetime")
+        if self.institution_price_as_of is not None and (
+            not isinstance(self.institution_price_as_of, date)
+            or isinstance(self.institution_price_as_of, datetime)
+        ):
+            raise ValueError("institution_price_as_of must be a date")
+
+    def __repr__(self) -> str:
+        return (
+            "HoldingRecord(account_id=<redacted>, institution_value=<redacted>, "
+            f"currency={self.currency!r}, "
+            f"institution_price_datetime={self.institution_price_datetime!r}, "
+            f"institution_price_as_of={self.institution_price_as_of!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentRecords:
+    """Account totals and the holdings whose clocks date those totals."""
+
+    accounts: tuple[BalanceRecord, ...]
+    holdings: tuple[HoldingRecord, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.accounts, tuple) or not all(
+            isinstance(account, BalanceRecord) for account in self.accounts
+        ):
+            raise TypeError("accounts must be a tuple of BalanceRecord values")
+        if not isinstance(self.holdings, tuple) or not all(
+            isinstance(holding, HoldingRecord) for holding in self.holdings
+        ):
+            raise TypeError("holdings must be a tuple of HoldingRecord values")
+
+    def __repr__(self) -> str:
+        return (
+            f"InvestmentRecords(accounts=<{len(self.accounts)} redacted>, "
+            f"holdings=<{len(self.holdings)} redacted>)"
+        )
+
+
+def _required_text(record: Any, field: str, *, step: str) -> str:
+    value = getattr(record, field, _MISSING)
+    value = getattr(value, "value", value)
+    if not isinstance(value, str) or not value:
+        raise PlaidCallError(f"{step} returned a record with no usable {field}")
+    return value
+
+
+def _money(record: Any, field: str, *, step: str) -> Decimal:
+    value = getattr(record, field, _MISSING)
+    if value is _MISSING or value is None or isinstance(value, bool):
+        raise PlaidCallError(f"{step} returned a record with no usable {field}")
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise PlaidCallError(f"{step} returned a record with no usable {field}") from None
+    if not amount.is_finite():
+        raise PlaidCallError(f"{step} returned a record with no usable {field}")
+    return amount
+
+
+def _optional_instant(record: Any, field: str, *, step: str) -> datetime | None:
+    value = getattr(record, field, _MISSING)
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise PlaidCallError(f"{step} returned a {field} that is not an aware datetime")
+    return value.astimezone(UTC)
+
+
+def _optional_date(record: Any, field: str, *, step: str) -> date | None:
+    value = getattr(record, field, _MISSING)
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, date) or isinstance(value, datetime):
+        raise PlaidCallError(f"{step} returned a {field} that is not a date")
+    return value
+
+
+def _response_records(response: Any, field: str, *, step: str) -> tuple[Any, ...]:
+    value = getattr(response, field, _MISSING)
+    if value is _MISSING or value is None:
+        raise PlaidCallError(f"{step} returned no {field} list")
+    if not isinstance(value, list | tuple):
+        raise PlaidCallError(f"{step} returned {field} in an unusable shape")
+    return tuple(value)
+
+
+def _balance_records(response: Any, *, step: str) -> tuple[BalanceRecord, ...]:
+    converted: list[BalanceRecord] = []
+    for account in _response_records(response, "accounts", step=step):
+        balances = getattr(account, "balances", _MISSING)
+        if balances is _MISSING or balances is None:
+            raise PlaidCallError(f"{step} returned an account with no balances")
+        try:
+            converted.append(
+                BalanceRecord(
+                    account_id=_required_text(account, "account_id", step=step),
+                    current=_money(balances, "current", step=step),
+                    currency=_required_text(balances, "iso_currency_code", step=step),
+                    last_updated_datetime=_optional_instant(
+                        balances, "last_updated_datetime", step=step
+                    ),
+                )
+            )
+        except ValueError:
+            raise PlaidCallError(f"{step} returned an unusable account record") from None
+    return tuple(converted)
+
+
+def _holding_records(response: Any, *, step: str) -> tuple[HoldingRecord, ...]:
+    converted: list[HoldingRecord] = []
+    for holding in _response_records(response, "holdings", step=step):
+        try:
+            converted.append(
+                HoldingRecord(
+                    account_id=_required_text(holding, "account_id", step=step),
+                    institution_value=_money(holding, "institution_value", step=step),
+                    currency=_required_text(holding, "iso_currency_code", step=step),
+                    institution_price_datetime=_optional_instant(
+                        holding, "institution_price_datetime", step=step
+                    ),
+                    institution_price_as_of=_optional_date(
+                        holding, "institution_price_as_of", step=step
+                    ),
+                )
+            )
+        except ValueError:
+            raise PlaidCallError(f"{step} returned an unusable holding record") from None
+    return tuple(converted)
 
 
 @dataclass(frozen=True, slots=True)
@@ -953,6 +1155,46 @@ class PlaidClient:
         if not isinstance(reference, str) or not _REQUEST_ID.match(reference):
             reference = None
         return ExchangedItem(access_token=access_token, item_id=item_id, request_id=reference)
+
+    def fetch_realtime_balances(self, access_token: str) -> tuple[BalanceRecord, ...]:
+        """Fetch balances from the endpoint that extracts live under F5.
+
+        The method name makes the paid-off-Trial choice visible to the caller;
+        selecting cached mode cannot accidentally keep calling this endpoint.
+        """
+
+        step = "accounts/balance/get"
+        response = self._call(
+            step,
+            self._api.accounts_balance_get,
+            AccountsBalanceGetRequest(access_token=access_token),
+        )
+        return _balance_records(response, step=step)
+
+    def fetch_cached_balances(self, access_token: str) -> tuple[BalanceRecord, ...]:
+        """Fetch cached balances whose source age is always UNKNOWN."""
+
+        step = "accounts/get"
+        response = self._call(
+            step,
+            self._api.accounts_get,
+            AccountsGetRequest(access_token=access_token),
+        )
+        return _balance_records(response, step=step)
+
+    def fetch_holdings(self, access_token: str) -> InvestmentRecords:
+        """Fetch investment totals and their institution-price clock evidence."""
+
+        step = "investments/holdings/get"
+        response = self._call(
+            step,
+            self._api.investments_holdings_get,
+            InvestmentsHoldingsGetRequest(access_token=access_token),
+        )
+        return InvestmentRecords(
+            accounts=_balance_records(response, step=step),
+            holdings=_holding_records(response, step=step),
+        )
 
     def accounts_balance_get(self, access_token: str, *, fields: Sequence[str]) -> RecordSet:
         """``/accounts/balance/get`` — observed, never returned.

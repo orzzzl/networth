@@ -1,6 +1,12 @@
 """Plaid access: the client wrapper and the one error taxonomy (section 8.2)."""
 
-from networth.plaid.client import ItemStatus, PlaidClient
+from networth.plaid.client import (
+    BalanceRecord,
+    HoldingRecord,
+    InvestmentRecords,
+    ItemStatus,
+    PlaidClient,
+)
 from networth.plaid.environment import (
     ConfigError,
     Paths,
@@ -20,11 +26,14 @@ from networth.plaid.errors import (
 )
 
 __all__ = [
+    "BalanceRecord",
     "HEALTHY",
     "Classification",
     "ConfigError",
     "ItemState",
     "ItemStatus",
+    "HoldingRecord",
+    "InvestmentRecords",
     "Paths",
     "PlaidClient",
     "PlaidCredentials",
