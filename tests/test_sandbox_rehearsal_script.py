@@ -176,15 +176,25 @@ def fixture_origin(
     return origin, sha
 
 
-def venv_stub(tmp_path: Path, *, verb_exit: int = 0, pip_log: Path | None = None) -> Path:
+def venv_stub(
+    tmp_path: Path,
+    *,
+    verb_exit: int = 0,
+    pip_log: Path | None = None,
+    python_log: Path | None = None,
+) -> Path:
     """A ``python3`` whose ``-m venv`` produces a venv that behaves as told.
 
     ``pip`` records the arguments it was given, so the tests can assert what the
     installer was actually *asked* to do rather than scanning the script for a flag.
+    ``python_log`` does the same for the venv's own interpreter, which is how the
+    ``--verb`` tests read the module invocation the runner built instead of trusting
+    that an allow-listed name arrived intact.
     """
     # Written line by line with single-quoted payloads: a `printf` template with the
     # log path folded into it produced `exit 0nn` and cost twenty minutes.
     log = f"""    echo 'echo "$*" >> {pip_log}'\n""" if pip_log is not None else ""
+    py_log = f"""    echo 'echo "$*" >> {python_log}'\n""" if python_log is not None else ""
     return stub_path(
         tmp_path,
         "#!/bin/sh\n"
@@ -194,22 +204,29 @@ def venv_stub(tmp_path: Path, *, verb_exit: int = 0, pip_log: Path | None = None
         "    echo '#!/bin/sh'\n" + log + "    echo 'exit 0'\n"
         '} > "$3/bin/pip"\n'
         "{\n"
-        "    echo '#!/bin/sh'\n"
-        f"    echo 'exit {verb_exit}'\n"
+        "    echo '#!/bin/sh'\n" + py_log + f"    echo 'exit {verb_exit}'\n"
         '} > "$3/bin/python"\n'
         'chmod 755 "$3/bin/pip" "$3/bin/python"\n',
     )
 
 
 def run_against(
-    tmp_path: Path, origin: Path, sha: str, *, verb_exit: int = 0, pip_log: Path | None = None
+    tmp_path: Path,
+    origin: Path,
+    sha: str,
+    *,
+    verb_exit: int = 0,
+    pip_log: Path | None = None,
+    python_log: Path | None = None,
+    verb: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     workdir = tmp_path / "tmp"
     workdir.mkdir(exist_ok=True)
-    stub = venv_stub(tmp_path, verb_exit=verb_exit, pip_log=pip_log)
+    stub = venv_stub(tmp_path, verb_exit=verb_exit, pip_log=pip_log, python_log=python_log)
     result = run(
         sha,
         "--paths-only",
+        *(("--verb", verb) if verb is not None else ()),
         env={
             "PATH": f"{stub}:{os.environ['PATH']}",
             "NETWORTH_REHEARSAL_ORIGIN": str(origin),
@@ -373,3 +390,85 @@ def test_the_script_never_reads_the_credential_itself(tmp_path: Path) -> None:
     source = SCRIPT.read_text()
 
     assert "PLAID_SECRET" not in source
+
+
+# --- the runner's own --verb allow-list (PR #59 review, finding 3) -------------
+#
+# The transport in front of this script has its own allow-list and its own tests,
+# and those were the only ones the first cut of step 3a shipped. They prove what
+# never leaves this laptop; they prove nothing about the script that runs *on the
+# host holding the Plaid credential*, which is reachable by any other caller — a
+# manual `ssh`, a future runbook step, the owner. The refusal that matters is the
+# one closest to the credential, so it is tested directly here.
+
+
+@pytest.mark.parametrize("verb", ["rehearse-sandbox", "probe-hosted-link"])
+def test_an_allow_listed_verb_reaches_the_module_invocation(verb: str, tmp_path: Path) -> None:
+    """Both halves of the allow-list, read off the interpreter that was invoked.
+
+    Asserting only the refusals would leave the list free to reject everything and
+    still look correct — an allow-list nothing passes is indistinguishable from a
+    working one until the day someone needs it. This reads what the venv's `python`
+    was actually asked to run.
+    """
+    origin, sha = fixture_origin(tmp_path)
+    python_log = tmp_path / "python.log"
+
+    result = run_against(tmp_path, origin, sha, verb=verb, python_log=python_log)
+
+    assert result.returncode == 0, result.stderr
+    assert f"verb          networth {verb}" in result.stdout
+    assert python_log.read_text().splitlines() == [f"-m networth {verb} --print-paths-only"]
+
+
+@pytest.mark.parametrize(
+    "verb",
+    [
+        "rehearse-sandbox; id",
+        "rehearse-sandbox rm -rf /",
+        "$(id)",
+        "backup",
+        "demo",
+        "REHEARSE-SANDBOX",
+        "",
+    ],
+)
+def test_a_verb_outside_the_allow_list_is_refused_by_the_runner_itself(
+    verb: str, tmp_path: Path
+) -> None:
+    """The same list the transport refuses, refused again where the credential is.
+
+    `backup` and `demo` are here because they *are* real verbs of this CLI: the check
+    is not "is this string dangerous" but "is this one of the two things this runner
+    may execute". The empty string is separately interesting — it is what `--verb`
+    with nothing after it produces, and it must not fall through to the default.
+    """
+    result = run(FULL_SHA, "--verb", verb, tmpdir=tmp_path)
+
+    assert result.returncode == 2
+    assert "allow-list" in result.stderr
+    assert list(tmp_path.iterdir()) == [], "nothing was installed before the refusal"
+
+
+def test_the_verb_is_refused_before_the_environment_is_even_considered(tmp_path: Path) -> None:
+    """Ordering, asserted rather than assumed.
+
+    A caller who gets both wrong must be told about the verb: the environment refusal
+    is recoverable by exporting a different value, and a message that named it would
+    invite exactly that retry with an unrunnable verb still in the command line.
+    """
+    result = run(FULL_SHA, "--verb", "backup", env={"NETWORTH_ENV": "production"}, tmpdir=tmp_path)
+
+    assert result.returncode == 2
+    assert "allow-list" in result.stderr
+    assert "runs against sandbox and nothing else" not in result.stderr
+
+
+def test_verb_with_nothing_after_it_is_a_usage_error_not_a_silent_default(
+    tmp_path: Path,
+) -> None:
+    result = run(FULL_SHA, "--verb", tmpdir=tmp_path)
+
+    assert result.returncode == 2
+    assert "--verb needs a name" in result.stderr
+    assert list(tmp_path.iterdir()) == []

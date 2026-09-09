@@ -158,9 +158,9 @@ def test_the_runner_is_piped_to_the_service_user_and_no_file_is_written(
         "BatchMode=yes",
         "root@198.51.100.1",
     ], "the local transport options changed"
-    assert argv[-1] == f"sudo -u networth -H bash -s -- {sha} --paths-only", (
-        "the remote command changed"
-    )
+    assert (
+        argv[-1] == f"sudo -u networth -H bash -s -- {sha} --paths-only --verb rehearse-sandbox"
+    ), "the remote command changed"
 
     # And the bytes on stdin are the reviewed commit's runner, not the working tree's.
     expected = subprocess.run(
@@ -213,3 +213,105 @@ def test_the_bytes_sent_come_from_the_commit_and_not_from_the_working_tree(
 # had one and it failed on the script's own comments, which explain why those commands
 # are absent. A scan cannot tell an instruction from the paragraph documenting its
 # absence; the two tests above read what was actually handed to `ssh`, which can.
+
+
+@pytest.mark.parametrize(
+    "verb",
+    [
+        "rehearse-sandbox; id",
+        "rehearse-sandbox rm -rf /",
+        "$(id)",
+        "backup",
+        "demo",
+        "REHEARSE-SANDBOX",
+        "",
+    ],
+)
+def test_a_verb_outside_the_allow_list_never_reaches_the_wire(verb: str, tmp_path: Path) -> None:
+    """An allow-list, and refused on *this* side of the connection.
+
+    The verb is interpolated into the command string handed to ssh, so it is the one
+    argument here that could carry shell meaning. This project has already paid four
+    review rounds establishing that the set of spellings a shell finds interesting is
+    not one anybody finishes enumerating, so the check is "is it one of these two
+    words" rather than "does it contain anything frightening" — and `backup` and `demo`
+    are in this list precisely because they *are* real verbs of this CLI and still must
+    not be runnable on the host holding the Plaid master credential.
+
+    The stub `ssh` is deliberately absent from PATH: if the refusal did not land, the
+    script would try the real one, and this test would fail by connecting rather than
+    by asserting.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+
+    result = run(
+        FULL_SHA,
+        "--verb",
+        verb,
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "allow-list" in result.stderr
+    assert not argv_log.exists(), "the refusal came after ssh was invoked"
+
+
+def test_the_chosen_verb_is_what_the_host_is_asked_to_run(tmp_path: Path) -> None:
+    """`probe-hosted-link` is task 06a's F7 criterion 2 and has to be reachable.
+
+    The alternative was a second copy of the runner, which would have meant a second
+    copy of the commit verification and the hash-pinned install, drifting from the
+    reviewed one from its first commit.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+    sha = head_sha()
+
+    result = run(
+        sha,
+        "--verb",
+        "probe-hosted-link",
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+            "NETWORTH_VPS_TARGET": "root@198.51.100.1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    argv = argv_log.read_text().splitlines()
+    assert argv[-1] == f"sudo -u networth -H bash -s -- {sha}  --verb probe-hosted-link"
+
+
+def test_print_url_is_not_a_thing_this_transport_can_forward(tmp_path: Path) -> None:
+    """The hosted URL is openable by whoever holds it, and a transcript outlives a run.
+
+    Nothing can print it any more — `--print-url` was removed from the verb itself in
+    PR #59's review — so this is now the *second* of two independent refusals rather
+    than the only one. It is kept because the owner-run half of `06a` will need the URL
+    on his screen, and when it arrives it will arrive as a change to the verb; this
+    test is what makes widening the transport a separate, visible decision instead of
+    something that comes along for the ride.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+
+    result = run(
+        head_sha(),
+        "--print-url",
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "unknown argument '--print-url'" in result.stderr
+    assert not argv_log.exists()
