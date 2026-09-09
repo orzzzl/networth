@@ -1178,10 +1178,23 @@ Issues **#3, #4, #5**, **#13**, **#15**.
       substitute for it** (escalation `2c8feb59` decides how it happens). Then poll
       `/link/token/get`, assert `link_sessions[].results.item_add_results[].public_token`
       is present, exchange it, and assert the resulting `access_token` works.
-- [ ] Assert the **negative shape**: **before** completion the response contains **no
-      `link_sessions` key at all**, so the poller's "not ready" branch is exercised on the
-      real API rather than on a fixture someone guessed. **Everything except the browser
-      step is agent-runnable**, which is why this half lands separately and first.
+- [ ] Assert the **negative shape**, in **two states rather than one**. "Before
+      completion" is not a single condition, and the poller's "not ready" branch runs in
+      both of them:
+      - **(2a) Pre-start** — a token that has been minted and that nobody has opened.
+        Assert the response contains **no `link_sessions` key at all**. Fully
+        agent-runnable: mint, poll, no browser, nothing spent.
+      - **(2b) Started but unfinished** — someone has opened the hosted URL and has not
+        completed it. `LinkTokenGetSessionsResponse.finished_at` is nullable, so Plaid
+        really produces this state, and **`07a` spends most of its ticks in it**. Record
+        the shape it returns. **Reaching it needs the browser step**, so it is gated on
+        the same decision as criterion 1 (escalation `2c8feb59`).
+
+      *Split 2026-09-09 (PR #59 review).* This was one universal criterion, and the
+      agent-runnable probe reaches only 2a. Marking the universal claim proved from a
+      run that never created the second state is how a poller gets written against a
+      shape and deployed into a different one — the exact failure the criterion exists
+      to prevent, committed by the evidence for it.
 
 **Acceptance — the four measurements. Record each as a measurement whatever the result:**
 

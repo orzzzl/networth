@@ -50,14 +50,33 @@
 #     this refuses them by name, before a network fetch, and is what the offline
 #     tests drive.
 #
-# WHAT IT NEVER PRINTS. Whatever `networth rehearse-sandbox` prints, which is
-# presence and type per field — no balance, no institution, no item_id, no token,
-# no Plaid response body. This script adds the commit, the origin, the paths and
-# the identity it ran as, and nothing else.
+# WHAT IT NEVER PRINTS. Whatever the verb prints, which is presence and type per
+# field — no balance, no institution, no item_id, no token, no Plaid response
+# body. This script adds the commit, the origin, the paths, the verb and the
+# identity it ran as, and nothing else.
+#
+# **It never forwards `--print-url`, and that is a decision rather than an
+# omission.** `probe-hosted-link` can print the hosted URL, and a hosted URL is
+# openable by whoever holds it — finishing Link through it spends a lifetime Item
+# slot (F2a). Every transcript this script produces is an artefact that outlives
+# the run and gets attached to a PR, so the URL must not be able to reach one by
+# default. The owner-run half of task 06a does need it on his screen; that is a
+# deliberate widening, and it belongs in the change that adds it.
+#
+# WHY A VERB PARAMETER RATHER THAN A SECOND COPY OF THIS SCRIPT. Everything above
+# — the commit verification, the hash-pinned lock, the no-build-isolation install,
+# the refusals — is what makes it safe to execute anything at all on the host
+# holding the Plaid master credential. A second runner for task 06a's probe would
+# be a second copy of all of it, drifting from this one from its first commit. The
+# verb is checked against an allow-list, so widening what may run is an edit to a
+# named list rather than a consequence of the caller's argument.
 #
 # Usage, on the host, as the service user:
 #
-#   ./sandbox-rehearsal.sh <40-hex-commit> [--paths-only]
+#   ./sandbox-rehearsal.sh <40-hex-commit> [--paths-only] [--verb <name>]
+#
+# --verb defaults to `rehearse-sandbox` (task 06). `probe-hosted-link` is task
+# 06a's F7 criterion 2: mint a Hosted Link token and poll it before completion.
 #
 # `--paths-only` builds the environment and asks the verb which paths it selects,
 # then stops. It makes no Plaid call, so it is the safe first run.
@@ -70,6 +89,8 @@ set -euo pipefail
 # artefact that outlives the run.
 readonly REPO_URL="${NETWORTH_REHEARSAL_ORIGIN:-https://github.com/orzzzl/networth}"
 readonly CREDENTIAL="/etc/networth/plaid-sandbox.env"
+readonly DEFAULT_VERB="rehearse-sandbox"
+readonly ALLOWED_VERBS="rehearse-sandbox probe-hosted-link"
 readonly BUILD_REQUIREMENTS="requirements-build.txt"
 readonly RUNTIME_REQUIREMENTS="requirements-runtime.txt"
 
@@ -79,17 +100,37 @@ die() {
 }
 
 commit="${1:-}"
-mode="${2:-}"
+shift || true
+mode=""
+verb="$DEFAULT_VERB"
 
-[ -n "$commit" ] || die "usage: $0 <40-hex-commit> [--paths-only]"
+[ -n "$commit" ] || die "usage: $0 <40-hex-commit> [--paths-only] [--verb <name>]"
 case "$commit" in
 *[!0-9a-f]* | "") die "'$commit' is not a full commit id: 40 lowercase hex characters, no branch, no tag — a ref that can move is not the thing that was reviewed" ;;
 esac
 [ "${#commit}" -eq 40 ] || die "'$commit' is not a full commit id (40 hex characters); a short id is ambiguous and a ref that can move is not the thing that was reviewed"
 
-case "$mode" in
-"" | --paths-only) ;;
-*) die "unknown argument '$mode'; the only option is --paths-only" ;;
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--paths-only) mode="--paths-only" ;;
+	--verb)
+		shift || true
+		verb="${1:-}"
+		[ -n "$verb" ] || die "--verb needs a name; the allow-list is: $ALLOWED_VERBS"
+		;;
+	*) die "unknown argument '$1'; the options are --paths-only and --verb <name>" ;;
+	esac
+	shift || true
+done
+
+# An allow-list, not a check for dangerous characters. This name is interpolated
+# into the command the caller sends over ssh, and the list of spellings that mean
+# something to a shell is not one anybody finishes writing — the SSH-option review
+# rounds on this project cost four cycles proving exactly that. The set of verbs
+# this runner may execute is two words long, so name them.
+case " $ALLOWED_VERBS " in
+*" $verb "*) ;;
+*) die "'$verb' is not a verb this runner may execute; the allow-list is: $ALLOWED_VERBS" ;;
 esac
 
 # The environment refusal, before a single byte is installed. An unset variable
@@ -143,6 +184,7 @@ venv="$work/venv"
 
 printf 'commit        %s\n' "$commit"
 printf 'origin        %s\n' "$REPO_URL"
+printf 'verb          networth %s\n' "$verb"
 printf 'identity      %s (uid %s), HOME=%s\n' "$(id -un)" "$(id -u)" "${HOME:-<unset>}"
 printf 'workspace     %s (removed on exit)\n' "$work"
 
@@ -185,8 +227,8 @@ printf 'dependencies  installed from the reviewed lock, hash-verified\n\n'
 # and the bytes that run are the git objects checked above.
 status=0
 if [ "$mode" = "--paths-only" ]; then
-	PYTHONPATH="$src" "$venv/bin/python" -m networth rehearse-sandbox --print-paths-only || status=$?
+	PYTHONPATH="$src" "$venv/bin/python" -m networth "$verb" --print-paths-only || status=$?
 else
-	PYTHONPATH="$src" "$venv/bin/python" -m networth rehearse-sandbox || status=$?
+	PYTHONPATH="$src" "$venv/bin/python" -m networth "$verb" || status=$?
 fi
 exit "$status"
