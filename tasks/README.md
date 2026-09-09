@@ -75,7 +75,7 @@ that row. He caught it, not us.)
 | 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **DONE** (#50, 2026-09-07) |
 | 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (16) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **DONE** (#49, 2026-09-08) |
-| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | **READY** |
+| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | **WIP** (claude, 2026-09-08) |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
 
@@ -83,7 +83,7 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | BLOCKED (06a) |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a) |
-| 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **WIP** (claimed 2026-09-08) |
+| 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
 | 12b | Replacement-Item reconcile flow | 04, 09 | **claude** | codex | BLOCKED (09) |
@@ -107,14 +107,14 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | BLOCKED (14) |
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | BLOCKED (17) |
-| 19 | Payload schema + `Publisher` (encrypt) | 17 | **codex** | claude | BLOCKED (17) |
+| 19 | Payload schema + `Publisher` (encrypt) | 17, 26a | **codex** | claude | BLOCKED (17) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (19) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | BLOCKED (20) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | BLOCKED (19) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | BLOCKED (21) |
 | 24 | Release signing + APK delivery | 20, 21, 22 | **claude** | codex | BLOCKED |
-| 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 22 | **claude** | codex | BLOCKED |
+| 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 19, 22 | **claude** | codex | BLOCKED |
 
 ### Phase 5 — operations
 
@@ -1415,6 +1415,24 @@ capture is issue **#14**.
 - [ ] `access_token` **and** `item_id` are written, `fsync`ed, **read back**, and only then
       is recovery reported successful. Also persist `link_session_id` and the exchange
       `request_id` (issue #14) — in this scenario the support ticket is the fallback.
+- [ ] **The recovered `item_id` is written back onto the originating `link_flow` row, and
+      recovery is not reported successful until it is.** `26a` (#54) reconciles the `item`
+      and `link_flow` tables **by Item identity**; a recovery that stores the credential and
+      leaves its flow row nameless is indistinguishable from an ordinary stranded flow —
+      nameless is the *expected* shape for one — so the same slot is counted **twice**,
+      silently, and the owner is told he has one fewer lifetime Item than he does. (If that
+      row reached `EXCHANGED` the read refuses outright instead; the quiet
+      double-count is the likelier shape here, since the VPS died before it could get
+      there.) `26a` cannot detect either case from inside itself, which is why this is this
+      script's criterion and not that module's.
+      **The write-back has two destinations and the script must say which one it used**:
+      onto the restored `link_flow` copy when recovery lands on a replacement host, or
+      carried inside the Mac-side emergency artifact and applied during restore when the
+      originating row is simply gone with the VPS. An artifact that carries the credential
+      without the pairing recreates the defect one step later.
+      *(Added 2026-09-08 alongside `26a`, whose module docstring now **states** this
+      precondition instead of silently depending on it — the `#36` lesson: a module that is
+      correct only because of a fact it never asserts is one edit away from not being.)*
 - [ ] Crash injection **after the exchange response and before, during, and after** the
       emergency write; each leaves a state the next run can classify correctly.
 - [ ] The full path is rehearsed end-to-end in Sandbox **with the VPS `TokenStore`
@@ -1507,6 +1525,32 @@ consumes it, and the surfaces consume it later, when they exist.**
 - Do not print anything or add a CLI verb. If you are formatting for a human, you are in
   `26`.
 
+**Landed as #54, merged `1b760b8` (2026-09-08)** — `networth/item_budget.py` and its tests,
+no other file. `read_item_budget(connection) -> ItemBudget`, where every unit of cost is one
+entry in `spent` carrying its own provenance, so `remaining` is the length of its own
+evidence and the number cannot disagree with the explanation printed beside it.
+
+**Two things the shipped module does that the acceptance above does not say. Both were
+argued and agreed in review; read them before auditing the code against this row, because
+the first one looks like a defect against criterion 2 and is not.**
+
+- **The in-flight states are counted.** §7's state table marks `SUCCESS_PENDING_EXCHANGE`
+  and `EXCHANGING` slot-spent, while its prose two lines below names only `TOKEN_EXPIRED`
+  and `EXCHANGE_UNCERTAIN` *"because only they follow a completed Link"* — which cannot be
+  right, since `EXCHANGED` follows a completed Link too. They are counted, under their own
+  `in_flight` heading so §7's literal number stays derivable without a second source.
+  Excluding them is optimistic for the ~30 minutes to `token_exchange_expires_at`, which is
+  the exact window `08` asks for the count in, and optimistic is the "runs out without
+  warning" direction. The §7 wording amendment is issue **#55**, deliberately separate.
+- **The read raises instead of answering when the count is unknowable.** An `EXCHANGED`
+  flow row that recorded no `item_id`, *beside at least one stored `item` row*, may be that
+  Item's own flow or a second spent slot — one database, two counts — so it raises
+  `ItemBudgetError` there and only there. With no `item` row stored there is nothing to
+  duplicate, the count is exactly 1, and refusing would withhold a known number. The line
+  it draws, which its callers inherit: an annotation may carry an uncertain *explanation*,
+  never an uncertain *count*, because a caller cannot tell a guessed integer from a
+  measured one and is handed the integer either way.
+
 ### 08 — `scripts/link.sh`, the owner-run Production Link — **claude** writes it, **owner** runs it
 
 **This is the only task that spends a lifetime Item slot.** Every gate above it exists for
@@ -1546,6 +1590,16 @@ Mac. **Agents never run it.**
       counting Items itself. The single-source rule (`26a`) applies to its first consumer
       most of all: a second derivation written here is the one that runs while a lifetime
       slot is about to be spent.
+- [ ] **A refused count is reported as a refusal — never as a number, never as a
+      traceback.** `26a` (#54) raises `ItemBudgetError` instead of returning a count its
+      stored rows cannot support — an `EXCHANGED` `link_flow` row naming no Item while
+      `item` rows exist is one such condition, and it is not the only one. Both reflexes are
+      wrong in the expensive direction here: substituting a plausible integer is the single
+      thing `26a` refuses to do, and an uncaught exception fails at the last **free** gate
+      before a lifetime slot is spent. So this script **stops before minting a link token**
+      — the same refusal as the canary above — and surfaces the condition `26a` reported,
+      which names what to inspect, rather than an "unknown error". Tested against a fixture
+      database that triggers the refusal: no link token is minted, and no count is printed.
 
 **Must not:**
 
@@ -1879,6 +1933,17 @@ fact this host cannot observe — the two `doctor`s are **split by host** (issue
       **envelope and canonical length-delimited AAD encoding of §6.1** — both ends must
       build those bytes identically or nothing decrypts.
 - [ ] The payload carries the total's age as task `14`'s tagged `(age_state, as_of)`.
+- [ ] **The payload carries `26a`'s Item-budget result, tagged available or unavailable.**
+      The phone cannot call `26a` — it is host-side Python reading the host's SQLite — so
+      the number reaches the app only if `Publisher` puts it here, and task `26` is
+      unbuildable without it. `26a` refuses to answer rather than return a count its stored
+      rows cannot support, and **that refusal has to survive the wire as a refusal**: a
+      field that can only hold an integer forces the publisher to invent one at the moment
+      the truth is "we do not know", which is the single thing `26a` exists not to do.
+      Tagged for the same reason the age above is tagged — `null` and `0` are one careless
+      decode apart on the far end, and they mean opposite things about the owner's
+      remaining Items (**F2**). This lands before `19` ships, so it is part of the first
+      `schema_version` rather than a bump.
 - [ ] `last_seq` is **pairing-scoped**. The epoch is **not** part of `seq` (issue #8);
       `publish_epoch` is a diagnostic only.
 - [ ] The five §9.3a restore cases pass separately — see `03a`.
@@ -2032,6 +2097,16 @@ delivered app has a real transport.
 subcommand (`18`) and the app (`22`). Running out of slots is invisible until it isn't
 (**F2**), and a number nobody sees is not surfacing.
 
+**One result, two transports — and only one of them is a function call.** `doctor` runs on
+the sync host and calls `26a` directly. The app cannot: it is Flutter on the phone and
+`26a` is host-side Python over the host's SQLite. The app's copy arrives in `19`'s payload,
+which is why `19` now depends on `26a` and carries the tagged result. *(This row used to
+say both surfaces "call `26a`", which was not buildable as written — there was no route by
+which the app obtained the number at all. Found while amending this row for the refusal
+contract, 2026-09-08.)* That asymmetry is the whole risk here: two transports is how two
+answers get born, so what travels is **`26a`'s result**, never a number re-derived at
+either end.
+
 **Why it is here and not in Phase 2.** Its consumers are here. This task used to hold both
 the arithmetic and the display and to depend on `08`, which needs the arithmetic — so it
 was upstream and downstream of the same task. The count moved to `26a`, before `08`; what
@@ -2041,9 +2116,20 @@ is left is the presentation, and presentation lands with the surfaces that prese
 
 **Acceptance:**
 
-- [ ] `doctor` and the app **agree on the number**, because both call `26a` — verified by a
-      test that changes the underlying state and asserts both surfaces move together, not
-      by two implementations that happen to match on the day they were written.
+- [ ] `doctor` and the app **agree on the number** — `doctor` by calling `26a`, the app by
+      rendering what `19`'s payload carried. Verified **end to end**: change the underlying
+      state, publish, decode, and assert both surfaces moved together. Two implementations
+      that happen to match on the day they were written is exactly what this must not be,
+      and with two transports that is the likelier outcome, not the unlikelier one.
+- [ ] **They agree when there is no number, either.** `26a` (#54) raises `ItemBudgetError`
+      rather than returning a count its stored rows cannot support, so "unavailable, and
+      here is the condition" is a third state both surfaces must render — and **neither may
+      fall back to an integer**, not to the last known count and not to zero. A fallback is
+      the hardest of these failures to notice, because the surface it produces looks exactly
+      like a working one. **Run the same end-to-end path for this case**: publish an
+      unavailable result, decode it, and assert both surfaces render a refusal. A test that
+      only covers the numeric case leaves the wire format's unavailable branch unexercised
+      on the one path that has to carry it across a process boundary.
 - [ ] The number is shown with what it means: a remaining count of zero says the account is
       at its lifetime ceiling and that `/item/remove` will not free one (**F2**), rather
       than showing a bare `0`.
@@ -2054,6 +2140,10 @@ is left is the presentation, and presentation lands with the surfaces that prese
 
 - Do not compute anything. If this task needs a rule about what counts, the rule belongs in
   `26a` and this task calls it. Two sources means two answers.
+- **Do not give the app a second route to the number** — no HTTP query of its own, no
+  recount from whatever else the payload carries. `19`'s field is the only one, for the
+  same reason `26a` is the only source: a fallback route is a second source wearing a
+  different hat, and it will be the one that runs on the day they disagree.
 - Do not present the count without its provenance (`AGENTS.md` rule 4).
 
 ---

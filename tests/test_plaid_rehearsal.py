@@ -32,7 +32,13 @@ from networth.plaid.rehearsal import (
     SandboxRehearsal,
 )
 from networth.tokenstore import SecretKind, TokenStore, parse_secret_ref
-from tests.fake_plaid import ACCESS_TOKEN, INSTITUTION, ITEM_ID, FakeSandboxApi
+from tests.fake_plaid import (
+    ACCESS_TOKEN,
+    EXCHANGE_REQUEST_ID,
+    INSTITUTION,
+    ITEM_ID,
+    FakeSandboxApi,
+)
 
 SANDBOX = PlaidCredentials(
     client_id="synthetic-client-id",
@@ -278,7 +284,9 @@ class NarrowClient:
 
     def item_public_token_exchange(self, public_token: str) -> ExchangedItem:
         self.calls.append("item_public_token_exchange")
-        return ExchangedItem(access_token=ACCESS_TOKEN, item_id=ITEM_ID)
+        return ExchangedItem(
+            access_token=ACCESS_TOKEN, item_id=ITEM_ID, request_id=EXCHANGE_REQUEST_ID
+        )
 
     def accounts_balance_get(self, access_token: str, *, fields: Sequence[str]) -> RecordSet:
         self.calls.append("accounts_balance_get")
@@ -333,11 +341,15 @@ def test_no_raw_sdk_object_reaches_the_rehearsal(tmp_path: Path) -> None:
 
 def test_the_exchanged_item_never_renders_its_token(tmp_path: Path) -> None:
     """The default dataclass repr would put an access_token in any traceback."""
-    item = ExchangedItem(access_token=ACCESS_TOKEN, item_id=ITEM_ID)
+    item = ExchangedItem(access_token=ACCESS_TOKEN, item_id=ITEM_ID, request_id=EXCHANGE_REQUEST_ID)
 
     assert ACCESS_TOKEN not in repr(item)
     assert ITEM_ID not in repr(item)
     assert item.access_token == ACCESS_TOKEN
+    # The one field this type *does* render, and on purpose: it is what gets
+    # quoted into a Plaid support ticket, so redacting it would defeat the
+    # capture `07a` and `07b` depend on.
+    assert EXCHANGE_REQUEST_ID in repr(item)
 
 
 def test_the_client_this_rehearsal_builds_by_default_is_the_project_client(

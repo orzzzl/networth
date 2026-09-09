@@ -15,10 +15,16 @@ import urllib3.exceptions
 from plaid.exceptions import ApiException, ApiTypeError, ApiValueError
 from plaid.model_utils import model_to_dict
 
-from networth.plaid.client import PlaidCallError, PlaidClient
+from networth.plaid.client import ExchangedItem, PlaidCallError, PlaidClient
 from networth.plaid.environment import PlaidCredentials, PlaidEnvironment
 from networth.plaid.errors import ItemState
-from tests.fake_plaid import ACCESS_TOKEN, INSTITUTION, ITEM_ID, FakeSandboxApi
+from tests.fake_plaid import (
+    ACCESS_TOKEN,
+    EXCHANGE_REQUEST_ID,
+    INSTITUTION,
+    ITEM_ID,
+    FakeSandboxApi,
+)
 
 CREDENTIALS = PlaidCredentials(
     client_id="synthetic-client",
@@ -597,6 +603,79 @@ def test_an_exchange_missing_either_half_is_refused() -> None:
         client, _ = sandbox_client(item_public_token_exchange=response)
         with pytest.raises(PlaidCallError, match="no access_token or no item_id"):
             client.item_public_token_exchange("public-token")
+
+
+def test_the_exchange_request_id_survives_the_wrapper() -> None:
+    """The id reaches the caller, because `07a` records it and cannot invent it.
+
+    Until PR #58 round 2 this wrapper read `access_token` and `item_id` and
+    dropped the third required field on the floor, so every consumer downstream
+    of the seam had to make one up. This is the regression for that.
+    """
+    client, _ = sandbox_client()
+
+    item = client.item_public_token_exchange("public-token")
+
+    assert item.request_id == EXCHANGE_REQUEST_ID
+
+
+def test_the_locked_sdk_really_does_require_a_request_id_on_the_exchange() -> None:
+    """Pin the SDK fact the marker's evidentiary value rests on.
+
+    `link_exchange_attempt.request_id` is only usable as a success marker while
+    a successful response is *guaranteed* to carry an id: a NULL there otherwise
+    means both "never sent" and "sent, succeeded, no id", and the marker stops
+    separating the crash boundaries it exists to separate.
+
+    Nothing in this repository enforces that guarantee — the SDK does — which is
+    precisely the `#36` shape: correct only because of a fact it never asserts.
+    So it is asserted here, and an SDK bump that relaxes the field turns *this*
+    test red instead of silently widening B3a.
+    """
+    from plaid.model.item_public_token_exchange_response import (
+        ItemPublicTokenExchangeResponse,
+    )
+
+    # No `type: ignore` here, deliberately: the SDK ships no type information, so
+    # this call is `Any` to mypy and a suppression would be dead. The guarantee is
+    # a *runtime* one, which is the only form the marker can rely on anyway.
+    with pytest.raises(TypeError, match="request_id"):
+        ItemPublicTokenExchangeResponse(access_token="a", item_id="i")
+
+
+def test_a_malformed_request_id_is_reported_absent_and_never_refused() -> None:
+    """Validated exactly like the error path's, and not fatal — two rules at once.
+
+    The grammar is `_REQUEST_ID`, the same one :func:`_request_id_of` applies to
+    an error body, because this string is printed and pasted into PRs just like
+    that one. But a bad id may not cost the credential: by **F2a** the lifetime
+    slot was spent by the Link before this call, so raising here would strand a
+    real Item over a support reference — rev 18's mistake, one field over.
+    """
+    for hostile in ("not a valid id!", "x" * 65, "", None, 12345):
+        client, _ = sandbox_client(
+            item_public_token_exchange=SimpleNamespace(
+                access_token=ACCESS_TOKEN, item_id=ITEM_ID, request_id=hostile
+            )
+        )
+
+        item = client.item_public_token_exchange("public-token")
+
+        assert item.request_id is None, hostile
+        assert item.access_token == ACCESS_TOKEN, hostile
+
+
+def test_the_exchange_will_not_construct_without_an_explicit_request_id() -> None:
+    """A structural guard, and structurally invisible to mutation testing.
+
+    `request_id` has no default on purpose: every construction site must say
+    what it knows, and `None` has to be written down rather than fallen into.
+    Reverting that to `request_id: str | None = None` leaves every other test in
+    this repository green — the signature is the only thing that changed — so
+    the revert is what this test names.
+    """
+    with pytest.raises(TypeError, match="request_id"):
+        ExchangedItem(access_token="a", item_id="i")  # type: ignore[call-arg]
 
 
 def test_balances_cross_the_seam_as_observations_and_not_as_figures() -> None:

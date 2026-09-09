@@ -43,6 +43,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
+from networth.plaid.client import ExchangedItem
 from networth.storage import migrate
 from networth.tokenstore import SecretKind, TokenStore
 
@@ -53,6 +54,12 @@ NOW = datetime(2026, 2, 1, 12, 6, tzinfo=UTC)
 
 #: Stand-in material. Shaped like nothing in particular, on purpose (AGENTS.md 0).
 MATERIAL = "rig-material-not-a-credential"
+
+#: What the ledger's successful exchange reports as its ``request_id``. The rig
+#: writes **this value as it came back**, never a literal composed at the write
+#: site: the marker's whole claim is "a success response arrived", and an id
+#: invented after the call would make that claim true by construction.
+LEDGER_REQUEST_ID = "req-ledger-synthetic"
 
 
 class Boundary(Enum):
@@ -124,9 +131,23 @@ class PlaidLedger:
 
     consumed: bool = False
     calls: int = 0
+    #: Set to ``None`` to stand in for a response whose ``request_id`` did not
+    #: survive validation. The SDK makes that unreachable today, which is
+    #: exactly why it is a parameter and not an assumption — see
+    #: :func:`test_a_marker_that_cannot_be_written_collapses_b3b_into_b3a`.
+    request_id: str | None = LEDGER_REQUEST_ID
 
-    def exchange(self, public_token: str) -> str:
-        """Consume the token and return material, or refuse to guess."""
+    def exchange(self, public_token: str) -> ExchangedItem:
+        """Consume the token and return what the seam returns, or refuse to guess.
+
+        Returns the **production** :class:`~networth.plaid.client.ExchangedItem`
+        rather than a rig-local shape. That is the repair codex's round-2 review
+        asked for: the rig's post-marker state has to be reachable through the
+        seam the real worker will use, and it is not enough for it to be
+        reachable *here*. Building the real type means a field the seam stops
+        carrying breaks this rig instead of quietly leaving it more capable than
+        production.
+        """
 
         self.calls += 1
         if self.consumed:
@@ -136,7 +157,7 @@ class PlaidLedger:
                 "not invent it"
             )
         self.consumed = True
-        return MATERIAL
+        return ExchangedItem(access_token=MATERIAL, item_id="item-rig", request_id=self.request_id)
 
 
 @dataclass(frozen=True)
@@ -263,7 +284,7 @@ def run_exchange(
             ledger.exchange(public_token)
         raise Crashed(Boundary.AFTER_SEND_BEFORE_RESPONSE.value)
 
-    material = ledger.exchange(public_token)
+    exchanged = ledger.exchange(public_token)
 
     # B3a. The token is consumed and nothing on this disk says so yet: the
     # response arrived in memory and the process died before it could be
@@ -279,17 +300,29 @@ def run_exchange(
         # merely recorded "a response arrived" would not tell a consumed token
         # from a refused one. What makes this row evidence is that reaching it
         # means the exchange returned material.
+        #
+        # The value is `exchanged.request_id` — **the id the seam carried out of
+        # the response**, not a literal written here. Inventing one made the
+        # marker's own premise unfalsifiable: the row would appear after a
+        # success whether or not the response actually had an id to record, so a
+        # seam that dropped the id (as this one did until PR #58 round 2) still
+        # produced a fully populated marker.
         connection.execute(
             "UPDATE link_exchange_attempt SET request_id = ? "
             "WHERE link_flow_id = ? AND attempt_number = ?",
-            ("req-rig", link_flow_id, attempt_number),
+            (exchanged.request_id, link_flow_id, attempt_number),
         )
 
     if boundary is Boundary.AFTER_MARKER_BEFORE_FSYNC:
         raise Crashed(Boundary.AFTER_MARKER_BEFORE_FSYNC.value)
 
     # --- durability, then the row that references it (§14a ordering) ---------
-    secret_ref = store.put(SecretKind.ACCESS_TOKEN, flow_id, material, item_id="item-rig")
+    secret_ref = store.put(
+        SecretKind.ACCESS_TOKEN,
+        flow_id,
+        exchanged.access_token,
+        item_id=exchanged.item_id,
+    )
 
     if boundary is Boundary.AFTER_FSYNC_BEFORE_COMMIT:
         raise Crashed(Boundary.AFTER_FSYNC_BEFORE_COMMIT.value)

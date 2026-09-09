@@ -27,6 +27,10 @@ LINK_TOKEN = "link-sandbox-synthetic"
 HOSTED_LINK_URL = "https://example.invalid/hosted-link/synthetic"
 LINK_TOKEN_EXPIRATION = datetime(2026, 9, 8, 21, 0, tzinfo=UTC)
 LINK_SESSION_ID = "link-session-synthetic"
+# Distinct from the generic `req-synthetic` the other endpoints return, so a test
+# asserting the exchange's id travelled cannot be satisfied by some *other*
+# call's id arriving instead. Provenance is the whole point of capturing it.
+EXCHANGE_REQUEST_ID = "req-exchange-synthetic"
 # Measurement (i) subtracts these two, so they are far enough apart to tell a
 # real interval from a zero one.
 LINK_SESSION_STARTED = datetime(2026, 9, 8, 20, 0, tzinfo=UTC)
@@ -215,7 +219,15 @@ class FakeSandboxApi:
     def item_public_token_exchange(self, item_public_token_exchange_request: Any) -> Any:
         return self._answer(
             "item_public_token_exchange",
-            SimpleNamespace(access_token=ACCESS_TOKEN, item_id=ITEM_ID),
+            # `request_id` is a *required* field of the SDK's response model —
+            # verified against the locked SDK, not assumed — so a fake that
+            # omitted it would be a shape Plaid cannot return, and would let the
+            # wrapper's absent-id branch look like the ordinary case.
+            SimpleNamespace(
+                access_token=ACCESS_TOKEN,
+                item_id=ITEM_ID,
+                request_id=EXCHANGE_REQUEST_ID,
+            ),
             item_public_token_exchange_request,
         )
 

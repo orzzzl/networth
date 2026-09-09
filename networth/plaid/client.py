@@ -176,13 +176,35 @@ class ExchangedItem:
     later. ``item_id`` is not a secret but is not rendered either: it names one
     of the owner's institutions, and ``AGENTS.md`` rule 0 keeps that out of
     anything this project writes down.
+
+    ``request_id`` is the exception, and deliberately the same exception the
+    error path already makes: it is **the one field lifted out of a Plaid body
+    that this module shows**, because its entire purpose is to be quoted into a
+    support ticket (issue #14, and `07b`'s fallback when a credential is lost).
+    Redacting it would defeat the capture. It is therefore *validated rather
+    than trusted*, against the same :data:`_REQUEST_ID` grammar
+    :func:`_request_id_of` uses, so the redaction promise stays total no matter
+    what the body contained.
+
+    **It is optional here although the SDK declares it required, and that
+    asymmetry with the two fields above is the point.** ``access_token`` and
+    ``item_id`` are refused when missing because half a result is a stranded
+    Item. ``request_id`` is not: by **F2a** the lifetime slot was already spent
+    by the Link before this call, so discarding a *valid* credential over a
+    missing or malformed support id would strand the very Item it was being
+    careful about — rev 18's error committed one field over. A support id is a
+    fallback; a credential is the thing.
     """
 
     access_token: str
     item_id: str
+    request_id: str | None
 
     def __repr__(self) -> str:
-        return "ExchangedItem(access_token=<redacted>, item_id=<redacted>)"
+        return (
+            "ExchangedItem(access_token=<redacted>, item_id=<redacted>, "
+            f"request_id={self.request_id!r})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -898,6 +920,13 @@ class PlaidClient:
         slot was spent by the Link, not by this call. Half a result here is a
         stranded Item, so it is refused as a failure instead of returned as a
         partial success.
+
+        The response's ``request_id`` is carried out with them. It is the only
+        durable handle on *this* exchange that Plaid will recognise in a support
+        ticket, and `07a` records it against the ``link_flow`` attempt when the
+        response reaches the process — which it cannot do if this wrapper is the
+        place the id stops. It is validated, never refused: see
+        :class:`ExchangedItem`.
         """
         request = ItemPublicTokenExchangeRequest(public_token=public_token)
         response = self._call(
@@ -909,7 +938,10 @@ class PlaidClient:
             raise PlaidCallError(
                 "item/public_token/exchange returned no access_token or no item_id"
             )
-        return ExchangedItem(access_token=access_token, item_id=item_id)
+        reference = cast("str | None", getattr(response, "request_id", None))
+        if not isinstance(reference, str) or not _REQUEST_ID.match(reference):
+            reference = None
+        return ExchangedItem(access_token=access_token, item_id=item_id, request_id=reference)
 
     def accounts_balance_get(self, access_token: str, *, fields: Sequence[str]) -> RecordSet:
         """``/accounts/balance/get`` — observed, never returned.

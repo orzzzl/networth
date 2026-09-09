@@ -24,6 +24,7 @@ import pytest
 
 from networth.tokenstore import TokenStore, new_flow_id
 from tests.sandbox.crash_boundaries import (
+    LEDGER_REQUEST_ID,
     Boundary,
     Crashed,
     DuplicateExchangeNotMeasured,
@@ -259,6 +260,53 @@ def test_the_two_halves_of_boundary_three_are_not_the_same_boundary() -> None:
     assert after_marker[0] is Outcome.STRANDED_KNOWN
     assert before_marker[0] is Outcome.NEEDS_PLAID_ADJUDICATION
     assert after_marker[1] != before_marker[1], "the marker is the whole difference"
+
+
+def test_the_marker_records_the_id_the_seam_returned(rig: Rig) -> None:
+    """The marker is Plaid's id, carried through the seam — not one written here.
+
+    Codex's round-2 review on PR #58: the rig wrote a literal `"req-rig"` after
+    ``ledger.exchange()``, so its post-marker state was reachable *in the rig*
+    and not through :meth:`PlaidClient.item_public_token_exchange`, which
+    discarded the response's ``request_id`` entirely. The seam now carries it and
+    the rig now writes what it carried, so this row is evidence about the
+    exchange rather than evidence about the rig.
+    """
+
+    crash_at(rig, Boundary.AFTER_MARKER_BEFORE_FSYNC)
+    _, seen, _ = recover_after(rig)
+
+    assert seen.request_id_recorded == LEDGER_REQUEST_ID
+
+
+def test_a_marker_that_cannot_be_written_collapses_b3b_into_b3a() -> None:
+    """What the marker costs if the id ever stops arriving — demonstrated, not assumed.
+
+    The decidability of B3b rests entirely on a successful response carrying an
+    id to record. Today the SDK guarantees one (pinned by
+    ``test_the_locked_sdk_really_does_require_a_request_id_on_the_exchange``), so
+    this state is unreachable in production — which is exactly why it is worth
+    showing rather than arguing about: with the id absent, the marker write puts
+    NULL in the column, and NULL is what "never sent" looks like.
+
+    So the extra evidence B3b enjoys is **borrowed from the SDK's schema**, not
+    produced by this design. Same shape as the B3 split itself: demonstrate the
+    collapse rather than assert the guarantee.
+    """
+
+    with _fresh_machine() as machine:
+        machine.ledger.request_id = None
+        crash_at(machine, Boundary.AFTER_MARKER_BEFORE_FSYNC)
+        without_id = recover_after(machine)
+
+    with _fresh_machine() as machine:
+        crash_at(machine, Boundary.AFTER_RESPONSE_BEFORE_MARKER)
+        before_marker = recover_after(machine)
+
+    assert without_id[0] is Outcome.NEEDS_PLAID_ADJUDICATION
+    assert without_id[1] == before_marker[1], (
+        "with no id to record, the marker write is indistinguishable from no marker"
+    )
 
 
 def test_recovery_never_reads_the_ledger(rig: Rig) -> None:
