@@ -248,11 +248,18 @@ class LinkSessionShape(StrEnum):
     """The observed shape of ``link_sessions`` in a ``/link/token/get`` reply.
 
     Seven values because the SDK can produce seven distinguishable states and
-    **task 06a's F7 criterion 2 is precisely that the pre-completion one is
+    **task 06a's F7 criterion 2 is precisely that the not-ready ones are
     asserted against the real API rather than guessed.** Collapsing the first
     three into one "not ready" would destroy the evidence the criterion asks
     for: a poller written against ``link_sessions == []`` and a Plaid that omits
     the key entirely both "work" until the day the shape changes.
+
+    **There is no single "the pre-completion shape", and this enum is the reason
+    that is sayable.** Criterion 2 splits into **2a** (minted, nobody has opened
+    the URL — measured, and it is :attr:`SESSIONS_ABSENT`) and **2b** (opened and
+    unfinished — *not measured*, because reaching it needs a browser). Which of
+    these values 2b returns is an open question, and a wrapper that answered
+    ready/not-ready would have made it unaskable.
 
     Verified against the installed SDK rather than assumed, because a
     permissive model already produced one bug on this seam
@@ -872,9 +879,13 @@ class PlaidClient:
 
         Returns what the reply *looked like*, never a bare "ready" boolean. The
         seven shapes of :class:`LinkSessionShape` are seven different facts, and
-        the pre-completion one is what **F7** criterion 2 asserts against the
-        live API — a poller whose "not ready" branch was written against a
-        guessed fixture is exactly what that criterion exists to prevent.
+        the not-ready ones are what **F7** criterion 2 asserts against the live
+        API — a poller whose "not ready" branch was written against a guessed
+        fixture is exactly what that criterion exists to prevent. **Criterion 2
+        has two halves**: the pre-start shape is measured
+        (:attr:`LinkSessionShape.SESSIONS_ABSENT`), and the started-but-unfinished
+        shape is not, because reaching it needs a browser. Callers must branch on
+        the absence of a ``public_token``, not on the absent key.
 
         Absent and null are told apart here for the same reason
         :meth:`item_get` tells them apart for ``item.error``: absent means the

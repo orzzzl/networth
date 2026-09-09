@@ -244,9 +244,15 @@ class FakeSandboxApi:
         )
 
     def link_token_get(self, link_token_get_request: Any) -> Any:
-        # The default is the **pre-completion** shape, which is the one task 06a
-        # (F7 criterion 2) has to assert against the live API: no `link_sessions`
-        # key at all. `SimpleNamespace` reproduces that faithfully — an unset
+        # The default is the **pre-start** shape — minted, nobody has opened the
+        # URL — which is the half of task 06a's F7 criterion 2 that has been
+        # asserted against the live API (criterion 2a, Sandbox 2026-09-09): no
+        # `link_sessions` key at all. It is deliberately *not* named "the
+        # pre-completion shape": what Plaid returns once someone has opened the
+        # URL and not finished is criterion 2b and is **unmeasured**, so a fake
+        # that called this the pre-completion default would hand every test that
+        # uses it a guess wearing a measurement's name.
+        # `SimpleNamespace` reproduces the absent key faithfully — an unset
         # attribute is absent to `getattr` here exactly as it is on the SDK model,
         # where direct access raises `ApiAttributeError` (checked against the
         # installed SDK, not assumed).

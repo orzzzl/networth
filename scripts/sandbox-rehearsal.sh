@@ -55,13 +55,27 @@
 # body. This script adds the commit, the origin, the paths, the verb and the
 # identity it ran as, and nothing else.
 #
-# **It never forwards `--print-url`, and that is a decision rather than an
-# omission.** `probe-hosted-link` can print the hosted URL, and a hosted URL is
-# openable by whoever holds it — finishing Link through it spends a lifetime Item
-# slot (F2a). Every transcript this script produces is an artefact that outlives
-# the run and gets attached to a PR, so the URL must not be able to reach one by
-# default. The owner-run half of task 06a does need it on his screen; that is a
-# deliberate widening, and it belongs in the change that adds it.
+# **THE HOSTED URL CANNOT REACH A TRANSCRIPT, AND TWO INDEPENDENT REFUSALS SAY
+# SO.** A hosted URL is openable by whoever holds it, and finishing Link through
+# it spends a lifetime Item slot (F2a). Every transcript this script produces is
+# an artefact that outlives the run and gets attached to a PR. So, as landed:
+#
+#   1. `probe-hosted-link` **has no option that prints the URL** — the verb's
+#      parser does not define one, and a test asserts its absence; and
+#   2. this script forwards no such flag, and its allow-list admits only the
+#      verb name itself.
+#
+# Either alone would do it; both exist because the two are edited by different
+# people at different times. *(An earlier draft of this comment described a
+# `--print-url` flag on the verb. That flag was removed before merge — it was
+# withheld-by-default rather than absent — and this paragraph outlived it by one
+# round, telling the next editor to protect against a hazard that no longer
+# existed while implying the capability was there to be re-enabled. Found in PR
+# #59's round-2 review.)*
+#
+# The owner-run half of task 06a does need the URL on his screen. That is a
+# deliberate widening of **both** refusals above, and it belongs in the change
+# that adds it — not in a flag left lying here in advance.
 #
 # WHY A VERB PARAMETER RATHER THAN A SECOND COPY OF THIS SCRIPT. Everything above
 # — the commit verification, the hash-pinned lock, the no-build-isolation install,

@@ -1132,7 +1132,28 @@ puts that at a successful Link):
 | `/link/token/create` with `hosted_link` | **HTTP 200 with a `hosted_link_url`.** Hosted Link is available on this Trial account with no account-manager involvement |
 | `/link/token/get` on that token | **HTTP 200** — the endpoint is callable on this plan |
 | Hosted-link token lifetime | **exactly 30 minutes** (a plain link token minted in the same run got 4 hours). `url_lifetime_seconds` can widen it |
-| `link_sessions` on a token with no completed session | **absent — the key is not in the response at all**, not an empty array. A poller that treats a missing key as an error will break on every poll before the owner finishes logging in |
+| `link_sessions` on a **freshly minted token nobody has opened** | **absent — the key is not in the response at all**, not an empty array. A poller that treats a missing key as an error breaks on the *first* poll. **This is a pre-start observation only** — see the two states below |
+
+**"Before completion" is two states, and only the first one has been measured.**
+*(Corrected 2026-09-09, from PR #59's review. The row above previously said the
+key is absent "on every poll before the owner finishes logging in" — a claim
+about the whole pre-completion period drawn from a token nobody had opened.)*
+`/link/token/get`'s schema carries `started_at` alongside a **nullable**
+`finished_at`, so Plaid distinguishes these two, and `07a` spends most of its
+polls in the second:
+
+| State | What it is | Measured? |
+|---|---|---|
+| **Pre-start** | minted; nobody has opened the hosted URL | **Yes.** `link_sessions` **absent** — Production probe 2026-08-31, and again in Sandbox 2026-09-09 at commit `c63668d` (`SESSIONS_ABSENT`, 0 sessions, no Item spent) |
+| **Started, unfinished** | someone opened the URL and has not finished | **No.** Reaching it requires a browser, which no agent and no API can supply. Task `06a` criterion 2b |
+
+**A poller must therefore branch on what 2b actually returns, not assume it
+matches 2a.** The plausible shapes — key still absent, present-but-empty, or a
+session with `finished_at: null` — are not interchangeable: the middle one turns
+"not ready" into an empty-array read, and the third carries a session id `07a`
+would otherwise never see. Deploying the 2a shape into the 2b state is exactly
+the failure criterion 2 exists to prevent, so the measurement gates the code
+rather than the code assuming the measurement.
 
 **What could not be measured here, stated as the gap it is:** a *completed*
 session's `public_token` was not observed, because completing a Production Link
@@ -1168,10 +1189,12 @@ pretending to carry:
 - **`/link/token/get` is the sole path, with its failure behaviour specified**
   rather than escaped: poll immediately, then on a bounded schedule until either
   a `public_token` arrives or `session_retention_expires_at` passes. A missing
-  `link_sessions` key is *not* an error (it is the measured pre-completion
-  response above); a transport failure is retried; a `link_token` Plaid rejects
-  is terminal and reported as such. There is no branch that asks the owner for
-  anything, because there is nothing he could supply.
+  `link_sessions` key is *not* an error — it is the **measured pre-start
+  response** above, and the started-but-unfinished shape is **not yet measured**,
+  so the poller treats "no `public_token` yet" as the not-ready condition rather
+  than keying on the absent key specifically. A transport failure is retried; a
+  `link_token` Plaid rejects is terminal and reported as such. There is no branch
+  that asks the owner for anything, because there is nothing he could supply.
 - **The poll runs on the VPS, not on the laptop.** It is a due-ness job like
   every other (§13), driven by the `link_flow` row. Rev 16 had `link.sh` polling
   from the Mac, which put the exchange deadline on a process running on a

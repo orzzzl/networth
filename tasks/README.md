@@ -1184,6 +1184,13 @@ Issues **#3, #4, #5**, **#13**, **#15**.
       - **(2a) Pre-start** — a token that has been minted and that nobody has opened.
         Assert the response contains **no `link_sessions` key at all**. Fully
         agent-runnable: mint, poll, no browser, nothing spent.
+        **DONE — measured live 2026-09-09** on the Sandbox credential from the VPS, at
+        commit `c63668d` under codex's commit-scoped pre-execution approval. Observed
+        `SESSIONS_ABSENT` — the key **absent**, not null and not an empty list — with
+        0 sessions and 0 public tokens; `expires_at` `2026-09-09T10:53:20+00:00`;
+        `url_lifetime_seconds` `None`, because we did not ask and a default was never
+        substituted (the two clocks of issue #3 stay apart). **No Item consumed** — a
+        mint is not an Item — and nothing persisted.
       - **(2b) Started but unfinished** — someone has opened the hosted URL and has not
         completed it. `LinkTokenGetSessionsResponse.finished_at` is nullable, so Plaid
         really produces this state, and **`07a` spends most of its ticks in it**. Record
@@ -1322,14 +1329,30 @@ through `05a`'s `TokenStore`. The first revision of this file listed only `05` a
 so the schema this task manipulates was created by nothing upstream of it — a graph that
 would have sent codex to write migrations inside a task that does not own them.
 
-**Three properties measured on the live account 2026-08-31 that the implementation must
-respect:**
+**Three properties measured live that the implementation must respect** (2026-08-31 on the
+Production Trial account; the first re-confirmed in Sandbox 2026-09-09 at commit `c63668d`):
 
-- `link_sessions` is **absent from the response entirely** — not an empty array — until a
-  session completes. A poller treating a missing key as an error breaks on every poll
-  before completion.
+- `link_sessions` is **absent from the response entirely** — not an empty array — on a
+  **freshly minted token nobody has opened**. A poller treating a missing key as an error
+  breaks on its first poll.
 - The hosted token's lifetime is 30 minutes, observed exactly.
-- The pre-completion response is a **documented shape, not an error**.
+- That absent-key response is a **documented shape, not an error**.
+
+**What is NOT measured, and must not be assumed** *(corrected 2026-09-09 from PR #59's
+review; this row previously said "until a session completes", which is a claim about the
+whole pre-completion period drawn from a token nobody had opened)*: the shape returned once
+someone **has opened the URL and has not finished**. `finished_at` is nullable in Plaid's
+schema, so that state is real and distinct, and **this task's poller spends most of its
+ticks in it** — see `DESIGN.md` F7's two-state table. It is `06a` criterion **2b**, it needs
+a browser, and it has not run.
+
+- [ ] **Branch on the measured 2b shape; do not assume it equals the 2a shape.** Treat
+      "no `public_token` yet" as the not-ready condition rather than keying on the absent
+      key specifically, so that a started-but-unfinished response carrying an empty array,
+      or a session with `finished_at: null`, is *also* handled as not-ready instead of as an
+      error or as a completion. **If `06a` 2b lands before this task ships, write the
+      measured shape in here and test against it.** A poller written to the 2a shape and
+      deployed into the 2b state is the exact failure `06a` criterion 2 exists to prevent.
 
 **Acceptance:**
 
