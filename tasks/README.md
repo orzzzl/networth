@@ -75,7 +75,7 @@ that row. He caught it, not us.)
 | 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **DONE** (#50, 2026-09-07) |
 | 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (16) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **DONE** (#49, 2026-09-08) |
-| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | **READY** |
+| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | **WIP** (claude, 2026-09-08) |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
 
@@ -1563,6 +1563,16 @@ Mac. **Agents never run it.**
       counting Items itself. The single-source rule (`26a`) applies to its first consumer
       most of all: a second derivation written here is the one that runs while a lifetime
       slot is about to be spent.
+- [ ] **A refused count is reported as a refusal — never as a number, never as a
+      traceback.** `26a` (#54) raises `ItemBudgetError` instead of returning a count its
+      stored rows cannot support — an `EXCHANGED` `link_flow` row naming no Item while
+      `item` rows exist is one such condition, and it is not the only one. Both reflexes are
+      wrong in the expensive direction here: substituting a plausible integer is the single
+      thing `26a` refuses to do, and an uncaught exception fails at the last **free** gate
+      before a lifetime slot is spent. So this script **stops before minting a link token**
+      — the same refusal as the canary above — and surfaces the condition `26a` reported,
+      which names what to inspect, rather than an "unknown error". Tested against a fixture
+      database that triggers the refusal: no link token is minted, and no count is printed.
 
 **Must not:**
 
@@ -2061,6 +2071,13 @@ is left is the presentation, and presentation lands with the surfaces that prese
 - [ ] `doctor` and the app **agree on the number**, because both call `26a` — verified by a
       test that changes the underlying state and asserts both surfaces move together, not
       by two implementations that happen to match on the day they were written.
+- [ ] **They agree when there is no number, either.** `26a` (#54) raises `ItemBudgetError`
+      rather than returning a count its stored rows cannot support, so "unavailable, and
+      here is the condition" is a third state both surfaces must render — and **neither may
+      fall back to an integer**, not to the last known count and not to zero. A fallback is
+      the hardest of these failures to notice, because the surface it produces looks exactly
+      like a working one. Verified the same way as the criterion above: one underlying
+      state, both surfaces asserted together.
 - [ ] The number is shown with what it means: a remaining count of zero says the account is
       at its lifetime ceiling and that `/item/remove` will not free one (**F2**), rather
       than showing a bare `0`.
