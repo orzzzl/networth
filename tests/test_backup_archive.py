@@ -128,7 +128,7 @@ def test_current_archive_captures_wal_and_authenticates_its_own_evidence(
 
         assert result.path.name == CURRENT_ARCHIVE
         assert verified.manifest.archive_id == result.archive_id
-        assert verified.manifest.schema_version == 3
+        assert verified.manifest.schema_version == 4
         assert verified.manifest.db_row_counts["sync_run"] == 1
         assert verified.manifest.item_count == 2
         assert verified.orphan_token_count == 0

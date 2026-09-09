@@ -122,8 +122,8 @@ def _insert_link_flow(
 def test_migrations_run_from_empty_and_are_idempotent() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        assert migrate(connection) == (1, 2, 3)
-        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+        assert migrate(connection) == (1, 2, 3, 4)
+        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
         assert connection.execute("PRAGMA busy_timeout").fetchone() == (5000,)
         before = connection.execute(
@@ -160,8 +160,8 @@ def test_item_health_migration_upgrades_v1_without_rewriting_items() -> None:
         )
         connection.commit()
 
-        assert migrate(connection) == (2, 3)
-        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+        assert migrate(connection) == (2, 3, 4)
+        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
         assert connection.execute(
             """
             SELECT plaid_item_id, status, last_health_poll_at,
@@ -177,7 +177,7 @@ def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
     database_path = tmp_path / "networth.db"
     connection = sqlite3.connect(database_path)
     try:
-        assert migrate(connection) == (1, 2, 3)
+        assert migrate(connection) == (1, 2, 3, 4)
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
     finally:
         connection.close()
@@ -192,10 +192,10 @@ def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
 def test_migration_refuses_a_database_from_the_future() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        connection.execute("PRAGMA user_version = 4")
+        connection.execute("PRAGMA user_version = 5")
         with pytest.raises(SchemaTooNewError, match="newer than supported"):
             migrate(connection)
-        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
     finally:
         connection.close()
 
@@ -306,6 +306,9 @@ def test_schema_has_exactly_the_required_tables_and_columns(db: sqlite3.Connecti
             "notified_at",
             "acknowledged_at",
             "resolved_at",
+            # Task 15 (migration 0004): the clock a frozen-data alert must see
+            # advance before it may resolve.
+            "raised_source_as_of",
         ),
         "pairing": ("id", "created_at", "key_ref", "state", "revoked_at"),
         "publication": (

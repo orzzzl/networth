@@ -14,6 +14,9 @@ from datetime import UTC, datetime
 from typing import cast
 
 from networth.model import (
+    Alert,
+    AlertDraft,
+    AlertKind,
     ItemHealth,
     ItemHealthUpdate,
     ItemState,
@@ -58,6 +61,14 @@ class ItemNotFoundError(StoreError):
     """A health observation named an Item that no longer exists."""
 
 
+class AlertAlreadyOpenError(StoreError):
+    """The subject already has an unresolved alert of this kind."""
+
+
+class AlertNotFoundError(StoreError):
+    """A lifecycle write named an alert that does not exist."""
+
+
 _OBSERVATION_COLUMNS = """
     o.id, o.sync_run_id, o.account_id, o.observed_at,
     o.value_minor, o.currency, o.source, o.fetched_at,
@@ -76,6 +87,11 @@ _ITEM_COLUMNS = """
     id, plaid_item_id, secret_ref, status, status_since,
     last_health_poll_at, investments_last_successful_update,
     last_error_code, last_error_message
+"""
+
+_ALERT_COLUMNS = """
+    id, kind, created_at, message, item_id, account_id,
+    raised_source_as_of, notified_at, acknowledged_at, resolved_at
 """
 
 
@@ -173,6 +189,26 @@ def _item_from_row(row: tuple[object, ...]) -> ItemHealth:
         )
     except (IndexError, TypeError, ValueError) as exc:
         raise StoredDataError("item row violates the domain model") from exc
+
+
+def _alert_from_row(row: tuple[object, ...]) -> Alert:
+    try:
+        return Alert(
+            id=_integer(row[0], field="alert.id"),
+            kind=AlertKind(_text(row[1], field="alert.kind")),
+            created_at=_timestamp_from_db(row[2], field="alert.created_at"),
+            message=_text(row[3], field="alert.message"),
+            item_id=None if row[4] is None else _integer(row[4], field="alert.item_id"),
+            account_id=None if row[5] is None else _integer(row[5], field="alert.account_id"),
+            raised_source_as_of=_optional_timestamp_from_db(
+                row[6], field="alert.raised_source_as_of"
+            ),
+            notified_at=_optional_timestamp_from_db(row[7], field="alert.notified_at"),
+            acknowledged_at=_optional_timestamp_from_db(row[8], field="alert.acknowledged_at"),
+            resolved_at=_optional_timestamp_from_db(row[9], field="alert.resolved_at"),
+        )
+    except (IndexError, TypeError, ValueError) as exc:
+        raise StoredDataError("alert row violates the domain model") from exc
 
 
 def _observation_from_row(row: tuple[object, ...]) -> Observation:
@@ -639,6 +675,156 @@ class SnapshotRepository:
         return tuple(_snapshot_from_row(row) for row in rows)
 
 
+class AlertRepository:
+    """Raise, notify and resolve alerts; the open set is the durable state.
+
+    There is no update path for an alert's subject, kind or message.  An alert
+    is a claim about a condition that was true at a moment, and editing one in
+    place would make the anti-fatigue rules unauditable — the row would no
+    longer say what was raised or when.  Conditions change by resolving one
+    alert and raising another.
+
+    ``acknowledged_at`` has no writer here on purpose (see
+    :class:`~networth.model.alert.Alert`): acknowledgement happens on the phone
+    and there is no channel for it to travel back over.
+    """
+
+    __slots__ = ("_connection",)
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        _require_foreign_keys(connection)
+        self._connection = connection
+
+    def get(self, alert_id: int) -> Alert | None:
+        row = _row(
+            self._connection.execute(
+                f"SELECT {_ALERT_COLUMNS} FROM alert WHERE id = ?",
+                (alert_id,),
+            )
+        )
+        return None if row is None else _alert_from_row(row)
+
+    def open(self) -> tuple[Alert, ...]:
+        """Every unresolved alert, oldest first.
+
+        Ordering is by raise time rather than by severity: an alert list the
+        owner sees is a history of what happened to his connections, and
+        re-ranking it would make a new alert quietly displace an older
+        unresolved one.
+        """
+
+        rows = _rows(
+            self._connection.execute(
+                f"""
+                SELECT {_ALERT_COLUMNS} FROM alert
+                WHERE resolved_at IS NULL
+                ORDER BY created_at, id
+                """
+            )
+        )
+        return tuple(_alert_from_row(row) for row in rows)
+
+    def raise_alert(self, draft: AlertDraft) -> Alert:
+        """Insert one alert, refusing a second open one for the same subject.
+
+        The refusal is the database's, not this method's: the partial unique
+        index in migration 0004 is what makes "one alert per subject per state
+        entry" a property of the table rather than of this caller.
+        """
+
+        if not isinstance(draft, AlertDraft):
+            raise TypeError("draft must be an AlertDraft")
+        try:
+            result = _row(
+                self._connection.execute(
+                    """
+                    INSERT INTO alert(
+                        kind, created_at, message, item_id, account_id, raised_source_as_of
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                    """,
+                    (
+                        draft.kind.value,
+                        _timestamp_to_db(draft.created_at),
+                        draft.message,
+                        draft.item_id,
+                        draft.account_id,
+                        _optional_timestamp_to_db(draft.raised_source_as_of),
+                    ),
+                )
+            )
+        except sqlite3.IntegrityError as exc:
+            # Only the open-subject index becomes AlertAlreadyOpenError.  A
+            # foreign-key violation is a different fault entirely — an alert
+            # about a subject that does not exist — and reporting it as "already
+            # open" would send a reader looking for a row that was never there.
+            # The discriminator is the error code rather than the message text.
+            if exc.sqlite_errorcode != sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+                raise
+            raise AlertAlreadyOpenError(
+                f"{draft.kind.value} is already open for this subject; "
+                "resolve it before raising another"
+            ) from exc
+        if result is None:  # pragma: no cover - RETURNING always yields a row here
+            raise StoreError("the alert insert returned no id")
+        return Alert(
+            id=_integer(result[0], field="alert.id"),
+            kind=draft.kind,
+            created_at=draft.created_at,
+            message=draft.message,
+            item_id=draft.item_id,
+            account_id=draft.account_id,
+            raised_source_as_of=draft.raised_source_as_of,
+            notified_at=None,
+            acknowledged_at=None,
+            resolved_at=None,
+        )
+
+    def mark_notified(self, alert_id: int, *, at: datetime) -> Alert:
+        """Record that this alert reached a payload the phone can prompt from.
+
+        Refuses to move the clock backwards.  The 24-hour anti-fatigue window is
+        measured from this value, so an out-of-order write would silently buy a
+        second prompt inside one window.
+        """
+
+        return self._stamp(alert_id, column="notified_at", at=at)
+
+    def resolve(self, alert_id: int, *, at: datetime) -> Alert:
+        """Close an alert whose condition the evaluator observed to be over.
+
+        Resolving an already-resolved alert is refused rather than treated as a
+        no-op: ``resolved_at`` is the record of when the condition ended, and a
+        second write would move it without anything having happened.
+        """
+
+        return self._stamp(alert_id, column="resolved_at", at=at)
+
+    def _stamp(self, alert_id: int, *, column: str, at: datetime) -> Alert:
+        if not isinstance(alert_id, int) or isinstance(alert_id, bool):
+            raise TypeError("alert_id must be an integer")
+        require_utc(at, field="at")
+        existing = self.get(alert_id)
+        if existing is None:
+            raise AlertNotFoundError(f"alert {alert_id} does not exist")
+        if not existing.is_open:
+            raise AlertNotFoundError(f"alert {alert_id} is resolved; {column} is now history")
+        if at < existing.created_at:
+            raise ValueError(f"{column} cannot precede the alert it belongs to")
+        current = getattr(existing, column)
+        if current is not None and at < current:
+            raise ValueError(f"{column} cannot move backwards")
+        row = _row(
+            self._connection.execute(
+                f"UPDATE alert SET {column} = ? WHERE id = ? RETURNING {_ALERT_COLUMNS}",
+                (_timestamp_to_db(at), alert_id),
+            )
+        )
+        if row is None:  # pragma: no cover - the row was read one statement earlier
+            raise AlertNotFoundError(f"alert {alert_id} does not exist")
+        return _alert_from_row(row)
+
+
 class Store:
     """The SQLite-only repository seam used by later components.
 
@@ -648,14 +834,16 @@ class Store:
     so the Store asserts it instead of mutating caller-owned connection state.
     """
 
-    __slots__ = ("items", "observations", "snapshots")
+    __slots__ = ("alerts", "items", "observations", "snapshots")
 
+    alerts: AlertRepository
     items: ItemRepository
     observations: ObservationRepository
     snapshots: SnapshotRepository
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         _require_foreign_keys(connection)
+        self.alerts = AlertRepository(connection)
         self.items = ItemRepository(connection)
         self.observations = ObservationRepository(connection)
         self.snapshots = SnapshotRepository(connection)

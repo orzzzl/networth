@@ -1,5 +1,6 @@
 """Domain types whose shape preserves money provenance."""
 
+from networth.model.alert import Alert, AlertDraft, AlertKind
 from networth.model.figure import (
     AggregateSourceClock,
     SnapshotAge,
@@ -33,6 +34,9 @@ __all__ = [
     "MANUAL_VALUED_AS_OF",
     "QUOTE_AS_OF",
     "AggregateSourceClock",
+    "Alert",
+    "AlertDraft",
+    "AlertKind",
     "EquityHolding",
     "DisplayState",
     "FROZEN_MARKET_DAYS",
