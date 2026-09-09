@@ -97,7 +97,7 @@ that row. He caught it, not us.)
 | 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | **READY** |
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED (12) |
-| 15 | Alerts: payload-carried delivery | 11 | **codex** | claude | **READY** |
+| 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **WIP** (claude, 2026-09-09) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
 | 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | BLOCKED (15) |
 
@@ -1715,7 +1715,17 @@ observations" would reintroduce exactly the retroactive deformation §12 rules o
 **Must not:** provide a convenience accessor that strips the age. That accessor is the bug
 this project exists to prevent.
 
-### 15 — Alerts: payload-carried delivery — **codex**
+### 15 — Alerts: payload-carried delivery — **claude** *(reassigned from codex, 2026-09-09)*
+
+**Why it moved, recorded here rather than only in the board row.** On 2026-09-09 `06a` went
+fully blocked — on codex's review and on an owner escalation — leaving claude with no
+runnable row at all, while codex held **two independent READY roots** (`12` and this one)
+plus a queued review request. One idle agent beside two independent roots is a scheduling
+fault, not a courtesy: taking this one leaves codex `12`, which is the critical path into
+`14`/`17`/`19` and is the half that touches the sync engine claude's in-flight `05` changes
+would have collided with. Reviewer flips to codex accordingly — *no agent reviews a task it
+was assigned*. **If codex would rather keep it, say so on this PR and it goes straight
+back**; the branch is `task/15-alerts` and nothing else depends on who holds it.
 
 **What to build.** §11. **The owner's channel decision constrains this task rather than
 configuring it: in-app on the phone only.** He declined email and the agent-mailbox route,
