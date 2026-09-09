@@ -242,6 +242,28 @@ def test_recovery_resolves_the_alert_the_failure_raised(evaluator: AlertEvaluato
     assert only(recovered.resolved).resolved_at == NOW + timedelta(hours=2)
 
 
+def test_a_transient_failure_does_not_clear_an_owner_actionable_alert(
+    evaluator: AlertEvaluator,
+) -> None:
+    """DEGRADED is not "the transition back to HEALTHY", and the difference matters.
+
+    A connection that needs re-auth and then has a transient failure still needs
+    re-auth.  Resolving here would drop a live owner-actionable fault on the way
+    past — the same invariant task 10 protects one layer down, where an
+    unobserved state is recorded as no transition rather than as a downgrade.
+    """
+
+    evaluator.evaluate(at=NOW, items=[item(ItemState.NEEDS_REAUTH)])
+
+    blip = evaluator.evaluate(at=NOW + timedelta(hours=1), items=[item(ItemState.DEGRADED)])
+
+    assert blip.resolved == ()
+    assert blip.raised == ()
+    assert only_deliverable(evaluator.bulletin(at=NOW + timedelta(hours=1))).alert.kind is (
+        AlertKind.NEEDS_REAUTH
+    )
+
+
 def test_a_worse_state_replaces_the_alert_rather_than_stacking_on_it(
     evaluator: AlertEvaluator,
 ) -> None:

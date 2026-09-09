@@ -34,7 +34,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from networth.model import Alert, AlertDraft, AlertKind, FreshnessAssessment, ItemHealth
+from networth.model import (
+    Alert,
+    AlertDraft,
+    AlertKind,
+    FreshnessAssessment,
+    ItemHealth,
+    ItemState,
+)
 from networth.model.figure import require_utc
 from networth.store import AlertRepository
 
@@ -156,8 +163,17 @@ class AlertEvaluator:
 
         for item in observed_items:
             wanted = AlertKind.for_item_state(item.status)
+            # Section 11 resolves these "on the transition back to HEALTHY" — and
+            # DEGRADED is not that transition.  A connection that needs re-auth
+            # and then has a transient failure still needs re-auth; clearing the
+            # alert there would drop a live, owner-actionable fault on the way
+            # past.  Task 10 protects the same invariant one layer down, where an
+            # unobserved state is recorded as no transition rather than as a
+            # downgrade.  A *different* owner-actionable state does supersede,
+            # because the owner's next action changed.
+            supersedes = item.status is ItemState.HEALTHY or wanted is not None
             for existing in _for_subject(open_alerts, item_id=item.id):
-                if existing.kind is not wanted:
+                if existing.kind is not wanted and supersedes:
                     resolved.append(self._alerts.resolve(existing.id, at=at))
             if wanted is not None and not any(
                 existing.kind is wanted for existing in _for_subject(open_alerts, item_id=item.id)
