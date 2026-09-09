@@ -12,6 +12,7 @@ per call — including with an exception instance, which is raised instead.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +23,95 @@ INSTITUTION = "ins_synthetic_0"
 PUBLIC_TOKEN = "public-sandbox-synthetic"
 ACCESS_TOKEN = "access-sandbox-synthetic"
 ITEM_ID = "item-synthetic"
+LINK_TOKEN = "link-sandbox-synthetic"
+HOSTED_LINK_URL = "https://example.invalid/hosted-link/synthetic"
+LINK_TOKEN_EXPIRATION = datetime(2026, 9, 8, 21, 0, tzinfo=UTC)
+LINK_SESSION_ID = "link-session-synthetic"
+# Distinct from the generic `req-synthetic` the other endpoints return, so a test
+# asserting the exchange's id travelled cannot be satisfied by some *other*
+# call's id arriving instead. Provenance is the whole point of capturing it.
+EXCHANGE_REQUEST_ID = "req-exchange-synthetic"
+# Measurement (i) subtracts these two, so they are far enough apart to tell a
+# real interval from a zero one.
+LINK_SESSION_STARTED = datetime(2026, 9, 8, 20, 0, tzinfo=UTC)
+LINK_SESSION_FINISHED = datetime(2026, 9, 8, 20, 4, tzinfo=UTC)
+
+
+def link_sessions_response(
+    *,
+    sessions: Any,
+    link_token: str = LINK_TOKEN,
+) -> Any:
+    """A ``/link/token/get`` reply carrying whatever session list is passed.
+
+    Takes the list rather than building one so a test can supply the empty list,
+    an explicit ``None``, or sessions that are still open, that concluded with
+    nothing, or that added an Item with or without its token. Those are six
+    different observable shapes and the seventh — the key absent entirely — is
+    produced by *not* calling this helper at all.
+    """
+    return SimpleNamespace(
+        link_token=link_token, link_sessions=sessions, request_id="req-synthetic"
+    )
+
+
+def completed_session(
+    *,
+    public_tokens: Sequence[str] = (PUBLIC_TOKEN,),
+    session_id: str = LINK_SESSION_ID,
+    started_at: datetime | None = LINK_SESSION_STARTED,
+    finished_at: datetime | None = LINK_SESSION_FINISHED,
+    untokened_results: int = 0,
+) -> Any:
+    """One finished Link session that added an Item per token given.
+
+    ``untokened_results`` appends Item-add results with **no** ``public_token``.
+    Plaid's model types that field as ``str`` but the SDK does not require it, so
+    a result whose token is absent is reachable — and it means a slot was spent
+    that we hold no handle to. The fixture can produce it because the wrapper has
+    to be able to report it (PR #58 review, finding 2).
+    """
+    added = [
+        SimpleNamespace(public_token=token, institution=None, accounts=[])
+        for token in public_tokens
+    ]
+    added += [SimpleNamespace(institution=None, accounts=[]) for _ in range(untokened_results)]
+    return SimpleNamespace(
+        link_session_id=session_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        results=SimpleNamespace(item_add_results=added),
+    )
+
+
+def session_without_item(
+    *,
+    session_id: str = LINK_SESSION_ID,
+    started_at: datetime | None = LINK_SESSION_STARTED,
+    finished_at: datetime | None = LINK_SESSION_FINISHED,
+) -> Any:
+    """A session that concluded without adding anything — an exit."""
+    return SimpleNamespace(
+        link_session_id=session_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        results=None,
+    )
+
+
+def session_in_progress(*, session_id: str = LINK_SESSION_ID) -> Any:
+    """A session Plaid has started and not finished: someone is inside Link now.
+
+    ``finished_at`` is typed ``datetime | None`` by the SDK, so this is a state
+    the real API can return, and it is the one ``07a`` observes while the owner
+    is completing the hosted URL.
+    """
+    return SimpleNamespace(
+        link_session_id=session_id,
+        started_at=LINK_SESSION_STARTED,
+        finished_at=None,
+        results=None,
+    )
 
 
 def _accounts_response() -> Any:
@@ -129,8 +219,41 @@ class FakeSandboxApi:
     def item_public_token_exchange(self, item_public_token_exchange_request: Any) -> Any:
         return self._answer(
             "item_public_token_exchange",
-            SimpleNamespace(access_token=ACCESS_TOKEN, item_id=ITEM_ID),
+            # `request_id` is a *required* field of the SDK's response model —
+            # verified against the locked SDK, not assumed — so a fake that
+            # omitted it would be a shape Plaid cannot return, and would let the
+            # wrapper's absent-id branch look like the ordinary case.
+            SimpleNamespace(
+                access_token=ACCESS_TOKEN,
+                item_id=ITEM_ID,
+                request_id=EXCHANGE_REQUEST_ID,
+            ),
             item_public_token_exchange_request,
+        )
+
+    def link_token_create(self, link_token_create_request: Any) -> Any:
+        return self._answer(
+            "link_token_create",
+            SimpleNamespace(
+                link_token=LINK_TOKEN,
+                hosted_link_url=HOSTED_LINK_URL,
+                expiration=LINK_TOKEN_EXPIRATION,
+                request_id="req-synthetic",
+            ),
+            link_token_create_request,
+        )
+
+    def link_token_get(self, link_token_get_request: Any) -> Any:
+        # The default is the **pre-completion** shape, which is the one task 06a
+        # (F7 criterion 2) has to assert against the live API: no `link_sessions`
+        # key at all. `SimpleNamespace` reproduces that faithfully — an unset
+        # attribute is absent to `getattr` here exactly as it is on the SDK model,
+        # where direct access raises `ApiAttributeError` (checked against the
+        # installed SDK, not assumed).
+        return self._answer(
+            "link_token_get",
+            SimpleNamespace(link_token=LINK_TOKEN, request_id="req-synthetic"),
+            link_token_get_request,
         )
 
     def accounts_balance_get(self, accounts_balance_get_request: Any) -> Any:

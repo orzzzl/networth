@@ -1173,12 +1173,15 @@ Issues **#3, #4, #5**, **#13**, **#15**.
 
 **Acceptance — prove F7:**
 
-- [ ] Complete a Sandbox Hosted Link session with `user_good`/`pass_good`, poll
+- [ ] A Sandbox Hosted Link session is completed with `user_good`/`pass_good` — **by a
+      browser opening the hosted URL; there is no API for this step and no agent can
+      substitute for it** (escalation `2c8feb59` decides how it happens). Then poll
       `/link/token/get`, assert `link_sessions[].results.item_add_results[].public_token`
       is present, exchange it, and assert the resulting `access_token` works.
 - [ ] Assert the **negative shape**: **before** completion the response contains **no
       `link_sessions` key at all**, so the poller's "not ready" branch is exercised on the
-      real API rather than on a fixture someone guessed.
+      real API rather than on a fixture someone guessed. **Everything except the browser
+      step is agent-runnable**, which is why this half lands separately and first.
 
 **Acceptance — the four measurements. Record each as a measurement whatever the result:**
 
@@ -1194,16 +1197,38 @@ Issues **#3, #4, #5**, **#13**, **#15**.
 - [ ] **(iii) The four crash boundaries, not one (issues #5 and #15).** Inject a failure at
       each of **before send**, **after send / before response**, **after response / before
       `fsync`**, and **after `fsync` / before the DB commit**, restart, and attempt
-      recovery. Assert a **distinct, honest** outcome for each. The fourth is the one rev 18
-      got wrong: the credential is already durable there, so the correct outcome is that
-      recovery **completes the local transaction without a second exchange** — classifying
-      it `EXCHANGE_UNCERTAIN` is a false report of a lost slot. Only the third boundary is
-      genuinely irreducible, and issue #5's window stays explicit.
-- [ ] **(iv) Can a *different host* finish the flow at all? (issue #13).** Mint the
-      `link_token` and complete a Sandbox session **on the VPS**, then call
+      recovery. Assert an **honest** outcome for each — honest, *not necessarily distinct*.
+      Where two boundaries leave the same evidence on disk, reporting the same outcome is
+      the truthful answer and manufacturing a difference is the defect. The fourth is the
+      one rev 18 got wrong: the credential is already durable there, so the correct outcome
+      is that recovery **completes the local transaction without a second exchange** —
+      classifying it `EXCHANGE_UNCERTAIN` is a false report of a lost slot.
+
+      *Measured 2026-09-09 (`tests/sandbox/crash_boundaries.py`): three honest classes, not
+      four.* The first two boundaries leave byte-identical evidence across runs whose ground
+      truth differs, and **the third boundary is not one boundary**: it splits at the durable
+      success marker, the half behind the marker is decidable, and the half in front of it
+      joins the first two. That last half is the genuinely irreducible one, and it is what
+      issue #5's window must stay explicit about. Closing it would take a second durability
+      barrier ahead of the credential write, which only trades this window for a larger one
+      in which the credential is lost — so it is left open, deliberately and in writing.
+      The wording above previously demanded four distinct outcomes and named the whole third
+      boundary as the irreducible one; both were corrected by measurement rather than by
+      argument.
+- [ ] **(iv) Can a *different host* finish the flow at all? (issue #13).** Mint the Hosted
+      Link token **on the VPS**, complete its hosted URL **in a browser**, then call
       `/link/token/get` and exchange the `public_token` **from
-      `zelengs-macbook-air-2`** — a different machine, same Plaid credentials, the VPS
-      taking no part. Record whether retrieval and exchange both succeed.
+      `zelengs-macbook-air-2`** — a different machine, same Plaid credentials, **the VPS
+      taking no part in either API call**. Record whether retrieval and exchange both
+      succeed.
+
+      *Wording corrected 2026-09-09 (PR #59 review).* This read "mint the `link_token` and
+      complete a Sandbox session **on the VPS**", which no executor can carry out: **there
+      is no API that completes a Hosted Link session**, only a URL someone opens, and the
+      VPS has no browser. What (iv) actually measures is host separation across the two API
+      calls, and the browser is orthogonal to it — so the criterion now says what it
+      measures and stays silent about who opens the URL. Escalation `2c8feb59` decides
+      that, and it is deliberately not pre-empted here.
       **`DESIGN.md` §19 step 2a and all of `07b` assume this works and nothing has tested
       it.** If it fails, the lost-VPS recovery does not exist and `07b` must be redesigned
       before `08` — which is why this is measured here, in the task that precedes both,
@@ -1226,9 +1251,11 @@ included, instead of a synthetic stand-in for it.
 
 Concretely, and this is part of the deliverable:
 
-- [ ] Claude builds and runs the **VPS half** (mint + complete the Sandbox session) — an
-      agent may do this because the process on the VPS reads the file; the agent never sees
-      its contents.
+- [ ] Claude builds and runs the **VPS half** (mint the Hosted Link token) — an agent may
+      do this because the process on the VPS reads the file; the agent never sees its
+      contents. **Completing the session is not part of this bullet**: it is a browser
+      opening a URL, and no agent and no API can do it from the VPS (see the correction
+      under (iv)).
 - [ ] Claude writes the **Mac half as one pre-staged command** that reads `client_id` and
       the **Sandbox** secret from a TTY with `read -rs`, never echoes them, never writes
       them to disk, never puts them in `argv` (so they stay out of `ps`), and leaves no
