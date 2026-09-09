@@ -389,6 +389,128 @@ def test_a_frozen_alert_resolves_when_the_source_clock_finally_advances(
     )
 
     assert only(advanced.resolved).kind is AlertKind.FROZEN_DATA
+    # An account that advanced *out* of frozen gets no replacement.  Worth
+    # asserting only since the advance became able to raise one: resolving and
+    # immediately re-raising would leave the owner an alert he can never clear.
+    assert advanced.raised == ()
+    assert evaluator.bulletin(at=NOW + timedelta(days=3)) == ()
+
+
+def test_an_advancing_clock_that_is_still_frozen_never_empties_the_bulletin(
+    evaluator: AlertEvaluator,
+) -> None:
+    """The condition outlives the row that reports it.
+
+    Section 11 resolves a frozen-data alert when ``source_as_of`` advances — and
+    that is exactly what a feed running a week late does when it catches up by a
+    day.  The clock moved, so the old row's claim is over; the account is still
+    five market closes behind, so the condition is not.  Task 11 counts the
+    closes *after* ``source_as_of`` rather than the time since the clock last
+    changed, which is why this state is reachable at all.
+
+    Resolving without raising the replacement publishes an empty bulletin for an
+    account that is still frozen: the failure this product exists to catch, lost
+    in the reporting layer instead of in the data.
+    """
+
+    first = only(
+        evaluator.evaluate(
+            at=NOW,
+            accounts=[AccountSignal(1, is_pending_reconciliation=False, freshness=frozen())],
+        ).raised
+    )
+    later = NOW + timedelta(days=1)
+    advanced_clock = FROZEN_SINCE + timedelta(days=1)
+
+    still_frozen = evaluator.evaluate(
+        at=later,
+        accounts=[
+            AccountSignal(1, is_pending_reconciliation=False, freshness=frozen(advanced_clock))
+        ],
+    )
+
+    assert only(still_frozen.resolved).id == first.id
+    replacement = only(still_frozen.raised)
+    assert replacement.id != first.id
+    assert replacement.raised_source_as_of == advanced_clock
+    assert [carried.alert.id for carried in evaluator.bulletin(at=later)] == [replacement.id]
+
+
+def test_the_replacement_is_anchored_on_the_clock_it_was_raised_for(
+    evaluator: AlertEvaluator,
+) -> None:
+    """The anchor moves with the row, so the next cycle is not a second advance.
+
+    A replacement that kept the *original* clock would see the same advance
+    again on every following evaluation and churn a resolve/raise pair each
+    time, filling the owner's alert history with rows for one unchanging
+    condition.
+    """
+
+    advanced_clock = FROZEN_SINCE + timedelta(days=1)
+    evaluator.evaluate(
+        at=NOW,
+        accounts=[AccountSignal(1, is_pending_reconciliation=False, freshness=frozen())],
+    )
+    replacement = only(
+        evaluator.evaluate(
+            at=NOW + timedelta(days=1),
+            accounts=[
+                AccountSignal(1, is_pending_reconciliation=False, freshness=frozen(advanced_clock))
+            ],
+        ).raised
+    )
+
+    unchanged = evaluator.evaluate(
+        at=NOW + timedelta(days=2),
+        accounts=[
+            AccountSignal(1, is_pending_reconciliation=False, freshness=frozen(advanced_clock))
+        ],
+    )
+
+    assert unchanged.raised == ()
+    assert unchanged.resolved == ()
+    assert [carried.alert.id for carried in evaluator.bulletin(at=NOW + timedelta(days=2))] == [
+        replacement.id
+    ]
+
+
+def test_a_replacement_may_prompt_again_because_the_state_entry_ended(
+    evaluator: AlertEvaluator,
+) -> None:
+    """Asserted deliberately, and raised as a question on task 15's PR.
+
+    Section 11 scopes anti-fatigue to "one alert per item per state entry", and
+    the advancing clock is what ends the entry — so the replacement is a new
+    entry and may prompt even though the row it replaces was prompted for
+    minutes earlier.  A feed that advances partway more than once a day
+    therefore prompts more than once a day, which reads against the spirit of
+    the same paragraph.
+
+    Whether "state entry" survives an advance that leaves the account frozen is
+    a design question about §11 and not one this module may settle quietly, so
+    the consequence is pinned here where a reviewer can see it and disagree.
+    """
+
+    evaluator.evaluate(
+        at=NOW,
+        accounts=[AccountSignal(1, is_pending_reconciliation=False, freshness=frozen())],
+    )
+    evaluator.record_prompted(evaluator.bulletin(at=NOW), at=NOW)
+    assert only_deliverable(evaluator.bulletin(at=NOW + timedelta(hours=1))).prompt is False
+
+    evaluator.evaluate(
+        at=NOW + timedelta(hours=1),
+        accounts=[
+            AccountSignal(
+                1,
+                is_pending_reconciliation=False,
+                freshness=frozen(FROZEN_SINCE + timedelta(days=1)),
+            )
+        ],
+    )
+
+    assert only_deliverable(evaluator.bulletin(at=NOW + timedelta(hours=1))).prompt is True
 
 
 # --------------------------------------------------------------------------

@@ -23,6 +23,12 @@ Three rules are enforced structurally rather than described:
   leaves ``HEALTHY`` and the account therefore stops being classified
   ``FROZEN`` at all.  The data is just as frozen as it was; only the evidence
   changed.
+- **Resolving that row is not the same as the condition ending.**  A feed that
+  is a week late can advance a day and still be frozen, so an evaluation that
+  resolves on the advance raises the replacement against the new clock *in the
+  same evaluation*.  Otherwise a still-frozen account publishes an empty
+  bulletin for a full cycle — the alert would be lost exactly where this module
+  claims it cannot be.
 
 Publication overdue is deliberately absent; see
 :mod:`networth.model.alert`.
@@ -251,25 +257,41 @@ class AlertEvaluator:
         if assessment is None:
             return
         open_alert = existing_by_kind.get(AlertKind.FROZEN_DATA)
-        if open_alert is None:
-            if assessment.frozen_alert_required:
-                raised.append(
-                    self._alerts.raise_alert(
-                        AlertDraft(
-                            kind=AlertKind.FROZEN_DATA,
-                            created_at=at,
-                            message=_MESSAGES[AlertKind.FROZEN_DATA],
-                            account_id=account.account_id,
-                            raised_source_as_of=assessment.source_as_of,
-                        )
+        if open_alert is not None:
+            raised_for = open_alert.raised_source_as_of
+            if raised_for is None:  # pragma: no cover - the model requires it for this kind
+                raise ValueError(
+                    "a stored FROZEN_DATA alert must carry the clock it was raised for"
+                )
+            if assessment.source_as_of is None or assessment.source_as_of <= raised_for:
+                return
+            # The clock advanced, so this row's claim — "stuck at ``raised_for``"
+            # — is over, and section 11 resolves it on exactly that.  What it
+            # does not do is stop the account being frozen: task 11 counts the
+            # market closes *after* ``source_as_of``, not the time since the
+            # clock last moved, so a feed running a week late can advance a day
+            # and still be five closes behind.  Falling through to the raise
+            # below is therefore not an optimisation — resolving without it
+            # would drop a live condition, and the next ``bulletin()`` would
+            # carry nothing at all for an account that is still frozen.
+            #
+            # The order is forced rather than chosen: migration 0004's partial
+            # index allows one open alert per subject, so the old row must close
+            # before the replacement can exist.
+            resolved.append(self._alerts.resolve(open_alert.id, at=at))
+
+        if assessment.frozen_alert_required:
+            raised.append(
+                self._alerts.raise_alert(
+                    AlertDraft(
+                        kind=AlertKind.FROZEN_DATA,
+                        created_at=at,
+                        message=_MESSAGES[AlertKind.FROZEN_DATA],
+                        account_id=account.account_id,
+                        raised_source_as_of=assessment.source_as_of,
                     )
                 )
-            return
-        raised_for = open_alert.raised_source_as_of
-        if raised_for is None:  # pragma: no cover - the model requires it for this kind
-            raise ValueError("a stored FROZEN_DATA alert must carry the clock it was raised for")
-        if assessment.source_as_of is not None and assessment.source_as_of > raised_for:
-            resolved.append(self._alerts.resolve(open_alert.id, at=at))
+            )
 
     def _evaluate_reconciliation(
         self,
