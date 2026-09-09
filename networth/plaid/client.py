@@ -35,6 +35,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Protocol, cast
 
 import plaid
@@ -48,6 +49,10 @@ from plaid.model.institutions_get_request_options import InstitutionsGetRequestO
 from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.link_token_create_hosted_link import LinkTokenCreateHostedLink
+from plaid.model.link_token_create_request import LinkTokenCreateRequest
+from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+from plaid.model.link_token_get_request import LinkTokenGetRequest
 from plaid.model.products import Products
 from plaid.model.sandbox_public_token_create_request import SandboxPublicTokenCreateRequest
 from plaid.model.sandbox_public_token_create_request_options import (
@@ -150,6 +155,8 @@ class _PlaidApi(Protocol):
     def item_public_token_exchange(
         self, item_public_token_exchange_request: ItemPublicTokenExchangeRequest
     ) -> Any: ...
+    def link_token_create(self, link_token_create_request: LinkTokenCreateRequest) -> Any: ...
+    def link_token_get(self, link_token_get_request: LinkTokenGetRequest) -> Any: ...
     def accounts_balance_get(
         self, accounts_balance_get_request: AccountsBalanceGetRequest
     ) -> Any: ...
@@ -176,6 +183,107 @@ class ExchangedItem:
 
     def __repr__(self) -> str:
         return "ExchangedItem(access_token=<redacted>, item_id=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True)
+class HostedLinkToken:
+    """What ``/link/token/create`` established for one Hosted Link session.
+
+    **Two clocks, kept apart on purpose** (issue #3, and the same discipline
+    §8.1 applies to data). ``expires_at`` is Plaid's — it is the ``expiration``
+    field of the response and it governs the *link token*. ``url_lifetime_seconds``
+    is **ours**: the value this program asked for, which governs how long the
+    hosted URL itself stays openable and is **not echoed back in the response**.
+    They are different lengths and they run out independently, so a single
+    "deadline" field would be a guess dressed as a measurement. Task ``06a`` (i)
+    exists to measure the second one against the exchange window; until it has,
+    neither may be presented to the owner as *the* deadline.
+
+    ``url_lifetime_seconds`` is ``None`` when this program did not ask for one,
+    which means Plaid's default applies and we do not know it. That is a
+    different fact from any number and is stored as one.
+
+    Both strings are redacted in the repr. The ``link_token`` is what
+    ``/link/token/get`` is polled with, and **the hosted URL is openable by
+    whoever holds it** — completing a Link through it spends one of the ten
+    lifetime Item slots (**F2a**), which makes the URL a spendable thing and not
+    a diagnostic to print into a log.
+    """
+
+    link_token: str
+    hosted_link_url: str
+    expires_at: datetime | None
+    url_lifetime_seconds: int | None = None
+
+    def __repr__(self) -> str:
+        return (
+            "HostedLinkToken(link_token=<redacted>, hosted_link_url=<redacted>, "
+            f"expires_at={self.expires_at!r}, url_lifetime_seconds={self.url_lifetime_seconds!r})"
+        )
+
+
+class LinkSessionShape(StrEnum):
+    """The observed shape of ``link_sessions`` in a ``/link/token/get`` reply.
+
+    Five values because the SDK can produce five distinguishable shapes and
+    **task 06a's F7 criterion 2 is precisely that the pre-completion one is
+    asserted against the real API rather than guessed.** Collapsing the first
+    three into one "not ready" would destroy the evidence the criterion asks
+    for: a poller written against ``link_sessions == []`` and a Plaid that omits
+    the key entirely both "work" until the day the shape changes.
+
+    Verified against the installed SDK rather than assumed, because a
+    permissive model already produced one bug on this seam
+    (:meth:`PlaidClient.first_institution_supporting`): an unset attribute
+    raises ``ApiAttributeError`` on direct access and is absent to ``getattr``,
+    an explicit null reads back as ``None``, and an empty list reads back as
+    ``[]``. All three are therefore reachable and tellable apart here.
+    """
+
+    #: The response carried no ``link_sessions`` key at all.
+    SESSIONS_ABSENT = "SESSIONS_ABSENT"
+    #: The key was present and null.
+    SESSIONS_NULL = "SESSIONS_NULL"
+    #: The key was present and empty: Plaid reported a session list with none in it.
+    NO_SESSIONS = "NO_SESSIONS"
+    #: Sessions exist, and none of them added an Item — an exit, or one still open.
+    NO_ITEM_ADDED = "NO_ITEM_ADDED"
+    #: At least one session added an Item and carries its ``public_token``.
+    ITEM_ADDED = "ITEM_ADDED"
+
+
+@dataclass(frozen=True, slots=True)
+class LinkSessionPoll:
+    """One ``/link/token/get`` answer, as evidence rather than as a verdict.
+
+    ``shape`` is what the reply looked like; ``public_tokens`` is what can be
+    exchanged. A caller decides it is done by asking for a token, never by
+    asking whether the poll "succeeded" — that is the distinction **F7** turns
+    on, since Hosted Link has no frontend integration and this reply is the only
+    signal a completed session produces.
+
+    ``public_tokens`` is a tuple because one reply can describe several sessions
+    and multi-Item Link can add several Items in one, and **each token is one
+    spent slot** (**F2a**). Returning the first and dropping the rest would
+    silently lose Items the owner has already paid for.
+    """
+
+    shape: LinkSessionShape
+    public_tokens: tuple[str, ...] = ()
+    session_ids: tuple[str, ...] = ()
+
+    @property
+    def item_added(self) -> bool:
+        return self.shape is LinkSessionShape.ITEM_ADDED
+
+    def __repr__(self) -> str:
+        # `public_token` is a bearer credential for an already-spent slot and
+        # `session_ids` are Plaid's handles for the owner's own Link attempts.
+        return (
+            f"LinkSessionPoll(shape={self.shape.value}, "
+            f"public_tokens=<{len(self.public_tokens)} redacted>, "
+            f"session_ids=<{len(self.session_ids)} redacted>)"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +366,25 @@ def _api_exception_fields(exc: ApiException) -> tuple[str | None, str | None]:
         code if isinstance(code, str) and code else None,
         kind if isinstance(kind, str) and kind else None,
     )
+
+
+def _expires_at(response: Any, *, step: str) -> datetime | None:
+    """``expiration`` as an aware UTC instant, or ``None`` when Plaid sent none.
+
+    ``None`` is kept meaning exactly one thing. A value that is present but
+    unreadable — a naive datetime, or something that is not a datetime at all —
+    is a failed call, not a missing expiry: coercing it would invent a deadline,
+    and folding it into ``None`` would report "Plaid gave no expiry" about a
+    reply that gave one. Naive is refused rather than assumed UTC per
+    ``AGENTS.md``; the sibling project shipped a "no notification" bug that came
+    down to exactly that assumption.
+    """
+    value = getattr(response, "expiration", _MISSING)
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise PlaidCallError(f"{step} returned an expiration that is not an aware datetime")
+    return value.astimezone(UTC)
 
 
 def _investments_update(response: Any) -> tuple[bool, datetime | None, str | None]:
@@ -490,6 +617,120 @@ class PlaidClient:
         if not public_token:
             raise PlaidCallError("sandbox/public_token/create returned no public_token")
         return public_token
+
+    def link_token_create_hosted(
+        self,
+        *,
+        client_user_id: str,
+        client_name: str,
+        products: Sequence[str],
+        country_codes: Sequence[str],
+        language: str,
+        url_lifetime_seconds: int | None = None,
+        completion_redirect_uri: str | None = None,
+    ) -> HostedLinkToken:
+        """``/link/token/create`` with ``hosted_link`` — the only Link this project opens.
+
+        **No environment guard, deliberately.** Unlike
+        :meth:`sandbox_public_token_create`, this call is *supposed* to run
+        against Production: task ``08`` is the owner-run Production Link and it
+        goes through here. The refusal that protects the Item budget lives at
+        ``08``'s gates, not on this method, and adding one here would make the
+        Production path depend on a branch no test could exercise.
+
+        **Hosted Link, not a redirect flow.** Plaid states there is "no frontend
+        integration required (or possible)", and ``completion_redirect_uri``
+        carries no token — which is why ``/link/token/get`` exists at all and why
+        **F7** is a hard gate on ``08``. The redirect is offered here for the
+        owner-facing "you're done" page only; nothing reads a token out of it.
+
+        ``hosted_link`` is a **declared** attribute of ``LinkTokenCreateRequest``
+        in the installed SDK. That was checked rather than assumed:
+        :meth:`first_institution_supporting` documents how this SDK silently
+        accepts an *undeclared* keyword and serialises it at the wrong level,
+        producing an HTTP 400 that every offline test passes. The test for this
+        method pins the **serialised** request for the same reason.
+        """
+        hosted: dict[str, Any] = {}
+        if url_lifetime_seconds is not None:
+            hosted["url_lifetime_seconds"] = url_lifetime_seconds
+        if completion_redirect_uri is not None:
+            hosted["completion_redirect_uri"] = completion_redirect_uri
+        request = LinkTokenCreateRequest(
+            client_name=client_name,
+            language=language,
+            country_codes=[CountryCode(code) for code in country_codes],
+            user=LinkTokenCreateRequestUser(client_user_id=client_user_id),
+            products=[Products(name) for name in products],
+            hosted_link=LinkTokenCreateHostedLink(**hosted),
+        )
+        response = self._call("link/token/create", self._api.link_token_create, request)
+        link_token = cast("str | None", getattr(response, "link_token", None))
+        hosted_link_url = cast("str | None", getattr(response, "hosted_link_url", None))
+        if not link_token:
+            raise PlaidCallError("link/token/create returned no link_token")
+        if not hosted_link_url:
+            # A link token with no hosted URL is a Link this program cannot
+            # open: there is no frontend integration to fall back to. Treated as
+            # a failed call rather than returned half-built, so nothing downstream
+            # can hand the owner a session that does not exist.
+            raise PlaidCallError(
+                "link/token/create returned no hosted_link_url, so the session cannot be "
+                "opened at all (Hosted Link has no frontend integration to fall back to)"
+            )
+        return HostedLinkToken(
+            link_token=link_token,
+            hosted_link_url=hosted_link_url,
+            expires_at=_expires_at(response, step="link/token/create"),
+            url_lifetime_seconds=url_lifetime_seconds,
+        )
+
+    def link_token_get(self, link_token: str) -> LinkSessionPoll:
+        """``/link/token/get`` — the only way a completed Hosted Link reports itself.
+
+        Returns what the reply *looked like*, never a bare "ready" boolean. The
+        five shapes of :class:`LinkSessionShape` are five different facts, and
+        the pre-completion one is what **F7** criterion 2 asserts against the
+        live API — a poller whose "not ready" branch was written against a
+        guessed fixture is exactly what that criterion exists to prevent.
+
+        Absent and null are told apart here for the same reason
+        :meth:`item_get` tells them apart for ``item.error``: absent means the
+        reply was not the shape we understand, null means Plaid affirmatively
+        reported nothing. Reading both as "no sessions yet" would make the
+        measurement unable to fail.
+        """
+        request = LinkTokenGetRequest(link_token=link_token)
+        response = self._call("link/token/get", self._api.link_token_get, request)
+        sessions = getattr(response, "link_sessions", _MISSING)
+        if sessions is _MISSING:
+            return LinkSessionPoll(shape=LinkSessionShape.SESSIONS_ABSENT)
+        if sessions is None:
+            return LinkSessionPoll(shape=LinkSessionShape.SESSIONS_NULL)
+        if not isinstance(sessions, list | tuple):
+            raise PlaidCallError("link/token/get returned a link_sessions that is not a list")
+        if not sessions:
+            return LinkSessionPoll(shape=LinkSessionShape.NO_SESSIONS)
+
+        session_ids: list[str] = []
+        public_tokens: list[str] = []
+        for session in sessions:
+            session_id = cast("str | None", getattr(session, "link_session_id", None))
+            if session_id:
+                session_ids.append(session_id)
+            results = getattr(session, "results", None)
+            if results is None:
+                continue
+            for added in getattr(results, "item_add_results", None) or []:
+                token = cast("str | None", getattr(added, "public_token", None))
+                if token:
+                    public_tokens.append(token)
+        shape = LinkSessionShape.ITEM_ADDED if public_tokens else LinkSessionShape.NO_ITEM_ADDED
+        return LinkSessionPoll(
+            shape=shape,
+            public_tokens=tuple(public_tokens),
+            session_ids=tuple(session_ids),
+        )
 
     def item_public_token_exchange(self, public_token: str) -> ExchangedItem:
         """``/item/public_token/exchange`` — the short-lived token for the durable one.

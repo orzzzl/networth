@@ -93,7 +93,7 @@ class ResponseWithNoItem:
 class FakeApi:
     """The item-status fake. Task 05's tests need ``item_get`` and nothing else.
 
-    The other five methods exist because the SDK protocol has six and this object
+    The other seven methods exist because the SDK protocol has eight and this object
     stands in for the SDK; each one raises, so a test that reaches an endpoint it
     did not mean to fails instead of being quietly answered. (The Link tests use
     ``tests.fake_plaid.FakeSandboxApi``, which is the mirror image of this.)
@@ -117,6 +117,12 @@ class FakeApi:
 
     def item_public_token_exchange(self, item_public_token_exchange_request: Any) -> Any:
         raise AssertionError("an item-status test must not call /item/public_token/exchange")
+
+    def link_token_create(self, link_token_create_request: Any) -> Any:
+        raise AssertionError("an item-status test must not call /link/token/create")
+
+    def link_token_get(self, link_token_get_request: Any) -> Any:
+        raise AssertionError("an item-status test must not call /link/token/get")
 
     def accounts_balance_get(self, accounts_balance_get_request: Any) -> Any:
         raise AssertionError("an item-status test must not call /accounts/balance/get")

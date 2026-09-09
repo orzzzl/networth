@@ -12,6 +12,7 @@ per call — including with an exception instance, which is raised instead.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +23,45 @@ INSTITUTION = "ins_synthetic_0"
 PUBLIC_TOKEN = "public-sandbox-synthetic"
 ACCESS_TOKEN = "access-sandbox-synthetic"
 ITEM_ID = "item-synthetic"
+LINK_TOKEN = "link-sandbox-synthetic"
+HOSTED_LINK_URL = "https://example.invalid/hosted-link/synthetic"
+LINK_TOKEN_EXPIRATION = datetime(2026, 9, 8, 21, 0, tzinfo=UTC)
+LINK_SESSION_ID = "link-session-synthetic"
+
+
+def link_sessions_response(
+    *,
+    sessions: Any,
+    link_token: str = LINK_TOKEN,
+) -> Any:
+    """A ``/link/token/get`` reply carrying whatever session list is passed.
+
+    Takes the list rather than building one so a test can supply the empty list,
+    an explicit ``None``, or sessions with and without an added Item. Those are
+    four different observable shapes and the pre-completion one — the key absent
+    entirely — is produced by *not* calling this helper at all.
+    """
+    return SimpleNamespace(
+        link_token=link_token, link_sessions=sessions, request_id="req-synthetic"
+    )
+
+
+def completed_session(*, public_tokens: Sequence[str] = (PUBLIC_TOKEN,)) -> Any:
+    """One finished Link session that added an Item per token given."""
+    return SimpleNamespace(
+        link_session_id=LINK_SESSION_ID,
+        results=SimpleNamespace(
+            item_add_results=[
+                SimpleNamespace(public_token=token, institution=None, accounts=[])
+                for token in public_tokens
+            ]
+        ),
+    )
+
+
+def session_without_item(*, session_id: str = LINK_SESSION_ID) -> Any:
+    """A session that exists and added nothing — an exit, or one still open."""
+    return SimpleNamespace(link_session_id=session_id, results=None)
 
 
 def _accounts_response() -> Any:
@@ -131,6 +171,31 @@ class FakeSandboxApi:
             "item_public_token_exchange",
             SimpleNamespace(access_token=ACCESS_TOKEN, item_id=ITEM_ID),
             item_public_token_exchange_request,
+        )
+
+    def link_token_create(self, link_token_create_request: Any) -> Any:
+        return self._answer(
+            "link_token_create",
+            SimpleNamespace(
+                link_token=LINK_TOKEN,
+                hosted_link_url=HOSTED_LINK_URL,
+                expiration=LINK_TOKEN_EXPIRATION,
+                request_id="req-synthetic",
+            ),
+            link_token_create_request,
+        )
+
+    def link_token_get(self, link_token_get_request: Any) -> Any:
+        # The default is the **pre-completion** shape, which is the one task 06a
+        # (F7 criterion 2) has to assert against the live API: no `link_sessions`
+        # key at all. `SimpleNamespace` reproduces that faithfully — an unset
+        # attribute is absent to `getattr` here exactly as it is on the SDK model,
+        # where direct access raises `ApiAttributeError` (checked against the
+        # installed SDK, not assumed).
+        return self._answer(
+            "link_token_get",
+            SimpleNamespace(link_token=LINK_TOKEN, request_id="req-synthetic"),
+            link_token_get_request,
         )
 
     def accounts_balance_get(self, accounts_balance_get_request: Any) -> Any:
