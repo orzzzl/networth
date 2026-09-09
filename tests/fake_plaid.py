@@ -27,6 +27,10 @@ LINK_TOKEN = "link-sandbox-synthetic"
 HOSTED_LINK_URL = "https://example.invalid/hosted-link/synthetic"
 LINK_TOKEN_EXPIRATION = datetime(2026, 9, 8, 21, 0, tzinfo=UTC)
 LINK_SESSION_ID = "link-session-synthetic"
+# Measurement (i) subtracts these two, so they are far enough apart to tell a
+# real interval from a zero one.
+LINK_SESSION_STARTED = datetime(2026, 9, 8, 20, 0, tzinfo=UTC)
+LINK_SESSION_FINISHED = datetime(2026, 9, 8, 20, 4, tzinfo=UTC)
 
 
 def link_sessions_response(
@@ -37,31 +41,73 @@ def link_sessions_response(
     """A ``/link/token/get`` reply carrying whatever session list is passed.
 
     Takes the list rather than building one so a test can supply the empty list,
-    an explicit ``None``, or sessions with and without an added Item. Those are
-    four different observable shapes and the pre-completion one — the key absent
-    entirely — is produced by *not* calling this helper at all.
+    an explicit ``None``, or sessions that are still open, that concluded with
+    nothing, or that added an Item with or without its token. Those are six
+    different observable shapes and the seventh — the key absent entirely — is
+    produced by *not* calling this helper at all.
     """
     return SimpleNamespace(
         link_token=link_token, link_sessions=sessions, request_id="req-synthetic"
     )
 
 
-def completed_session(*, public_tokens: Sequence[str] = (PUBLIC_TOKEN,)) -> Any:
-    """One finished Link session that added an Item per token given."""
+def completed_session(
+    *,
+    public_tokens: Sequence[str] = (PUBLIC_TOKEN,),
+    session_id: str = LINK_SESSION_ID,
+    started_at: datetime | None = LINK_SESSION_STARTED,
+    finished_at: datetime | None = LINK_SESSION_FINISHED,
+    untokened_results: int = 0,
+) -> Any:
+    """One finished Link session that added an Item per token given.
+
+    ``untokened_results`` appends Item-add results with **no** ``public_token``.
+    Plaid's model types that field as ``str`` but the SDK does not require it, so
+    a result whose token is absent is reachable — and it means a slot was spent
+    that we hold no handle to. The fixture can produce it because the wrapper has
+    to be able to report it (PR #58 review, finding 2).
+    """
+    added = [
+        SimpleNamespace(public_token=token, institution=None, accounts=[])
+        for token in public_tokens
+    ]
+    added += [SimpleNamespace(institution=None, accounts=[]) for _ in range(untokened_results)]
     return SimpleNamespace(
-        link_session_id=LINK_SESSION_ID,
-        results=SimpleNamespace(
-            item_add_results=[
-                SimpleNamespace(public_token=token, institution=None, accounts=[])
-                for token in public_tokens
-            ]
-        ),
+        link_session_id=session_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        results=SimpleNamespace(item_add_results=added),
     )
 
 
-def session_without_item(*, session_id: str = LINK_SESSION_ID) -> Any:
-    """A session that exists and added nothing — an exit, or one still open."""
-    return SimpleNamespace(link_session_id=session_id, results=None)
+def session_without_item(
+    *,
+    session_id: str = LINK_SESSION_ID,
+    started_at: datetime | None = LINK_SESSION_STARTED,
+    finished_at: datetime | None = LINK_SESSION_FINISHED,
+) -> Any:
+    """A session that concluded without adding anything — an exit."""
+    return SimpleNamespace(
+        link_session_id=session_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        results=None,
+    )
+
+
+def session_in_progress(*, session_id: str = LINK_SESSION_ID) -> Any:
+    """A session Plaid has started and not finished: someone is inside Link now.
+
+    ``finished_at`` is typed ``datetime | None`` by the SDK, so this is a state
+    the real API can return, and it is the one ``07a`` observes while the owner
+    is completing the hosted URL.
+    """
+    return SimpleNamespace(
+        link_session_id=session_id,
+        started_at=LINK_SESSION_STARTED,
+        finished_at=None,
+        results=None,
+    )
 
 
 def _accounts_response() -> Any:

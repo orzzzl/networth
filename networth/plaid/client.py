@@ -225,7 +225,7 @@ class HostedLinkToken:
 class LinkSessionShape(StrEnum):
     """The observed shape of ``link_sessions`` in a ``/link/token/get`` reply.
 
-    Five values because the SDK can produce five distinguishable shapes and
+    Seven values because the SDK can produce seven distinguishable states and
     **task 06a's F7 criterion 2 is precisely that the pre-completion one is
     asserted against the real API rather than guessed.** Collapsing the first
     three into one "not ready" would destroy the evidence the criterion asks
@@ -238,6 +238,17 @@ class LinkSessionShape(StrEnum):
     raises ``ApiAttributeError`` on direct access and is absent to ``getattr``,
     an explicit null reads back as ``None``, and an empty list reads back as
     ``[]``. All three are therefore reachable and tellable apart here.
+
+    The last four were three until review round 1 of PR #58, which named two
+    collapses the first cut had made. ``LinkTokenGetSessionsResponse`` types
+    ``finished_at`` as ``datetime | None``, so a **live** session and an
+    **exited** one are distinguishable in the reply and were nonetheless both
+    reported as ``NO_ITEM_ADDED`` — that is the state ``07a`` observes while the
+    owner is inside Link, and §7's response-driven transitions cannot be written
+    against a shape that cannot see it. And an Item-add result whose
+    ``public_token`` is missing was reported as ``NO_ITEM_ADDED`` too, i.e. "a
+    slot was spent and we cannot see its token" was reported as "nothing was
+    added" — the one direction **F2a** makes unrecoverable.
     """
 
     #: The response carried no ``link_sessions`` key at all.
@@ -246,43 +257,135 @@ class LinkSessionShape(StrEnum):
     SESSIONS_NULL = "SESSIONS_NULL"
     #: The key was present and empty: Plaid reported a session list with none in it.
     NO_SESSIONS = "NO_SESSIONS"
-    #: Sessions exist, and none of them added an Item — an exit, or one still open.
+    #: At least one session has no ``finished_at`` — someone is inside Link now.
+    SESSION_IN_PROGRESS = "SESSION_IN_PROGRESS"
+    #: Every session has concluded and none of them added an Item: an exit.
     NO_ITEM_ADDED = "NO_ITEM_ADDED"
-    #: At least one session added an Item and carries its ``public_token``.
+    #: Every Item-add result Plaid reported carries its ``public_token``.
     ITEM_ADDED = "ITEM_ADDED"
+    #: An Item was added and at least one of its ``public_token``\\ s is missing.
+    ITEM_ADDED_TOKEN_ABSENT = "ITEM_ADDED_TOKEN_ABSENT"
+
+
+@dataclass(frozen=True, slots=True)
+class LinkSessionRecord:
+    """One entry of ``link_sessions``, kept whole rather than flattened.
+
+    The first cut of :class:`LinkSessionPoll` returned parallel tuples of
+    session ids and public tokens, which threw away **which token belongs to
+    which session** — and one reply can describe several sessions. Since each
+    token is one spent Item slot (**F2a**), that association is what lets a
+    later reader say *which* attempt spent *which* slot; parallel tuples of
+    different lengths cannot say it at all.
+
+    ``started_at`` / ``finished_at`` are here because **measurement (i) derives
+    its deadline from them**: the hosted URL's lifetime is our number and the
+    link token's expiry is Plaid's (see :class:`HostedLinkToken`), and the only
+    way to measure the first against a real session is to see when that session
+    began and ended. A poll that dropped them could not support the measurement
+    it exists for.
+
+    ``item_add_results`` counts what Plaid reported, which is **not** the same
+    as ``len(public_tokens)``: see :attr:`tokens_missing`.
+    """
+
+    session_id: str | None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    public_tokens: tuple[str, ...] = ()
+    item_add_results: int = 0
+
+    @property
+    def finished(self) -> bool:
+        """Whether Plaid reported this session as concluded.
+
+        A missing ``finished_at`` is read as *not finished*, which is the safe
+        direction: calling a live session concluded would let a poller stop
+        while the owner is still inside Link, and Hosted Link produces no other
+        signal that would correct it.
+        """
+        return self.finished_at is not None
+
+    @property
+    def tokens_missing(self) -> int:
+        """Item-add results whose ``public_token`` this reply did not carry.
+
+        Non-zero means a slot is spent and we are holding no handle to it. It is
+        counted rather than inferred so the fact survives into
+        :attr:`LinkSessionPoll.shape` instead of being read as "nothing here".
+        """
+        return max(self.item_add_results - len(self.public_tokens), 0)
+
+    def __repr__(self) -> str:
+        # `public_token` is a bearer credential for an already-spent slot and
+        # `session_id` is Plaid's handle for one of the owner's Link attempts.
+        return (
+            "LinkSessionRecord(session_id=<redacted>, "
+            f"started_at={self.started_at!r}, finished_at={self.finished_at!r}, "
+            f"public_tokens=<{len(self.public_tokens)} redacted>, "
+            f"item_add_results={self.item_add_results})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class LinkSessionPoll:
     """One ``/link/token/get`` answer, as evidence rather than as a verdict.
 
-    ``shape`` is what the reply looked like; ``public_tokens`` is what can be
-    exchanged. A caller decides it is done by asking for a token, never by
-    asking whether the poll "succeeded" — that is the distinction **F7** turns
-    on, since Hosted Link has no frontend integration and this reply is the only
-    signal a completed session produces.
+    ``shape`` is what the reply looked like; ``sessions`` is the reply itself,
+    one record per session. A caller decides it is done by asking for a token,
+    never by asking whether the poll "succeeded" — that is the distinction
+    **F7** turns on, since Hosted Link has no frontend integration and this
+    reply is the only signal a completed session produces.
 
-    ``public_tokens`` is a tuple because one reply can describe several sessions
-    and multi-Item Link can add several Items in one, and **each token is one
-    spent slot** (**F2a**). Returning the first and dropping the rest would
-    silently lose Items the owner has already paid for.
+    **The shape names the most consequential fact; the records carry the rest.**
+    Precedence, highest first: a spent slot whose token is missing, a spent slot
+    whose token is in hand, a session still open, all sessions concluded with
+    nothing added. It is ordered by what a reader must not miss rather than by
+    what happened last — the top two are permanent and the bottom two are not.
     """
 
     shape: LinkSessionShape
-    public_tokens: tuple[str, ...] = ()
-    session_ids: tuple[str, ...] = ()
+    sessions: tuple[LinkSessionRecord, ...] = ()
+
+    @property
+    def public_tokens(self) -> tuple[str, ...]:
+        """Every token in the reply, flattened, for the caller that exchanges them.
+
+        Derived from :attr:`sessions` rather than stored beside it, so the two
+        can never disagree. Every one of them is a slot already spent (**F2a**);
+        returning the first and dropping the rest would silently lose Items the
+        owner has already paid for.
+        """
+        return tuple(token for session in self.sessions for token in session.public_tokens)
+
+    @property
+    def session_ids(self) -> tuple[str, ...]:
+        return tuple(s.session_id for s in self.sessions if s.session_id is not None)
 
     @property
     def item_added(self) -> bool:
-        return self.shape is LinkSessionShape.ITEM_ADDED
+        """Whether an Item slot has been spent — **not** whether one can be exchanged.
+
+        True for ``ITEM_ADDED_TOKEN_ABSENT`` as well, because the slot is gone
+        either way and that is the fact the Item budget is kept against. A
+        caller that wants something to exchange asks for :attr:`public_tokens`
+        and gets an empty tuple, rather than being told nothing happened.
+        """
+        return self.shape in (
+            LinkSessionShape.ITEM_ADDED,
+            LinkSessionShape.ITEM_ADDED_TOKEN_ABSENT,
+        )
+
+    @property
+    def tokens_missing(self) -> int:
+        return sum(session.tokens_missing for session in self.sessions)
 
     def __repr__(self) -> str:
-        # `public_token` is a bearer credential for an already-spent slot and
-        # `session_ids` are Plaid's handles for the owner's own Link attempts.
         return (
             f"LinkSessionPoll(shape={self.shape.value}, "
+            f"sessions=<{len(self.sessions)} redacted>, "
             f"public_tokens=<{len(self.public_tokens)} redacted>, "
-            f"session_ids=<{len(self.session_ids)} redacted>)"
+            f"tokens_missing={self.tokens_missing})"
         )
 
 
@@ -385,6 +488,49 @@ def _expires_at(response: Any, *, step: str) -> datetime | None:
     if not isinstance(value, datetime) or value.utcoffset() is None:
         raise PlaidCallError(f"{step} returned an expiration that is not an aware datetime")
     return value.astimezone(UTC)
+
+
+def _session_instant(session: Any, field: str) -> datetime | None:
+    """``started_at`` / ``finished_at`` as an aware instant, or ``None``.
+
+    Same rule as :func:`_expires_at` and for the same reason, one level in: the
+    SDK types both as ``datetime``, so anything else is an unreadable reply
+    rather than a timestamp to coerce. Naive is refused instead of assumed UTC —
+    **measurement (i) subtracts these two**, and a wrong offset there does not
+    look like an error, it looks like a URL lifetime that is hours off.
+    """
+    value = getattr(session, field, _MISSING)
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise PlaidCallError(f"link/token/get returned a {field} that is not an aware datetime")
+    return value.astimezone(UTC)
+
+
+def _link_session_record(session: Any) -> LinkSessionRecord:
+    """One ``link_sessions`` entry, with nothing about it inferred.
+
+    ``item_add_results`` counts the results Plaid reported and
+    ``public_tokens`` collects only the ones that carried a token, so the two
+    disagree exactly when a spent slot has no visible handle. That gap is
+    :attr:`LinkSessionRecord.tokens_missing`, and keeping it is the whole point:
+    the first cut counted only tokens, which made "an Item was added and its
+    token is missing" indistinguishable from "nothing was added".
+    """
+    results = getattr(session, "results", None)
+    added = list(getattr(results, "item_add_results", None) or []) if results is not None else []
+    tokens = [
+        token
+        for token in (cast("str | None", getattr(one, "public_token", None)) for one in added)
+        if token
+    ]
+    return LinkSessionRecord(
+        session_id=cast("str | None", getattr(session, "link_session_id", None)) or None,
+        started_at=_session_instant(session, "started_at"),
+        finished_at=_session_instant(session, "finished_at"),
+        public_tokens=tuple(tokens),
+        item_add_results=len(added),
+    )
 
 
 def _investments_update(response: Any) -> tuple[bool, datetime | None, str | None]:
@@ -689,7 +835,7 @@ class PlaidClient:
         """``/link/token/get`` — the only way a completed Hosted Link reports itself.
 
         Returns what the reply *looked like*, never a bare "ready" boolean. The
-        five shapes of :class:`LinkSessionShape` are five different facts, and
+        seven shapes of :class:`LinkSessionShape` are seven different facts, and
         the pre-completion one is what **F7** criterion 2 asserts against the
         live API — a poller whose "not ready" branch was written against a
         guessed fixture is exactly what that criterion exists to prevent.
@@ -699,6 +845,12 @@ class PlaidClient:
         reply was not the shape we understand, null means Plaid affirmatively
         reported nothing. Reading both as "no sessions yet" would make the
         measurement unable to fail.
+
+        Every session is returned as a :class:`LinkSessionRecord` rather than
+        flattened into parallel tuples. The shape is a summary *of* those
+        records and is computed from them here, in one place, so that a caller
+        reading ``poll.sessions`` and a caller reading ``poll.shape`` cannot
+        reach different conclusions about the same reply.
         """
         request = LinkTokenGetRequest(link_token=link_token)
         response = self._call("link/token/get", self._api.link_token_get, request)
@@ -712,25 +864,16 @@ class PlaidClient:
         if not sessions:
             return LinkSessionPoll(shape=LinkSessionShape.NO_SESSIONS)
 
-        session_ids: list[str] = []
-        public_tokens: list[str] = []
-        for session in sessions:
-            session_id = cast("str | None", getattr(session, "link_session_id", None))
-            if session_id:
-                session_ids.append(session_id)
-            results = getattr(session, "results", None)
-            if results is None:
-                continue
-            for added in getattr(results, "item_add_results", None) or []:
-                token = cast("str | None", getattr(added, "public_token", None))
-                if token:
-                    public_tokens.append(token)
-        shape = LinkSessionShape.ITEM_ADDED if public_tokens else LinkSessionShape.NO_ITEM_ADDED
-        return LinkSessionPoll(
-            shape=shape,
-            public_tokens=tuple(public_tokens),
-            session_ids=tuple(session_ids),
-        )
+        records = tuple(_link_session_record(session) for session in sessions)
+        if any(record.tokens_missing for record in records):
+            shape = LinkSessionShape.ITEM_ADDED_TOKEN_ABSENT
+        elif any(record.public_tokens for record in records):
+            shape = LinkSessionShape.ITEM_ADDED
+        elif any(not record.finished for record in records):
+            shape = LinkSessionShape.SESSION_IN_PROGRESS
+        else:
+            shape = LinkSessionShape.NO_ITEM_ADDED
+        return LinkSessionPoll(shape=shape, sessions=records)
 
     def item_public_token_exchange(self, public_token: str) -> ExchangedItem:
         """``/item/public_token/exchange`` — the short-lived token for the durable one.

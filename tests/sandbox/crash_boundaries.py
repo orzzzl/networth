@@ -20,6 +20,19 @@ refuses to answer for it — see :class:`DuplicateExchangeNotMeasured`. A rig th
 quietly returned some plausible error here would be the guessed fixture this
 task exists to eliminate, and every conclusion drawn from it would inherit the
 guess.
+
+**The third boundary has two halves, and only the second one is decidable.**
+The first version of this rig injected B3 only *after* the success marker was
+already durable and concluded from that that "B3 is decidable" — a claim about
+the whole boundary drawn from half of it. PR #58's review injected at the other
+half (after ``ledger.exchange()`` returns, before the marker write) and got
+`NEEDS_PLAID_ADJUDICATION` with the token *consumed*. So the marker **moves**
+the irreducible window rather than closing it: it makes B3b decidable and leaves
+B3a indistinguishable from B1/B2. Both halves are injected here now, and the
+limit is pinned by :func:`test_the_pre_marker_half_of_boundary_three_is_irreducible`
+rather than described in prose. The obvious repair — another durability barrier
+before :meth:`TokenStore.put` — is **not** made: it would only shrink B3a by
+enlarging the interval in which the credential itself can be lost.
 """
 
 from __future__ import annotations
@@ -43,11 +56,18 @@ MATERIAL = "rig-material-not-a-credential"
 
 
 class Boundary(Enum):
-    """Where the worker dies, named by what has and has not happened."""
+    """Where the worker dies, named by what has and has not happened.
+
+    Five injection points for four boundaries: §7's third one — after the
+    response, before the ``fsync`` — is split at the success marker, because
+    that write is the only thing separating a decidable crash from an
+    undecidable one and a single injection point cannot represent both.
+    """
 
     BEFORE_SEND = "before send"
     AFTER_SEND_BEFORE_RESPONSE = "after send / before response"
-    AFTER_RESPONSE_BEFORE_FSYNC = "after response / before fsync"
+    AFTER_RESPONSE_BEFORE_MARKER = "after response / before the success marker"
+    AFTER_MARKER_BEFORE_FSYNC = "after the success marker / before fsync"
     AFTER_FSYNC_BEFORE_COMMIT = "after fsync / before the DB commit"
     NO_CRASH = "no crash (control)"
 
@@ -67,7 +87,14 @@ class Outcome(Enum):
     #: A *successful* response is recorded and no material survived. The token
     #: was certainly consumed and the credential is certainly gone — which is a
     #: strictly stronger statement than ``EXCHANGE_UNCERTAIN``, and §7 has no
-    #: state for it. See the module docstring's note on `07a`.
+    #: state for it.
+    #:
+    #: **§7 is not gaining one on this evidence** (adjudicated in PR #58's
+    #: review). B3a reaches `NEEDS_PLAID_ADJUDICATION` with the token consumed,
+    #: so a §7 state meaning "certainly stranded" would be reachable from only
+    #: half of the boundary that motivates it — the flow would still have to
+    #: carry `EXCHANGE_UNCERTAIN` for the other half. That is a design change
+    #: worth making only if some later evidence closes B3a, and none does yet.
     STRANDED_KNOWN = "exchange known to have succeeded; credential lost"
 
     #: Nothing to recover — the flow already reached a terminal state.
@@ -188,9 +215,18 @@ def run_exchange(
     ``persist_request_id`` exists because the third boundary's decidability
     turns out to rest entirely on it, which was not obvious until this rig was
     run. Setting it ``False`` models a worker that does not durably record a
-    successful response before writing the credential — and collapses boundary
-    three into boundaries one and two. It is a knob so that the dependency can
-    be *demonstrated* rather than claimed.
+    successful response before writing the credential — and collapses **all** of
+    boundary three into boundaries one and two. It is a knob so that the
+    dependency can be *demonstrated* rather than claimed.
+
+    It is **not** the same thing as :attr:`Boundary.AFTER_RESPONSE_BEFORE_MARKER`,
+    and conflating the two is the mistake this rig's first version made. The knob
+    varies the *worker's design*: no marker at all, so no crash anywhere in B3 is
+    decidable. The boundary varies *where this worker dies*: the marker exists and
+    is reached on every run that gets past it, and the crash lands in the window
+    before it. They leave the same disk behind, and they answer different
+    questions — "should `07a` write the marker" versus "what does the marker still
+    fail to decide".
     """
 
     # --- claim (§7): at most one worker, enforced in the database ------------
@@ -228,6 +264,15 @@ def run_exchange(
         raise Crashed(Boundary.AFTER_SEND_BEFORE_RESPONSE.value)
 
     material = ledger.exchange(public_token)
+
+    # B3a. The token is consumed and nothing on this disk says so yet: the
+    # response arrived in memory and the process died before it could be
+    # written down. Injected here rather than assumed away — the first version
+    # of this rig had no injection point between the response and the marker,
+    # and concluded "B3 is decidable" from the half that is.
+    if boundary is Boundary.AFTER_RESPONSE_BEFORE_MARKER:
+        raise Crashed(Boundary.AFTER_RESPONSE_BEFORE_MARKER.value)
+
     if persist_request_id:
         # Written **only after a success**, and that is load-bearing rather than
         # incidental: Plaid returns a `request_id` on errors too, so a row that
@@ -240,8 +285,8 @@ def run_exchange(
             ("req-rig", link_flow_id, attempt_number),
         )
 
-    if boundary is Boundary.AFTER_RESPONSE_BEFORE_FSYNC:
-        raise Crashed(Boundary.AFTER_RESPONSE_BEFORE_FSYNC.value)
+    if boundary is Boundary.AFTER_MARKER_BEFORE_FSYNC:
+        raise Crashed(Boundary.AFTER_MARKER_BEFORE_FSYNC.value)
 
     # --- durability, then the row that references it (§14a ordering) ---------
     secret_ref = store.put(SecretKind.ACCESS_TOKEN, flow_id, material, item_id="item-rig")

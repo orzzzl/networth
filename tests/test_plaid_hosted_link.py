@@ -29,13 +29,16 @@ from networth.plaid.client import (
 from networth.plaid.environment import PlaidCredentials, PlaidEnvironment
 from tests.fake_plaid import (
     HOSTED_LINK_URL,
+    LINK_SESSION_FINISHED,
     LINK_SESSION_ID,
+    LINK_SESSION_STARTED,
     LINK_TOKEN,
     LINK_TOKEN_EXPIRATION,
     PUBLIC_TOKEN,
     FakeSandboxApi,
     completed_session,
     link_sessions_response,
+    session_in_progress,
     session_without_item,
 )
 
@@ -164,7 +167,7 @@ def test_the_hosted_token_redacts_both_strings() -> None:
     assert "1800" in rendered
 
 
-# --- /link/token/get: the four negative shapes and the positive one ----------
+# --- /link/token/get: the negative shapes, the positive one, and the unsafe one
 
 
 def test_before_completion_the_key_is_absent_and_that_is_its_own_shape() -> None:
@@ -193,11 +196,11 @@ def test_an_empty_list_is_its_own_shape_too() -> None:
     assert client.link_token_get(LINK_TOKEN).shape is LinkSessionShape.NO_SESSIONS
 
 
-def test_a_session_that_added_nothing_is_not_ready_and_is_still_reported() -> None:
-    """An exit, or a session still open. Distinct from "no sessions" because it
-    is the shape task ``06a`` (ii)/(iii) will meet after an abandoned attempt —
-    and **F2a** says an abandoned session spends no slot, so the difference is
-    load-bearing for the Item budget, not cosmetic."""
+def test_a_concluded_session_that_added_nothing_is_its_own_shape() -> None:
+    """An exit. Distinct from "no sessions" because it is the shape task ``06a``
+    (ii)/(iii) will meet after an abandoned attempt — and **F2a** says an
+    abandoned session spends no slot, so the difference is load-bearing for the
+    Item budget, not cosmetic."""
     client, _ = _client(link_token_get=link_sessions_response(sessions=[session_without_item()]))
     poll = client.link_token_get(LINK_TOKEN)
 
@@ -206,7 +209,37 @@ def test_a_session_that_added_nothing_is_not_ready_and_is_still_reported() -> No
     assert poll.session_ids == (LINK_SESSION_ID,)
 
 
-def test_a_completed_session_yields_its_public_token() -> None:
+def test_a_session_still_open_is_not_the_same_shape_as_one_that_exited() -> None:
+    """PR #58 review, finding 2. ``finished_at`` is ``datetime | None`` in the
+    SDK, so "the owner is inside Link right now" and "the owner gave up" are
+    distinguishable in the reply — and they are the two states §7 / ``07a``
+    transition on differently. Reporting both as ``NO_ITEM_ADDED`` would leave
+    the state machine nothing to transition on."""
+    client, _ = _client(link_token_get=link_sessions_response(sessions=[session_in_progress()]))
+    poll = client.link_token_get(LINK_TOKEN)
+
+    assert poll.shape is LinkSessionShape.SESSION_IN_PROGRESS
+    assert not poll.item_added
+    assert poll.sessions[0].started_at == LINK_SESSION_STARTED
+    assert poll.sessions[0].finished_at is None
+    assert not poll.sessions[0].finished
+
+
+def test_one_session_still_open_keeps_the_whole_reply_in_progress() -> None:
+    """A concluded session next to a live one must not read as "everything is
+    over": the live one is the reason to keep polling."""
+    client, _ = _client(
+        link_token_get=link_sessions_response(
+            sessions=[
+                session_without_item(session_id="exited-session"),
+                session_in_progress(session_id="live-session"),
+            ]
+        )
+    )
+    assert client.link_token_get(LINK_TOKEN).shape is LinkSessionShape.SESSION_IN_PROGRESS
+
+
+def test_a_completed_session_yields_its_public_token_and_both_instants() -> None:
     client, _ = _client(link_token_get=link_sessions_response(sessions=[completed_session()]))
     poll = client.link_token_get(LINK_TOKEN)
 
@@ -214,6 +247,42 @@ def test_a_completed_session_yields_its_public_token() -> None:
     assert poll.item_added
     assert poll.public_tokens == (PUBLIC_TOKEN,)
     assert poll.session_ids == (LINK_SESSION_ID,)
+    assert poll.sessions[0].started_at == LINK_SESSION_STARTED
+    assert poll.sessions[0].finished_at == LINK_SESSION_FINISHED
+
+
+def test_an_item_added_with_no_token_is_not_reported_as_nothing_added() -> None:
+    """PR #58 review, finding 2, and the unsafe half of it. An Item-add result
+    with no ``public_token`` means a lifetime slot is spent (**F2a**) and we hold
+    no handle to it. The first cut counted tokens only, so it reported that as
+    ``NO_ITEM_ADDED`` — "nothing happened" about something permanent."""
+    client, _ = _client(
+        link_token_get=link_sessions_response(
+            sessions=[completed_session(public_tokens=(), untokened_results=1)]
+        )
+    )
+    poll = client.link_token_get(LINK_TOKEN)
+
+    assert poll.shape is LinkSessionShape.ITEM_ADDED_TOKEN_ABSENT
+    assert poll.item_added
+    assert poll.public_tokens == ()
+    assert poll.tokens_missing == 1
+
+
+def test_a_missing_token_outranks_the_tokens_that_are_present() -> None:
+    """The shape names what a reader must not miss. A reply that added two Items
+    and showed one token is not ``ITEM_ADDED``: acting on it as if it were would
+    exchange one slot and forget the other for good."""
+    client, _ = _client(
+        link_token_get=link_sessions_response(
+            sessions=[completed_session(public_tokens=("public-a",), untokened_results=1)]
+        )
+    )
+    poll = client.link_token_get(LINK_TOKEN)
+
+    assert poll.shape is LinkSessionShape.ITEM_ADDED_TOKEN_ABSENT
+    assert poll.public_tokens == ("public-a",)
+    assert poll.tokens_missing == 1
 
 
 def test_every_public_token_is_returned_because_each_one_is_a_spent_slot() -> None:
@@ -236,21 +305,73 @@ def test_every_public_token_is_returned_because_each_one_is_a_spent_slot() -> No
     assert poll.session_ids == (LINK_SESSION_ID, "other-session")
 
 
+def test_each_token_stays_with_the_session_that_spent_the_slot() -> None:
+    """PR #58 review, finding 2. Parallel tuples of ids and tokens cannot say
+    which attempt spent which slot — they are not even the same length here."""
+    client, _ = _client(
+        link_token_get=link_sessions_response(
+            sessions=[
+                session_without_item(session_id="exited-session"),
+                completed_session(session_id="paid-session", public_tokens=["public-a"]),
+            ]
+        )
+    )
+    poll = client.link_token_get(LINK_TOKEN)
+
+    assert [(s.session_id, s.public_tokens) for s in poll.sessions] == [
+        ("exited-session", ()),
+        ("paid-session", ("public-a",)),
+    ]
+
+
 def test_a_link_sessions_that_is_not_a_list_is_a_failed_call() -> None:
     client, _ = _client(link_token_get=link_sessions_response(sessions={"nope": True}))
     with pytest.raises(PlaidCallError, match="not a list"):
         client.link_token_get(LINK_TOKEN)
 
 
+def test_a_naive_session_instant_is_a_failed_call_not_a_coerced_one() -> None:
+    """Measurement (i) subtracts these two instants. A naive value assumed to be
+    UTC does not look like an error, it looks like a URL lifetime hours off —
+    the same reasoning ``expiration`` already carries, one level in."""
+    client, _ = _client(
+        link_token_get=link_sessions_response(
+            sessions=[
+                session_without_item(
+                    finished_at=datetime(2026, 9, 8, 20, 4),  # noqa: DTZ001 — the point of the test
+                )
+            ]
+        )
+    )
+    with pytest.raises(PlaidCallError, match="finished_at that is not an aware datetime"):
+        client.link_token_get(LINK_TOKEN)
+
+
+def test_a_session_with_no_instants_is_read_as_still_open() -> None:
+    """The safe direction: calling a live session concluded lets a poller stop
+    while the owner is still inside Link, and Hosted Link produces no other
+    signal that would correct it."""
+    client, _ = _client(
+        link_token_get=link_sessions_response(
+            sessions=[session_without_item(started_at=None, finished_at=None)]
+        )
+    )
+    poll = client.link_token_get(LINK_TOKEN)
+
+    assert poll.shape is LinkSessionShape.SESSION_IN_PROGRESS
+    assert poll.sessions[0].started_at is None
+
+
 def test_the_poll_redacts_tokens_and_session_ids() -> None:
     """A ``public_token`` is a bearer credential for an already-spent slot, and
     the session ids are Plaid's handles for the owner's own Link attempts."""
     client, _ = _client(link_token_get=link_sessions_response(sessions=[completed_session()]))
-    rendered = repr(client.link_token_get(LINK_TOKEN))
+    poll = client.link_token_get(LINK_TOKEN)
 
-    assert PUBLIC_TOKEN not in rendered
-    assert LINK_SESSION_ID not in rendered
-    assert "ITEM_ADDED" in rendered
+    for rendered in (repr(poll), repr(poll.sessions[0])):
+        assert PUBLIC_TOKEN not in rendered
+        assert LINK_SESSION_ID not in rendered
+    assert "ITEM_ADDED" in repr(poll)
 
 
 def test_the_get_request_carries_the_link_token() -> None:

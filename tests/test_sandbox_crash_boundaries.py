@@ -2,9 +2,15 @@
 
 What these record is not "the code works". It is **what a restarted worker can
 conclude**, boundary by boundary — the input `07a`'s ``EXCHANGE_UNCERTAIN``
-handling is written against. The headline result is the last test in the file:
-three of the four boundaries are locally indistinguishable from one another, so
-four distinct local outcomes do not exist however carefully recovery is written.
+handling is written against. The headline result: everything that happens before
+the success marker is durable is locally indistinguishable, so four distinct
+local outcomes do not exist however carefully recovery is written.
+
+That class grew by one in PR #58's review. The marker splits the third boundary
+rather than deciding it, and the half in front of it — the response has arrived
+and nothing has recorded it — is irreducible. The first version of this file
+injected only the half behind the marker and reported "B3 is decidable", which
+was true of what it measured and false of what it claimed.
 """
 
 from __future__ import annotations
@@ -165,16 +171,19 @@ def test_after_fsync_is_recoverable_even_though_the_db_saw_nothing(rig: Rig) -> 
         (Boundary.BEFORE_SEND, True, False),
         (Boundary.AFTER_SEND_BEFORE_RESPONSE, False, False),
         (Boundary.AFTER_SEND_BEFORE_RESPONSE, True, True),
+        (Boundary.AFTER_RESPONSE_BEFORE_MARKER, True, True),
     ],
 )
-def test_before_send_and_mid_call_cannot_be_decided_locally(
+def test_before_the_marker_nothing_can_be_decided_locally(
     rig: Rig, boundary: Boundary, request_arrived: bool, consumed: bool
 ) -> None:
-    """Boundaries one and two leave nothing that separates them.
+    """Every crash before the success marker leaves nothing that separates it.
 
     The ground truth differs across these rows — the token is untouched in two
-    of them and consumed in the third — and recovery reaches the same
-    conclusion in all three, because that is genuinely all the disk supports.
+    of them and consumed in the other two — and recovery reaches the same
+    conclusion in all four, because that is genuinely all the disk supports.
+    The last row is B3a and was added in PR #58's review: it is the reason the
+    class is "before the marker" rather than "boundaries one and two".
     """
 
     crash_at(rig, boundary, request_arrived=request_arrived)
@@ -186,22 +195,70 @@ def test_before_send_and_mid_call_cannot_be_decided_locally(
     assert rig.ledger.consumed is consumed, "the rig's own ground truth"
 
 
-def test_after_response_is_known_stranded_not_merely_uncertain(rig: Rig) -> None:
-    """Boundary three is decidable, and the honest report is stronger.
+def test_after_the_marker_is_known_stranded_not_merely_uncertain(rig: Rig) -> None:
+    """Boundary three's **second half** is decidable, and the report is stronger.
 
     A recorded ``request_id`` means the exchange returned material, so the token
     is certainly consumed and the credential is certainly gone. Calling that
     ``EXCHANGE_UNCERTAIN`` — "it is not known whether Plaid consumed the token"
-    (§7) — understates what is known. `07a` has no state for this.
+    (§7) — understates what is known. `07a` has no state for this, and per PR
+    #58's review it is not getting one until the other half closes too.
     """
 
-    crash_at(rig, Boundary.AFTER_RESPONSE_BEFORE_FSYNC)
+    crash_at(rig, Boundary.AFTER_MARKER_BEFORE_FSYNC)
     outcome, seen, _ = recover_after(rig)
 
     assert outcome is Outcome.STRANDED_KNOWN
     assert seen.material_durable is False
     assert seen.request_id_recorded is not None
     assert rig.ledger.consumed is True
+
+
+def test_the_pre_marker_half_of_boundary_three_is_irreducible(rig: Rig) -> None:
+    """**The correction.** The marker moves the undecidable window; it does not
+    close it.
+
+    Injected after ``ledger.exchange()`` returns and before the marker write: the
+    token is consumed, and the disk says exactly what it says after a crash
+    *before the send*. So the earlier claim that "B3 is decidable because of the
+    marker" was drawn from B3b alone. This half stays in the shared-uncertainty
+    class and no local write can rescue it — every candidate barrier sits either
+    before the response (too early to know) or after this point (too late to be
+    reached).
+
+    Not repaired by adding a second durability barrier ahead of
+    :meth:`TokenStore.put`: that would shrink this window only by growing the one
+    in which the credential itself is lost, which is the worse trade.
+    """
+
+    crash_at(rig, Boundary.AFTER_RESPONSE_BEFORE_MARKER)
+    outcome, seen, _ = recover_after(rig)
+
+    assert outcome is Outcome.NEEDS_PLAID_ADJUDICATION
+    assert seen.request_id_recorded is None
+    assert seen.material_durable is False
+    assert rig.ledger.consumed is True, "the rig's ground truth: the slot is spent"
+
+
+def test_the_two_halves_of_boundary_three_are_not_the_same_boundary() -> None:
+    """One crash point is decidable and the other is not, in the same worker.
+
+    Asserted as a pair because the finding is a *difference*: a rig that only
+    ever injected at B3b could report "B3 is decidable" forever and never be
+    wrong about anything it measured.
+    """
+
+    with _fresh_machine() as machine:
+        crash_at(machine, Boundary.AFTER_MARKER_BEFORE_FSYNC)
+        after_marker = recover_after(machine)
+
+    with _fresh_machine() as machine:
+        crash_at(machine, Boundary.AFTER_RESPONSE_BEFORE_MARKER)
+        before_marker = recover_after(machine)
+
+    assert after_marker[0] is Outcome.STRANDED_KNOWN
+    assert before_marker[0] is Outcome.NEEDS_PLAID_ADJUDICATION
+    assert after_marker[1] != before_marker[1], "the marker is the whole difference"
 
 
 def test_recovery_never_reads_the_ledger(rig: Rig) -> None:
@@ -220,19 +277,25 @@ def test_recovery_never_reads_the_ledger(rig: Rig) -> None:
     assert parameters == {"connection", "store", "flow_id"}
 
 
-# --- the headline: three boundaries, one observable state ---------------------
+# --- the headline: everything before the marker, one observable state ---------
 
 
-def test_boundaries_one_and_two_leave_byte_identical_evidence() -> None:
-    """**The measurement.** Three different worlds, one observable state.
+def test_every_crash_before_the_marker_leaves_byte_identical_evidence() -> None:
+    """**The measurement.** Four different worlds, one observable state.
 
     `tasks/README.md` asks each of the four boundaries to produce "a distinct,
-    honest outcome". Run against the real schema and the real `TokenStore`, the
-    first two do not: nothing on disk separates "about to send" from "sent, no
-    reply", and the token is *untouched* in two of these runs and *consumed* in
-    the third. Reporting the first as ``EXCHANGE_UNCERTAIN`` claims a slot is at
-    risk when it provably is not — rev 18's error pointing the other way — and
-    no amount of care in `07a` can avoid it, because the evidence is not there.
+    honest outcome". Run against the real schema and the real `TokenStore`, three
+    of them do not: nothing on disk separates "about to send" from "sent, no
+    reply" from "replied, not yet written down", and the token is *untouched* in
+    two of these runs and *consumed* in the other two. Reporting the first as
+    ``EXCHANGE_UNCERTAIN`` claims a slot is at risk when it provably is not —
+    rev 18's error pointing the other way — and no amount of care in `07a` can
+    avoid it, because the evidence is not there.
+
+    The fourth row is B3a and it is why this test's name changed in PR #58's
+    review: with only the first three, the same green result would have
+    supported the stronger and **false** claim that the marker makes all of B3
+    decidable.
 
     Which is exactly why measurement (ii) gates `07a`: the re-exchange is the
     only oracle that can split this class.
@@ -245,6 +308,7 @@ def test_boundaries_one_and_two_leave_byte_identical_evidence() -> None:
         (Boundary.BEFORE_SEND, True),
         (Boundary.AFTER_SEND_BEFORE_RESPONSE, False),
         (Boundary.AFTER_SEND_BEFORE_RESPONSE, True),
+        (Boundary.AFTER_RESPONSE_BEFORE_MARKER, True),
     ):
         with _fresh_machine() as machine:
             crash_at(machine, boundary, request_arrived=arrived)
@@ -259,31 +323,31 @@ def test_boundaries_one_and_two_leave_byte_identical_evidence() -> None:
     )
 
 
-def test_boundary_three_collapses_into_them_without_the_request_id_write() -> None:
-    """And boundary three is only decidable because of one durable write.
+def test_boundary_three_collapses_entirely_without_the_request_id_write() -> None:
+    """And B3b is only decidable because of one durable write.
 
-    This is the actionable half of (iii). With the post-success ``request_id``
-    write in place, B3 is distinguishable from B1/B2 and reports the stronger,
-    truer ``STRANDED_KNOWN``. Remove that single write — a worker that goes
-    straight from the response to the ``fsync`` — and B3 becomes byte-identical
-    to the pair above, and a certainly-lost slot gets reported as merely
-    uncertain.
+    This is the actionable half of (iii), and it asks a different question from
+    :func:`test_the_pre_marker_half_of_boundary_three_is_irreducible`. That one
+    varies *where this worker dies*; this one varies *the worker*: drop the
+    marker from the design and a crash at B3b — the one place in B3 the marker
+    would have helped — becomes byte-identical to B1/B2 as well, so a
+    certainly-lost slot gets reported as merely uncertain.
 
     So `07a` must durably record a *successful* exchange response **before**
     writing the credential. That is a real cost — an extra barrier in the hot
-    path — and it is stated here as a measured consequence rather than a
-    preference.
+    path — and it buys *part* of B3, not all of it. Stated here as a measured
+    consequence rather than a preference.
     """
 
     with _fresh_machine() as machine:
-        crash_at(machine, Boundary.AFTER_RESPONSE_BEFORE_FSYNC)
+        crash_at(machine, Boundary.AFTER_MARKER_BEFORE_FSYNC)
         with_write = recover_after(machine)[1]
 
     with _fresh_machine() as machine:
         connection = machine.connect()
         with pytest.raises(Crashed):
             run_exchange(
-                boundary=Boundary.AFTER_RESPONSE_BEFORE_FSYNC,
+                boundary=Boundary.AFTER_MARKER_BEFORE_FSYNC,
                 connection=connection,
                 store=machine.store(),
                 ledger=machine.ledger,
@@ -293,7 +357,7 @@ def test_boundary_three_collapses_into_them_without_the_request_id_write() -> No
         connection.close()
         outcome, without_write, _ = recover_after(machine)
 
-    assert with_write != without_write, "the write is what makes B3 decidable"
+    assert with_write != without_write, "the write is what makes B3b decidable"
     assert with_write.request_id_recorded is not None
     assert without_write.request_id_recorded is None
     assert outcome is Outcome.NEEDS_PLAID_ADJUDICATION, (
