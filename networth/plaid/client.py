@@ -287,6 +287,16 @@ class LinkSessionRecord:
 
     ``item_add_results`` counts what Plaid reported, which is **not** the same
     as ``len(public_tokens)``: see :attr:`tokens_missing`.
+
+    **An absent ``finished_at`` and a null one are deliberately not told apart**
+    — unlike ``link_sessions`` itself two levels up, where the same module
+    insists on the distinction. It is not an inconsistency: there, absent means
+    "not the reply shape we understand" and null means "Plaid affirmatively says
+    none", and a measurement hangs on which. Here both mean *this reply states no
+    finish instant*, a caller does the same thing for either — keep waiting — and
+    that is the safe direction, because it is the one that never reports a
+    possibly-spent slot as an abandonment. A value that is present and
+    *unreadable* is neither, and raises.
     """
 
     session_id: str | None
@@ -319,6 +329,10 @@ class LinkSessionRecord:
     def __repr__(self) -> str:
         # `public_token` is a bearer credential for an already-spent slot and
         # `session_id` is Plaid's handle for one of the owner's Link attempts.
+        # The two instants are rendered rather than redacted, and that is a
+        # decision rather than an oversight: they are measurement (i)'s raw
+        # material, they name no institution and no person, and a transcript
+        # that hid them could not show the deadline it was run to measure.
         return (
             "LinkSessionRecord(session_id=<redacted>, "
             f"started_at={self.started_at!r}, finished_at={self.finished_at!r}, "
