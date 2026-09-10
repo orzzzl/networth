@@ -99,7 +99,7 @@ that row. He caught it, not us.)
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED (12) |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
-| 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | **READY** |
+| 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | **WIP** (claude, 2026-09-09) |
 
 ### Phase 4 — getting the number onto the phone
 
@@ -1680,6 +1680,18 @@ new both contributing) and a severed curve (history not carried across `lineage_
 
 **Must not:** auto-confirm a mapping. The owner confirms.
 
+**Carried in from PR #62's review, so it does not live only in review history.** `12`'s
+`syncable()` excludes an account on `reconciliation_state = 'ARCHIVED'` and on `archived_at`,
+but `account` carries **four** archive-ish columns and §8.5 step 3 names the pair it does not
+filter on: *"the old one is archived with `superseded_by_account_id` and `superseded_at`"*.
+Measured at `12`'s merged head: a row archived exactly the way §8.5 describes it still syncs.
+It is provably harmless today because nothing writes either column — **`12b` is the first
+writer**, which is why the fix belongs here rather than there. This task adds
+`AND a.superseded_by_account_id IS NULL AND a.superseded_at IS NULL` with a fixture per
+clause, where the fixture can be reachable instead of synthetic. Written down because the
+alternative — `12b` setting all four markers so `12`'s filter happens to be sufficient — is a
+module that is correct only because of a fact it never asserts.
+
 ---
 
 ## Phase 3 — sync and the honesty machinery
@@ -1924,6 +1936,36 @@ the manual side.
 fifth; it never silently changes a quantity.
 
 **Must not:** auto-update a share count. The owner confirms.
+
+**The title names a trigger that does not exist, and what was built is §12's.** Measured
+before writing any code: the string `vest` appears twice in the whole repository —
+`DESIGN.md`'s *"the quantity does not expire, but vesting changes it"* and this row's own
+title. There is no vest date in the schema, in `model/manual.py` or anywhere in `DESIGN.md`,
+and §12's normative sentence asks for a ***periodic*** nudge to re-confirm. Building the row
+literally would mean inventing a `vest_date` column and a data-entry burden §12 never asks
+the owner for, keyed on a date only his employer knows. So the nudge is periodic and keys on
+`EquityHolding.set_on`, which §12 already defines as *"last confirmed on"* — the clock this
+task needs was shipped by `13`. Recorded here rather than only in the PR because the row's
+title is what the next reader sees; whether the title itself should change is a question for
+review, not something this task decides on its way past.
+
+**The period is a preference, and it is one line.** `RECONFIRM_SHARE_COUNT_AFTER` is 90 days:
+vest schedules are commonly quarterly, a drifting count is a slow error rather than an urgent
+one, and §11's *"the anti-fatigue rule matters more, not less"* on a single-channel design
+argues for the longer end of any defensible range. Nothing derives a threshold from it and no
+stored row encodes it. Deliberately **not** escalated to the owner — he already holds two open
+decisions, one of them about alert cadence — and the argument is in the constant's own comment
+so a later reader can disagree with it in one place.
+
+**Open, and not this task's to answer: nothing calls the evaluator.** `AlertEvaluator`,
+`AccountSignal` and `evaluate(` appear **zero** times in this file, and no non-test module
+constructs an `AccountSignal`. Sections `14`, `16` and `19` do not mention alerts at all,
+though §11 requires alert state to travel inside the payload. So the four kinds `15` shipped
+and the fifth this task adds are both complete and both unreachable: whoever assembles
+account signals per cycle — reading freshness, reconciliation state and now `set_on` — is
+unassigned. This is visible from `27` rather than caused by it, and a nudge that never fires
+is indistinguishable from one that decided not to. It needs a row; picking which one is a
+review decision.
 
 ---
 
