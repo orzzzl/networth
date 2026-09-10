@@ -3005,7 +3005,7 @@ surface for alerts, it is the **only** one, and two rules follow directly:
 
 | Channel | Used for | Mechanism |
 |---|---|---|
-| **In-app, in the payload** | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **publication overdue**, **accounts pending reconciliation** | `alert` rows on the host, serialized into the payload; persistent until resolved |
+| **In-app, in the payload** | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **accounts pending reconciliation**, **an unconfirmed share count** | `alert` rows on the host, serialized into the payload; persistent until resolved |
 | **In-app, phone-local** | **rejected downgrade / foreign `pairing_id`** (§9.3) | the phone's own observation; persistent until a newer `seq` arrives — **never reaches the host** |
 | **Local notification on the phone** | the same in-app alerts, when the app evaluates a newly-fetched payload in the background | Android local notification. Best-effort: it is a *prompt to open the app*, never the alert itself |
 
@@ -3022,8 +3022,17 @@ of them was an alert about a third party misbehaving or a queue stalling, and
 §6.2/§6.4/§8.4 deleted the mechanisms they watched. They are not "unimplemented";
 there is nothing left for them to observe.
 
-The four that remain deserve a note, because they are the ones a naive build
-would not have:
+**Then four became five, and the fifth arrives from the manual side rather than
+from an Item** *(2026-09-09, task `27`)*. The addition is
+`SHARE_COUNT_UNCONFIRMED`. It is written down here because this section was the
+one place the alert vocabulary was stated and the one place that did not get it:
+the table above named five things, the stored vocabulary names five kinds, and
+until this revision **they were not the same five**. A registry that keeps
+serving an entry after the thing it describes has changed is this project's
+founding failure, and it does not get an exemption for its own design document.
+
+Three of the five deserve a note, because they are the ones a naive build would
+not have:
 
 - **Frozen data** — an account whose `source_as_of` has not advanced across
   **five consecutive market days** *while its Item is `HEALTHY`*. This is Axis A
@@ -3032,21 +3041,52 @@ would not have:
   same condition is `ACTION_NEEDED` on screen (§9.2) — **this paragraph is the
   single definition of the threshold**; the display state and the alert both
   derive from it rather than each carrying their own number.
-- **Publication overdue** — the last successful `publication` is older than the
-  publish interval plus grace (§6.4). **This one has a hole in it that the
-  channel decision opens, and it must not be papered over:** the alert is
-  evaluated on the host and delivered *in the payload*, so the failure of the
-  publish path is the very thing that prevents its own alert from being
-  delivered. The phone cannot receive "I have not published." What the phone
-  *can* do is notice that its copy has aged past `stale_after`, which it does
-  independently and without the host's help (§9.1) — and `HOST_NOT_PUBLISHING` is
-  precisely the reason code for "I reached the source and it had nothing newer."
-  So the alert row exists for `doctor` and the record; **the phone's own copy
-  staleness is what actually surfaces this failure to the owner.** Stated here
-  because a reader who sees the alert listed will otherwise assume it arrives.
 - **Pending reconciliation** — accounts are sitting at `NEW` and contributing
   nothing (§8.5), so the total is knowingly understated until the owner confirms
   a mapping.
+- **An unconfirmed share count** — a `MANUAL_QTY_LIVE_PRICE` holding whose
+  quantity the owner has not re-confirmed for ninety days. §12 asks for the
+  nudge because the quantity **does not expire on its own and vesting changes it
+  anyway**, so nothing in the system can detect that it went wrong; a silently
+  drifting share count is the failure this product exists to prevent, arriving
+  from the side with no institution to blame. It is a **fifth kind rather than a
+  reuse of frozen data**, for three reasons that are structural and not
+  stylistic: frozen data is defined above *"while its Item is `HEALTHY`"* and a
+  manual account has no Item at all; §12 says a manual quantity is **never
+  marked stale**, so the word would contradict this design one section over; and
+  the two conditions ask the owner for different things — one to re-link, one to
+  count. It resolves **only when the confirmation date advances**, never because
+  a cycle ran or because anyone looked, which is the same rule frozen data
+  follows and for the same reason. *(The ninety days deliberately lives in the
+  code — `RECONFIRM_SHARE_COUNT_AFTER` — and not here. The five-day frozen
+  threshold is defined in this section because the alert **and** the display
+  state must agree on it; nothing derives anything from the ninety, so writing
+  it here too would create a second definition site and no consumer.)*
+
+**Publication overdue is not one of the five, and the reason is worth stating
+rather than leaving as an absence.** The condition is real — the last successful
+`publication` is older than the publish interval plus grace (§6.4) — but **it
+has a hole in it that the channel decision opens, and it must not be papered
+over:** such an alert would be evaluated on the host and delivered *in the
+payload*, so the failure of the publish path is the very thing that prevents its
+own alert from being delivered. The phone cannot receive "I have not published."
+What the phone *can* do is notice that its copy has aged past `stale_after`,
+which it does independently and without the host's help (§9.1) — and
+`HOST_NOT_PUBLISHING` is precisely the reason code for "I reached the source and
+it had nothing newer." So **the phone's own copy staleness is what actually
+surfaces this failure to the owner**, and `doctor` reads the publication record
+directly rather than an alert row (task `18` already prints the age of the last
+successful publication). Stated here because a reader who sees it listed
+anywhere will otherwise assume it arrives.
+
+*(Until 2026-09-09 this section listed publication overdue **in the payload row
+above** and said "the alert row exists for `doctor` and the record". Task `15`
+had already built the opposite and was right to: the stored vocabulary admits no
+such kind and a test pins that it never will by accident. The table was
+promising a delivery the code correctly refuses to make. Whether a row may ever
+be stored for `doctor`'s benefit **only** is left open where the schema left it —
+the migration that added the alert columns says so in as many words — and is not
+decided here.)*
 
 **The rejected downgrade is deliberately not in the payload row.** The
 distinction is the *observer*, and collapsing it would recreate a promise review
@@ -3055,14 +3095,21 @@ see, over a channel the architecture does not have and should not grow (§9.3).
 The host alerts on what the host observes; the phone warns about what the phone
 observes; neither stands in for the other.
 
-Anti-fatigue: **one alert per item per state entry**, re-raised at most once per
-24h while unresolved, never for `DEGRADED` or for routine Axis-B staleness inside
-its expectation window (UI only). Alerts auto-resolve on the transition back to
-`HEALTHY` — and a frozen-data alert resolves only when `source_as_of` actually
-advances, not when a call merely succeeds. The anti-fatigue rule matters more,
-not less, on a single-channel design: the app's unhealthy state has to stay
-credible, because there is no second channel to fall back on when the owner
-learns to swipe past it.
+Anti-fatigue: **one open alert per subject per state entry**, re-raised at most
+once per 24h while unresolved, never for `DEGRADED` or for routine Axis-B
+staleness inside its expectation window (UI only). Alerts auto-resolve on the
+transition back to `HEALTHY` — and a frozen-data alert resolves only when
+`source_as_of` actually advances, not when a call merely succeeds. The
+anti-fatigue rule matters more, not less, on a single-channel design: the app's
+unhealthy state has to stay credible, because there is no second channel to fall
+back on when the owner learns to swipe past it.
+
+*(The subject is an Item **or** an account, never both and never neither, and
+the uniqueness is enforced on the table rather than in the evaluator — a rule
+true of one caller is not true of the data. This sentence read "one alert per
+**item** per state entry" until 2026-09-09, which was accurate while every kind
+was Axis-A-scoped and stopped being so the moment a manual account — which has
+no Item, and no Axis-A state to return to — could raise one.)*
 
 **Push notifications remain out of scope** — a server-sent push would need FCM
 and a sender, i.e. infrastructure and an account (§4). The local notification in
@@ -5219,6 +5266,18 @@ rotate)
   (§9.2) — the screen and this page are describing the same threshold. Usually a
   re-link in update mode clears it; if it does not, the account is a candidate
   for the manual path (§12) rather than a permanent lie.
+- **`SHARE_COUNT_UNCONFIRMED`** → the app is asking you to re-confirm the share
+  count on a manual holding you last set more than ninety days ago (§11, §12).
+  Nothing is wrong with any connection: the quantity never expires on its own,
+  vesting changes it anyway, and no institution in this design knows what it is,
+  so the only thing that can clear this is you saying what the number is now.
+  **There is no command for that yet, and that is a real gap rather than a
+  missing paragraph** — no task row owns a write surface for manual assets, so
+  this alert can be raised and cannot be resolved (**issue #67**). Marked in
+  place here rather than written as an instruction with no executor, on the same
+  reasoning this section already applies to its five corrected steps: a caveat
+  that lands only in a preamble is not read by whoever is halfway through the
+  procedure.
 - **The app says its copy is old, with the reason "reached the source; nothing
   published since &lt;time&gt;"** → this is `HOST_NOT_PUBLISHING` (§9.1), and on this
   architecture it is the **main way a host-side failure reaches you at all**, so
@@ -5240,9 +5299,12 @@ rotate)
 - **A `pairing_id` the phone does not recognise** → it is talking to something
   that is not its daemon. Re-pair (step 3a.1) only after you know why.
 
-*(Rev 10 deleted five entries here — read-back mismatch, read-back unavailable,
+*(Rev 10 deleted six entries here — read-back mismatch, read-back unavailable,
 drain stalled, pre-write rollback, foreign write and snapshot missing — with the
-third-party transport that produced them, §9.3.)*
+third-party transport that produced them, §9.3. The count read "five" against
+that same six-name list until 2026-09-09. §11's list of what rev 9 carried has a
+seventh, *pairing uncertain*; whether it was ever a runbook entry here is not
+recorded either way, so only the arithmetic is corrected.)*
 
 ---
 
