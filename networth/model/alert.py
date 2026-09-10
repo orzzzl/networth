@@ -70,7 +70,16 @@ class AlertKind(StrEnum):
         of something a later resolver re-derives and might get wrong.  Frozen
         data is stuck at a ``source_as_of``; an unconfirmed share count is stuck
         at the ``set_on`` the owner last confirmed it for.  Neither resolves
-        because a call succeeded or because anyone looked.
+        because a call succeeded, and neither resolves because a cycle merely
+        ran.
+
+        This says how such a row resolves *while its subject still exists*.  It
+        is not a claim that the clock is the only way one can ever close: an
+        unconfirmed share count also resolves when a cycle reads the account's
+        manual side and positively finds no share count on it, the subject of
+        the nudge having stopped existing (DESIGN section 11, and
+        ``ShareCountObservation``).  This paragraph ended "or because anyone
+        looked" until 2026-09-09, which that second path contradicts.
         """
 
         return self in (AlertKind.FROZEN_DATA, AlertKind.SHARE_COUNT_UNCONFIRMED)
