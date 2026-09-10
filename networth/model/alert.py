@@ -1,4 +1,4 @@
-"""The four alerts DESIGN section 11 kept, and the record that carries one.
+"""The alerts DESIGN sections 11 and 12 ask for, and the record that carries one.
 
 Alerting has exactly one channel — the payload the phone fetches — so an alert
 is a durable row first and a message second.  The types here encode three rules
@@ -22,6 +22,18 @@ Publication overdue is **not** here.  It is section 11's own hole: the alert
 reports the failure of the channel it would have to travel over, so a row
 claiming to deliver it would be a lie.  The phone detects it independently as
 task ``22``'s ``HOST_NOT_PUBLISHING``.
+
+``SHARE_COUNT_UNCONFIRMED`` **is** here, and it is the one kind section 11 does
+not list.  Section 12 asks for it in the same breath as the failure it prevents
+— *"the quantity does not expire, but vesting changes it … silently drifting
+share counts are the same failure this product exists to prevent, arriving from
+the manual side"* — and task ``27``'s acceptance admits *"a documented fifth"*.
+This is that documentation.  It is a fifth kind rather than a reuse of
+``FROZEN_DATA`` because that one is defined *"while its Item is ``HEALTHY``"*
+and a manual account has no Item at all; because section 12 says a manual
+quantity is **never marked stale**; and because the two conditions ask the
+owner for different things.  The name says *unconfirmed* rather than *stale*
+for the same reason.
 """
 
 from __future__ import annotations
@@ -35,12 +47,13 @@ from networth.model.item import ItemState
 
 
 class AlertKind(StrEnum):
-    """The four kinds, and the only four this schema's vocabulary admits."""
+    """The five kinds, and the only five this schema's vocabulary admits."""
 
     NEEDS_REAUTH = "NEEDS_REAUTH"
     REVOKED = "REVOKED"
     FROZEN_DATA = "FROZEN_DATA"
     PENDING_RECONCILIATION = "PENDING_RECONCILIATION"
+    SHARE_COUNT_UNCONFIRMED = "SHARE_COUNT_UNCONFIRMED"
 
     @property
     def is_item_scoped(self) -> bool:
@@ -50,9 +63,17 @@ class AlertKind(StrEnum):
 
     @property
     def carries_source_clock(self) -> bool:
-        """Only frozen data resolves on an advancing clock, so only it stores one."""
+        """Whether this kind resolves on a clock advancing rather than on a state.
 
-        return self is AlertKind.FROZEN_DATA
+        Two kinds do, for the same structural reason: the row's claim is
+        *"stuck at this instant"*, so the instant is part of the record instead
+        of something a later resolver re-derives and might get wrong.  Frozen
+        data is stuck at a ``source_as_of``; an unconfirmed share count is stuck
+        at the ``set_on`` the owner last confirmed it for.  Neither resolves
+        because a call succeeded or because anyone looked.
+        """
+
+        return self in (AlertKind.FROZEN_DATA, AlertKind.SHARE_COUNT_UNCONFIRMED)
 
     @staticmethod
     def for_item_state(state: ItemState) -> AlertKind | None:
@@ -183,7 +204,7 @@ def _validate_alert_fields(
     if kind.carries_source_clock:
         if raised_source_as_of is None:
             raise ValueError(
-                "FROZEN_DATA resolves only when source_as_of advances, so the clock it "
+                f"{kind.value} resolves only when its clock advances, so the clock it "
                 "was raised for is required"
             )
         require_utc(raised_source_as_of, field="raised_source_as_of")

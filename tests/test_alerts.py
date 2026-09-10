@@ -126,12 +126,19 @@ def only(alerts: tuple[Alert, ...]) -> Alert:
 # --------------------------------------------------------------------------
 
 
-def test_there_are_exactly_four_kinds_and_publication_overdue_is_not_one() -> None:
+def test_there_are_exactly_five_kinds_and_publication_overdue_is_not_one() -> None:
     """Acceptance: *publication overdue* must not be added here and called delivered.
 
     It reports the failure of the very channel it would travel over, so a row
     claiming to deliver it would be a lie.  The phone detects it independently
     (task 22's ``HOST_NOT_PUBLISHING``).
+
+    Task 15 wrote this as *exactly four*.  Task 27 amended it to five rather
+    than deleting it, because the half that carries the weight is the second
+    assertion and its reason has not changed.  The first exists so that adding a
+    kind is a decision someone argues for — as task 27 did, in
+    :mod:`networth.model.alert` and in its PR — instead of a one-line diff that
+    widens the vocabulary on the way past.
     """
 
     assert {kind.value for kind in AlertKind} == {
@@ -139,6 +146,7 @@ def test_there_are_exactly_four_kinds_and_publication_overdue_is_not_one() -> No
         "REVOKED",
         "FROZEN_DATA",
         "PENDING_RECONCILIATION",
+        "SHARE_COUNT_UNCONFIRMED",
     }
     assert not any("PUBLICATION" in kind.value for kind in AlertKind)
 
@@ -187,7 +195,7 @@ def test_an_alert_is_scoped_to_exactly_one_subject() -> None:
 
 
 def test_a_frozen_alert_cannot_exist_without_the_clock_it_must_outlive() -> None:
-    with pytest.raises(ValueError, match="source_as_of advances"):
+    with pytest.raises(ValueError, match="FROZEN_DATA resolves only when its clock advances"):
         AlertDraft(
             kind=AlertKind.FROZEN_DATA,
             created_at=NOW,

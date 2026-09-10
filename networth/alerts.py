@@ -1,4 +1,4 @@
-"""Evaluate DESIGN section 11's four alerts and hand them to the payload.
+"""Evaluate DESIGN section 11's alerts, and section 12's, for the payload.
 
 The channel decision — in-app only — is what shapes this module.  There is no
 way to reach the owner between publishes, so an alert is a **durable row that
@@ -32,6 +32,12 @@ Three rules are enforced structurally rather than described:
 
 Publication overdue is deliberately absent; see
 :mod:`networth.model.alert`.
+
+Task ``27``'s share-count nudge is here rather than in a module of its own
+because it is the same machinery pointed at the manual side: a durable row, one
+per subject, resolving only when a clock the owner controls actually advances.
+It is the fifth kind, and :mod:`networth.model.alert` carries the argument for
+why it is not one of the four.
 """
 
 from __future__ import annotations
@@ -57,6 +63,17 @@ from networth.store import AlertRepository
 # not read from a policy object.
 REPROMPT_AFTER = timedelta(hours=24)
 
+# Section 12 asks for a *periodic* nudge to re-confirm a manual share count and
+# names no period, so one is chosen here and named rather than buried in a
+# comparison.  Ninety days, for three reasons that are preferences rather than
+# facts and should be read as such: vest schedules are commonly quarterly, so a
+# quarterly question lands near the event that changes the answer; a share count
+# that drifts is a slow error and not an urgent one; and section 11's "the
+# anti-fatigue rule matters more, not less" on a single-channel design argues
+# for the longer end of any defensible range.  Changing it is this one line —
+# nothing derives a threshold from it and no stored row encodes it.
+RECONFIRM_SHARE_COUNT_AFTER = timedelta(days=90)
+
 _MESSAGES = {
     AlertKind.NEEDS_REAUTH: ("This connection needs you to sign in again before it can update."),
     AlertKind.REVOKED: (
@@ -69,6 +86,10 @@ _MESSAGES = {
     AlertKind.PENDING_RECONCILIATION: (
         "This account is not counted in your total yet, because it still needs to be "
         "matched to the account it replaces."
+    ),
+    AlertKind.SHARE_COUNT_UNCONFIRMED: (
+        "This account's share count has not been confirmed since you set it. If shares "
+        "have vested since then, its value is out of date until you confirm the new count."
     ),
 }
 
@@ -86,11 +107,24 @@ class AccountSignal:
     domain type exists yet: task ``04`` built the model for Items, observations
     and snapshots only.  Inventing one here would put the vocabulary for
     reconciliation in the alerting module, which is the wrong owner (`12b`).
+
+    ``share_count_set_on`` is :attr:`~networth.model.manual.EquityHolding.set_on`
+    for an account that holds one, and ``None`` for every account that does not —
+    which is most of them — or when the caller did not read one this cycle.  As
+    with ``freshness``, ``None`` is not evidence that the count is current.
+
+    **It is the clock and not the holding on purpose.**  Passing the
+    :class:`~networth.model.manual.EquityHolding` would hand this module a
+    symbol and a quantity it has no use for, and the alert messages it composes
+    travel to the phone and into logs.  A module that cannot see a quantity
+    cannot put one in a message (AGENTS.md section 1), and that is a cheaper
+    guarantee than remembering not to.
     """
 
     account_id: int
     is_pending_reconciliation: bool
     freshness: FreshnessAssessment | None = None
+    share_count_set_on: datetime | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.account_id, int) or isinstance(self.account_id, bool):
@@ -101,6 +135,8 @@ class AccountSignal:
             raise TypeError("is_pending_reconciliation must be a bool")
         if self.freshness is not None and not isinstance(self.freshness, FreshnessAssessment):
             raise TypeError("freshness must be a FreshnessAssessment or None")
+        if self.share_count_set_on is not None:
+            require_utc(self.share_count_set_on, field="share_count_set_on")
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +238,7 @@ class AlertEvaluator:
             }
             self._evaluate_frozen(account, existing_by_kind, at, raised, resolved)
             self._evaluate_reconciliation(account, existing_by_kind, at, raised, resolved)
+            self._evaluate_share_count(account, existing_by_kind, at, raised, resolved)
 
         return AlertEvaluation(raised=tuple(raised), resolved=tuple(resolved))
 
@@ -317,6 +354,59 @@ class AlertEvaluator:
         elif open_alert is not None:
             resolved.append(self._alerts.resolve(open_alert.id, at=at))
 
+    def _evaluate_share_count(
+        self,
+        account: AccountSignal,
+        existing_by_kind: dict[AlertKind, Alert],
+        at: datetime,
+        raised: list[Alert],
+        resolved: list[Alert],
+    ) -> None:
+        """Section 12's periodic nudge: ask, and never change the number.
+
+        Nothing in this method writes a quantity, and nothing it calls can:
+        the only manual value it holds is a date.  Task ``27``'s "must not" is
+        therefore a property of what this method can reach rather than a rule it
+        remembers to follow.
+        """
+
+        set_on = account.share_count_set_on
+        if set_on is None:
+            return
+        open_alert = existing_by_kind.get(AlertKind.SHARE_COUNT_UNCONFIRMED)
+        if open_alert is not None:
+            raised_for = open_alert.raised_source_as_of
+            if raised_for is None:  # pragma: no cover - the model requires it for this kind
+                raise ValueError(
+                    "a stored SHARE_COUNT_UNCONFIRMED alert must carry the clock it was raised for"
+                )
+            if set_on <= raised_for:
+                # Nothing was re-confirmed.  The standing row already says
+                # exactly this, and re-raising it would restart the anti-fatigue
+                # window every cycle — the nudge would become the noise it is
+                # meant not to be.
+                return
+            # The owner confirmed a count, so this row's claim is over.  Whether
+            # the condition is over is a second question: a confirmation may be
+            # *back-dated*, and one dated more than the period ago leaves the
+            # holding just as unconfirmed as before.  Falling through to the
+            # raise below handles that, and it is the same shape as frozen data
+            # advancing a day while staying five closes behind.
+            resolved.append(self._alerts.resolve(open_alert.id, at=at))
+
+        if at - set_on >= RECONFIRM_SHARE_COUNT_AFTER:
+            raised.append(
+                self._alerts.raise_alert(
+                    AlertDraft(
+                        kind=AlertKind.SHARE_COUNT_UNCONFIRMED,
+                        created_at=at,
+                        message=_MESSAGES[AlertKind.SHARE_COUNT_UNCONFIRMED],
+                        account_id=account.account_id,
+                        raised_source_as_of=set_on,
+                    )
+                )
+            )
+
     @staticmethod
     def _may_prompt(alert: Alert, at: datetime) -> bool:
         if alert.notified_at is None:
@@ -339,6 +429,7 @@ def _for_subject(
 
 
 __all__ = [
+    "RECONFIRM_SHARE_COUNT_AFTER",
     "REPROMPT_AFTER",
     "AccountSignal",
     "AlertEvaluation",
