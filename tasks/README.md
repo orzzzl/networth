@@ -105,7 +105,7 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **READY** |
+| 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **WIP** (codex, 2026-09-10) |
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | BLOCKED (17) |
 | 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | BLOCKED (17) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (19) |
