@@ -6,13 +6,24 @@
 -- something a later resolver re-derives and might get wrong.  Two kinds resolve
 -- that way -- frozen data, on the account's source clock, and (task 27) an
 -- unconfirmed share count, on the date the owner last confirmed the quantity --
--- and neither resolves because a call succeeded, because anyone looked, or
--- because the Item left HEALTHY and the account therefore stopped being
--- classified FROZEN.  The column is nullable because the other three kinds
--- resolve on a state instead: the writer requires it for those two and forbids
--- it for those three (AlertKind.carries_source_clock).  This paragraph said
--- "only frozen data" and "the other three" until 2026-09-09, which was true of
--- the four-kind vocabulary it was written against.
+-- and neither resolves because a call succeeded, or because the Item left
+-- HEALTHY and the account therefore stopped being classified FROZEN.  The
+-- column is nullable because the other three kinds resolve on a state instead:
+-- the writer requires it for those two and forbids it for those three
+-- (AlertKind.carries_source_clock).  This paragraph said "only frozen data" and
+-- "the other three" until 2026-09-09, which was true of the four-kind
+-- vocabulary it was written against.
+--
+-- What this column decides is whether a clock *advanced*.  It is not the only
+-- way a row of these two kinds can close, and the difference matters to anyone
+-- reasoning about a stored alert from the schema alone: an unconfirmed share
+-- count also resolves when a cycle reads the account's manual side and finds no
+-- share count there at all -- the holding was deleted, or the asset no longer
+-- has a quantity -- which ends the row without consulting this column, because
+-- the subject it names has stopped existing.  Frozen data has no equivalent
+-- path: freshness arrives as an assessment or as nothing, and nothing means
+-- "not assessed this cycle", so an account that goes away is simply not
+-- evaluated and its open row stands (DESIGN section 11).
 --
 -- one_open_alert_per_subject: section 11's "one open alert per subject per
 -- state entry" is a uniqueness property, so it is enforced where uniqueness

@@ -3045,23 +3045,31 @@ not have:
   nothing (§8.5), so the total is knowingly understated until the owner confirms
   a mapping.
 - **An unconfirmed share count** — a `MANUAL_QTY_LIVE_PRICE` holding whose
-  quantity the owner has not re-confirmed for ninety days. §12 asks for the
-  nudge because the quantity **does not expire on its own and vesting changes it
-  anyway**, so nothing in the system can detect that it went wrong; a silently
-  drifting share count is the failure this product exists to prevent, arriving
-  from the side with no institution to blame. It is a **fifth kind rather than a
-  reuse of frozen data**, for three reasons that are structural and not
-  stylistic: frozen data is defined above *"while its Item is `HEALTHY`"* and a
-  manual account has no Item at all; §12 says a manual quantity is **never
-  marked stale**, so the word would contradict this design one section over; and
-  the two conditions ask the owner for different things — one to re-link, one to
-  count. It resolves **only when the confirmation date advances**, never because
-  a cycle ran or because anyone looked, which is the same rule frozen data
-  follows and for the same reason. *(The ninety days deliberately lives in the
-  code — `RECONFIRM_SHARE_COUNT_AFTER` — and not here. The five-day frozen
-  threshold is defined in this section because the alert **and** the display
-  state must agree on it; nothing derives anything from the ninety, so writing
-  it here too would create a second definition site and no consumer.)*
+  quantity the owner has not re-confirmed for longer than the re-confirmation
+  period. §12 asks for the nudge because the quantity **does not expire on its
+  own and vesting changes it anyway**, so nothing in the system can detect that
+  it went wrong; a silently drifting share count is the failure this product
+  exists to prevent, arriving from the side with no institution to blame. It is
+  a **fifth kind rather than a reuse of frozen data**, for three reasons that
+  are structural and not stylistic: frozen data is defined above *"while its
+  Item is `HEALTHY`"* and a manual account has no Item at all; §12 says a manual
+  quantity is **never marked stale**, so the word would contradict this design
+  one section over; and the two conditions ask the owner for different things —
+  one to re-link, one to count. **Two things resolve it, and nothing else
+  does:** the confirmation date advancing, and a cycle reading the account's
+  manual side and finding **no share count there at all** — the holding was
+  deleted, or the asset is now one with no quantity to confirm, so the subject
+  of the nudge is gone and the row asking about it goes too. That second path is
+  a *positive* reading of an absence, which the evaluator can tell apart from
+  not having looked; without it a deleted holding would leave behind a nudge
+  whose only answer no longer exists. What still never resolves it is a cycle
+  running, or anyone looking at a holding that does have a count. *(The period
+  lives in the code — `RECONFIRM_SHARE_COUNT_AFTER` in `networth/alerts.py`,
+  with the argument for its value in that constant's own comment — and its value
+  is deliberately not restated here. The five-day frozen threshold is defined in
+  this section because the alert **and** the display state must agree on it;
+  nothing derives anything from the re-confirmation period, so a copy here would
+  be a second definition site with no consumer, free to drift.)*
 
 **Publication overdue is not one of the five, and the reason is worth stating
 rather than leaving as an absence.** The condition is real — the last successful
@@ -3097,19 +3105,31 @@ observes; neither stands in for the other.
 
 Anti-fatigue: **one open alert per subject per state entry**, re-raised at most
 once per 24h while unresolved, never for `DEGRADED` or for routine Axis-B
-staleness inside its expectation window (UI only). Alerts auto-resolve on the
-transition back to `HEALTHY` — and a frozen-data alert resolves only when
-`source_as_of` actually advances, not when a call merely succeeds. The
-anti-fatigue rule matters more, not less, on a single-channel design: the app's
-unhealthy state has to stay credible, because there is no second channel to fall
-back on when the owner learns to swipe past it.
+staleness inside its expectation window (UI only). **Every kind auto-resolves,
+and what resolves it is the condition it names ending — never a cycle merely
+running.** For the two Item-scoped kinds that is the Item returning to `HEALTHY`
+(or moving to a *different* owner-actionable state, which supersedes: the
+owner's next action changed). For the three account-scoped ones it is the
+account's own condition: reconciliation completing, `source_as_of` actually
+advancing rather than a call merely succeeding, and either half of the
+share-count rule above — including the one case in this section where a cycle
+*looking* resolves something, because what it finds is that the subject is gone.
+The anti-fatigue rule matters more, not less, on a single-channel design: the
+app's unhealthy state has to stay credible, because there is no second channel
+to fall back on when the owner learns to swipe past it.
 
 *(The subject is an Item **or** an account, never both and never neither, and
 the uniqueness is enforced on the table rather than in the evaluator — a rule
 true of one caller is not true of the data. This sentence read "one alert per
 **item** per state entry" until 2026-09-09, which was accurate while every kind
 was Axis-A-scoped and stopped being so the moment a manual account — which has
-no Item, and no Axis-A state to return to — could raise one.)*
+no Item, and no Axis-A state to return to — could raise one. The resolution
+sentence beside it carried the same Axis-A assumption and was corrected in the
+same pass: it read *"Alerts auto-resolve on the transition back to `HEALTHY`"*
+with frozen data named as the one exception, which was already untrue of an
+account leaving `NEW` — that is not a `HEALTHY` transition, and its Item may
+never have left `HEALTHY` at all — and could not describe a subject that has no
+Item.)*
 
 **Push notifications remain out of scope** — a server-sent push would need FCM
 and a sender, i.e. infrastructure and an account (§4). The local notification in
@@ -5267,17 +5287,20 @@ rotate)
   re-link in update mode clears it; if it does not, the account is a candidate
   for the manual path (§12) rather than a permanent lie.
 - **`SHARE_COUNT_UNCONFIRMED`** → the app is asking you to re-confirm the share
-  count on a manual holding you last set more than ninety days ago (§11, §12).
-  Nothing is wrong with any connection: the quantity never expires on its own,
-  vesting changes it anyway, and no institution in this design knows what it is,
-  so the only thing that can clear this is you saying what the number is now.
-  **There is no command for that yet, and that is a real gap rather than a
-  missing paragraph** — no task row owns a write surface for manual assets, so
-  this alert can be raised and cannot be resolved (**issue #67**). Marked in
-  place here rather than written as an instruction with no executor, on the same
-  reasoning this section already applies to its five corrected steps: a caveat
-  that lands only in a preamble is not read by whoever is halfway through the
-  procedure.
+  count on a manual holding you set long enough ago that the periodic nudge
+  fired (§11, §12 — the period is one constant in `networth/alerts.py` and is
+  deliberately not restated here). Nothing is wrong with any connection: the
+  quantity never expires on its own, vesting changes it anyway, and no
+  institution in this design knows what it is, so the number can only come from
+  you. **You have no way to clear it yet, and that is a real gap rather than a
+  missing paragraph.** Two things clear this alert — you confirming a count, or
+  a cycle finding the holding gone — and **no task row owns a write surface for
+  manual assets at all**, so neither confirming a count nor removing a holding
+  is something this system can currently do (**issue #67**). The gap is the
+  missing surface, not the alert's own lifecycle. Marked in place here rather
+  than written as an instruction with no executor, on the same reasoning this
+  section already applies to its five corrected steps: a caveat that lands only
+  in a preamble is not read by whoever is halfway through the procedure.
 - **The app says its copy is old, with the reason "reached the source; nothing
   published since &lt;time&gt;"** → this is `HOST_NOT_PUBLISHING` (§9.1), and on this
   architecture it is the **main way a host-side failure reaches you at all**, so
