@@ -96,7 +96,7 @@ that row. He caught it, not us.)
 | 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | **DONE** (#41, 2026-09-07) |
 | 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | **DONE** (#62, 2026-09-09) |
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
-| 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | **WIP** (codex, 2026-09-09) |
+| 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | **DONE** (#69, 2026-09-10) |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
 | 27 | Periodic nudge to re-confirm a manual share count | 13, 15 | **claude** | codex | **DONE** (#65, 2026-09-09) |
@@ -105,7 +105,7 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | BLOCKED (14) |
+| 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **READY** |
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | BLOCKED (17) |
 | 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | BLOCKED (17) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (19) |
@@ -1780,7 +1780,7 @@ observations" would reintroduce exactly the retroactive deformation §12 rules o
 
 **Normative:** §10, **I2**.
 
-**Acceptance:**
+**Acceptance:** *(both met in #69, merged `dcbdc38`)*
 
 - [x] **A total cannot be constructed without its age state and staleness counts (I2) —
       enforced in the type, not by convention.** The host model is a validated tagged
