@@ -99,7 +99,7 @@ that row. He caught it, not us.)
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | **READY** |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
-| 27 | Periodic nudge to re-confirm a manual share count | 13, 15 | **claude** | codex | **WIP** (claude, 2026-09-09) |
+| 27 | Periodic nudge to re-confirm a manual share count | 13, 15 | **claude** | codex | **DONE** (#65, 2026-09-09) |
 
 ### Phase 4 — getting the number onto the phone
 
@@ -1952,8 +1952,20 @@ original said "after a vest date", and the paragraph below records what was wron
 
 **Normative:** §12, §11.
 
-**Acceptance:** the nudge is an alert of the existing four-kind taxonomy or a documented
-fifth; it never silently changes a quantity.
+**Acceptance:** *(both halves met in #65, merged `32b8538`)* the nudge is an alert of the
+existing four-kind taxonomy or a documented fifth; it never silently changes a quantity.
+
+- [x] **A documented fifth**, `SHARE_COUNT_UNCONFIRMED` — the branch taken. The argument for
+      a new kind rather than a reuse of `FROZEN_DATA` is in `networth/model/alert.py`'s
+      module docstring, which is what the criterion's *documented* names; it also records
+      that §11 is the one place that does not list it.
+- [x] **Never silently changes a quantity**, pinned by two tests in `tests/test_alerts.py`
+      that fail if a later change gives the module a route to one:
+      `test_the_whole_account_side_input_surface_is_declared_here` allow-lists every way an
+      account fact enters (constructor repository, `evaluate()`'s parameters, and the fields
+      of the records they carry), and `test_the_alert_module_borrows_no_manual_vocabulary`
+      closes the re-export bypass. The first version of this guard read `ImportFrom.module`
+      only and **could not fail**.
 
 **Must not:** auto-update a share count. The owner confirms.
 
