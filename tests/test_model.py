@@ -7,6 +7,9 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from networth.model import (
+    FreshnessPolicy,
+    ReconciliationState,
+    SnapshotAccount,
     SnapshotAge,
     SnapshotAgeState,
     SnapshotCounts,
@@ -61,6 +64,30 @@ def test_snapshot_age_is_a_tagged_value() -> None:
         SnapshotAge(SnapshotAgeState.UNKNOWN, SOURCE_AS_OF, SOURCE_AS_OF)
     with pytest.raises(ValueError, match="no advancing source-clock basis"):
         SnapshotAge(SnapshotAgeState.STATIC_ONLY, None, SOURCE_AS_OF)
+
+
+def test_snapshot_account_rejects_an_archived_record() -> None:
+    with pytest.raises(ValueError, match="archived account"):
+        SnapshotAccount(
+            id=1,
+            item_id=None,
+            currency="USD",
+            sign=1,
+            freshness_policy=FreshnessPolicy.MANUAL_STATIC,
+            reconciliation_state=ReconciliationState.ARCHIVED,
+        )
+
+
+def test_snapshot_account_binds_item_presence_to_policy_even_when_new() -> None:
+    with pytest.raises(ValueError, match="requires an Item"):
+        SnapshotAccount(
+            id=1,
+            item_id=None,
+            currency="USD",
+            sign=1,
+            freshness_policy=FreshnessPolicy.SYNCED_BALANCE,
+            reconciliation_state=ReconciliationState.NEW,
+        )
 
 
 def test_snapshot_figures_cannot_disagree_with_their_age() -> None:

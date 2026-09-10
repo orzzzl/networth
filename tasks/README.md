@@ -1783,8 +1783,9 @@ observations" would reintroduce exactly the retroactive deformation §12 rules o
 **Acceptance:**
 
 - [x] **A total cannot be constructed without its age state and staleness counts (I2) —
-      enforced in the type, not by convention.** The total is a sum type carrying
-      `(age_state, as_of)`.
+      enforced in the type, not by convention.** The host model is a validated tagged
+      product carrying `(age_state, as_of)`; §10 3b records why it is not described as a
+      static sum type that Python did not build.
 - [x] A caller cannot obtain a bare integer total. If it can, this task is not done.
 
 **Must not:** provide a convenience accessor that strips the age. That accessor is the bug
@@ -1906,6 +1907,13 @@ execution and evidence to this codex-only row.
       deliberately; and the `ShareCountObservation` distinguishes *read, and there is no
       share count* from *not read*, which are opposite instructions and are one keyword
       apart at this call site.
+- [ ] **Before snapshotting, the run values every `MANUAL_QTY_LIVE_PRICE` account with
+      its current quote and appends that `SourcedFigure` as an `ObservationSource.QUOTE`
+      observation in the named run.** Those accounts are deliberately absent from
+      `AccountRepository.syncable()` but present in `for_snapshot()`; omitting this step
+      makes `Snapshotter` refuse the entire headline rather than silently omit the manual
+      account. The task `13` seam computes the figure; this row owns feeding it into each
+      cycle.
 - [ ] Due-ness is computed from **stored state**, not from "did the timer fire" — the
       catch-up predicate survives downtime.
 - [ ] Due on non-market days too.

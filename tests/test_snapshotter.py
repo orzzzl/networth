@@ -138,6 +138,7 @@ def add_observation(
     source: ObservationSource = ObservationSource.PLAID_BALANCE,
     carried_forward: bool = False,
     observed_at: datetime = NOW,
+    currency: str = "USD",
 ) -> None:
     store.observations.append(
         ObservationDraft(
@@ -146,7 +147,7 @@ def add_observation(
             observed_at=observed_at,
             figure=SourcedFigure(
                 value_minor=value_minor,
-                currency="USD",
+                currency=currency,
                 as_of=source_as_of,
                 source_clock=source_clock,
             ),
@@ -203,6 +204,57 @@ def test_stale_value_still_contributes_and_marks_the_snapshot_incomplete(
     assert result.net_worth.value_minor == 12_345
     assert result.counts.stale_account_count == 1
     assert result.is_complete is False
+
+
+def test_stale_without_carry_forward_still_marks_the_snapshot_incomplete(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    add_run(db, "run-stale-fetched")
+    item_id = add_item(db, "stale-fetched")
+    account_id = add_account(db, "stale-fetched", item_id=item_id)
+    add_observation(
+        store,
+        "run-stale-fetched",
+        account_id,
+        12_345,
+        source_as_of=NOW - timedelta(days=3),
+        carried_forward=False,
+    )
+
+    result = Snapshotter(store).run("run-stale-fetched", at=NOW)
+
+    assert result.counts.stale_account_count == 1
+    assert result.is_complete is False
+
+
+def test_a_frozen_source_clock_is_stale_and_incomplete_even_though_the_call_worked(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    add_run(db, "run-frozen")
+    item_id = add_item(db, "frozen")
+    account_id = add_account(
+        db,
+        "frozen",
+        item_id=item_id,
+        policy=FreshnessPolicy.SYNCED_HOLDINGS,
+    )
+    add_observation(
+        store,
+        "run-frozen",
+        account_id,
+        50_000,
+        source_as_of=NOW - timedelta(days=30),
+        source=ObservationSource.PLAID_HOLDINGS,
+        carried_forward=False,
+    )
+
+    result = Snapshotter(store).run("run-frozen", at=NOW)
+
+    assert result.counts.stale_account_count == 1
+    assert result.is_complete is False
+    assert result.age.state is SnapshotAgeState.KNOWN
 
 
 def test_a_carried_forward_value_is_incomplete_even_while_its_source_clock_is_fresh(
@@ -374,6 +426,20 @@ def test_reauth_is_counted_but_does_not_alone_make_a_fresh_total_incomplete(
     assert result.is_complete is True
 
 
+def test_new_account_under_a_reauth_item_is_counted_on_both_independent_axes(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    add_run(db, "run-new-reauth")
+    item_id = add_item(db, "new-reauth", status=ItemState.NEEDS_REAUTH)
+    add_account(db, "new-reauth", item_id=item_id, reconciliation="NEW")
+
+    result = Snapshotter(store).run("run-new-reauth", at=NOW)
+
+    assert result.counts.reauth_account_count == 1
+    assert result.counts.unreconciled_account_count == 1
+
+
 def test_a_successful_run_missing_a_contributor_fails_instead_of_understating(
     db: sqlite3.Connection,
     store: Store,
@@ -386,3 +452,18 @@ def test_a_successful_run_missing_a_contributor_fails_instead_of_understating(
         Snapshotter(store).run("run-missing", at=NOW)
 
     assert store.snapshots.for_sync_run("run-missing") is None
+
+
+def test_mixed_currency_input_fails_instead_of_summing_unlike_units(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    add_run(db, "run-mixed-currency")
+    item_id = add_item(db, "mixed-currency")
+    account_id = add_account(db, "mixed-currency", item_id=item_id)
+    add_observation(store, "run-mixed-currency", account_id, 10_000, currency="EUR")
+
+    with pytest.raises(SnapshotInputError, match="single-currency USD contribution"):
+        Snapshotter(store).run("run-mixed-currency", at=NOW)
+
+    assert store.snapshots.for_sync_run("run-mixed-currency") is None

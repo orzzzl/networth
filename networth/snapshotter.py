@@ -77,6 +77,8 @@ class Snapshotter:
 
         for account in accounts:
             item = self._item_for(account)
+            # Axis A and reconciliation are independent: a NEW account can
+            # truthfully count both here and as unreconciled below.
             if item is not None and item.status.owner_actionable:
                 reauth_count += 1
 
@@ -165,6 +167,9 @@ class Snapshotter:
         at: datetime,
     ) -> Observation:
         if account.freshness_policy is FreshnessPolicy.MANUAL_STATIC:
+            # Deliberately lineage-wide so a manual-to-manual replacement does
+            # not orphan revisions. A linked-to-manual fallback must not reuse
+            # a mixed Plaid lineage without first changing this strict reader.
             history = self._store.observations.history_for_lineage(account.id)
             revision = PropertyRevisionLog.from_observations(history).current(now=at)
             if revision is None:
