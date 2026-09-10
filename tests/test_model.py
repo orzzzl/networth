@@ -90,6 +90,18 @@ def test_snapshot_account_binds_item_presence_to_policy_even_when_new() -> None:
         )
 
 
+def test_snapshot_account_rejects_an_item_a_manual_policy_cannot_have() -> None:
+    with pytest.raises(ValueError, match="cannot have an Item"):
+        SnapshotAccount(
+            id=1,
+            item_id=7,
+            currency="USD",
+            sign=1,
+            freshness_policy=FreshnessPolicy.MANUAL_STATIC,
+            reconciliation_state=ReconciliationState.CONFIRMED,
+        )
+
+
 def test_snapshot_figures_cannot_disagree_with_their_age() -> None:
     age = SnapshotAge(SnapshotAgeState.KNOWN, SOURCE_AS_OF, SOURCE_AS_OF)
     wrong_clock = SourcedFigure(1234, "USD", SOURCE_AS_OF, "DIFFERENT_CLOCK")

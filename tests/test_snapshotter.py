@@ -101,6 +101,7 @@ def add_account(
     reconciliation: str = "CONFIRMED",
     included: bool = True,
     archived_at: datetime | None = None,
+    currency: str = "USD",
 ) -> int:
     linked_id = f"synthetic-account-{suffix}" if item_id is not None else None
     account = connection.execute(
@@ -109,12 +110,13 @@ def add_account(
             item_id, plaid_account_id, name, type, currency, sign,
             freshness_policy, include_in_net_worth, reconciliation_state,
             created_at, archived_at
-        ) VALUES (?, ?, ?, 'synthetic', 'USD', ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 'synthetic', ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             item_id,
             linked_id,
             f"Synthetic account {suffix}",
+            currency,
             sign,
             policy.value,
             int(included),
@@ -467,3 +469,20 @@ def test_mixed_currency_input_fails_instead_of_summing_unlike_units(
         Snapshotter(store).run("run-mixed-currency", at=NOW)
 
     assert store.snapshots.for_sync_run("run-mixed-currency") is None
+
+
+def test_a_uniformly_non_usd_account_fails_instead_of_relabelling_its_units(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    """The account and observation agree; what they agree on is not USD."""
+
+    add_run(db, "run-eur")
+    item_id = add_item(db, "eur")
+    account_id = add_account(db, "eur", item_id=item_id, currency="EUR")
+    add_observation(store, "run-eur", account_id, 10_000, currency="EUR")
+
+    with pytest.raises(SnapshotInputError, match="single-currency USD contribution"):
+        Snapshotter(store).run("run-eur", at=NOW)
+
+    assert store.snapshots.for_sync_run("run-eur") is None
