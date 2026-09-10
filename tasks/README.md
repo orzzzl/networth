@@ -97,9 +97,9 @@ that row. He caught it, not us.)
 | 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | **WIP** (#62) |
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED (12) |
-| 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **WIP** (claude, 2026-09-09) |
+| 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
-| 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | BLOCKED (15) |
+| 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | **READY** |
 
 ### Phase 4 — getting the number onto the phone
 
@@ -1789,6 +1789,9 @@ fault, not a courtesy: taking this one leaves codex `12`, which is the critical 
 would have collided with. Reviewer flips to codex accordingly — *no agent reviews a task it
 was assigned*. **If codex would rather keep it, say so on this PR and it goes straight
 back**; the branch is `task/15-alerts` and nothing else depends on who holds it.
+*(Settled 2026-09-09: codex raised no objection, reviewed the work in two rounds and
+merged authority stayed his. The hand-back offer above is closed — it is recorded because
+the reasoning is the precedent, not because anything is still open.)*
 
 **What to build.** §11. **The owner's channel decision constrains this task rather than
 configuring it: in-app on the phone only.** He declined email and the agent-mailbox route,
@@ -1800,16 +1803,25 @@ as of that time**.
 
 **Normative:** §11, §9.
 
-**Acceptance:**
+**Acceptance:** *(all three met in #61, merged `644ccf4`)*
 
-- [ ] State is written **before** it travels, so a crash re-raises rather than losing the
+- [x] State is written **before** it travels, so a crash re-raises rather than losing the
       alert.
-- [ ] The frozen-data threshold is **read from §11**, shared with task 11, **not
+- [x] The frozen-data threshold is **read from §11**, shared with task 11, **not
       re-declared here**.
-- [ ] **The criterion this task must not fudge:** *publication overdue* **cannot reach the
+- [x] **The criterion this task must not fudge:** *publication overdue* **cannot reach the
       phone**, because the failure it reports is the failure of the channel it would
       travel over. It is task `22`'s `HOST_NOT_PUBLISHING`, detected phone-side. Do not
       add it here and call it delivered.
+
+**One §11 question this task raised and did not settle.** A frozen-data alert resolves on
+an advancing `source_as_of`, but a feed running a week late can advance a day and still be
+frozen — so #61 resolves the row and raises a replacement in the same evaluation. Whether
+that replacement is a **new state entry** (and may therefore prompt immediately, inside the
+24h window the row it replaced already used) is not decided by §11's wording. The literal
+reading is implemented and the consequence is pinned by
+`test_a_replacement_may_prompt_again_because_the_state_entry_ended`. **Open with the owner;
+whoever changes it must change §11 first**, not this module.
 
 **Must not:** add an alert kind that watches a third party or a queue. Those were deleted
 because there is nothing left for them to observe.
