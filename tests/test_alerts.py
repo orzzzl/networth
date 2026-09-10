@@ -1,9 +1,15 @@
-"""Task 15: the four alerts, and the rules that keep a single channel credible."""
+"""The alerts, and the rules that keep a single channel credible.
+
+Task 15 wrote section 11's four; task 27 added section 12's fifth, which is the
+same machinery pointed at a number the owner typed rather than at a connection.
+"""
 
 from __future__ import annotations
 
+import ast
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,6 +17,7 @@ import pytest
 
 import networth.alerts as alerts_module
 from networth.alerts import (
+    RECONFIRM_SHARE_COUNT_AFTER,
     REPROMPT_AFTER,
     AccountSignal,
     AlertEvaluator,
@@ -30,6 +37,10 @@ from networth.store import AlertRepository, Store
 
 NOW = datetime(2026, 3, 10, 15, 0, tzinfo=UTC)
 FROZEN_SINCE = datetime(2026, 3, 2, 21, 0, tzinfo=UTC)
+MANUAL_ACCOUNT = 2
+# Long enough ago that the count is overdue however the boundary is read; the
+# boundary itself is measured by its own test rather than inferred from this.
+CONFIRMED_LONG_AGO = NOW - RECONFIRM_SHARE_COUNT_AFTER - timedelta(days=110)
 
 
 def _db_time(value: datetime) -> str:
@@ -58,6 +69,22 @@ def db() -> Iterator[sqlite3.Connection]:
             id, name, type, currency, sign, freshness_policy,
             include_in_net_worth, reconciliation_state, created_at
         ) VALUES (1, 'Synthetic account', 'synthetic', 'USD', 1, 'SYNCED_HOLDINGS', 1, 'NEW', ?)
+        """,
+        (_db_time(NOW),),
+    )
+    # Task 27's subject: an account whose quantity the owner typed, with no
+    # Item behind it.  The evaluator never reads either row, so the second one
+    # buys fidelity rather than behaviour — a nudge asserted against a synced
+    # account would read as evidence about a case that cannot occur.
+    connection.execute(
+        """
+        INSERT INTO account(
+            id, name, type, currency, sign, freshness_policy,
+            include_in_net_worth, reconciliation_state, created_at
+        ) VALUES (
+            2, 'Synthetic manual account', 'synthetic', 'USD', 1,
+            'MANUAL_QTY_LIVE_PRICE', 1, 'CONFIRMED', ?
+        )
         """,
         (_db_time(NOW),),
     )
@@ -119,6 +146,16 @@ def not_frozen(
 def only(alerts: tuple[Alert, ...]) -> Alert:
     assert len(alerts) == 1, alerts
     return alerts[0]
+
+
+def manual(set_on: datetime | None = None) -> AccountSignal:
+    """Account 2, described by the one manual fact this module is given."""
+
+    return AccountSignal(
+        MANUAL_ACCOUNT,
+        is_pending_reconciliation=False,
+        share_count_set_on=set_on,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -209,6 +246,25 @@ def test_a_frozen_alert_cannot_exist_without_the_clock_it_must_outlive() -> None
             message="m",
             item_id=1,
             raised_source_as_of=FROZEN_SINCE,
+        )
+
+
+def test_a_share_count_nudge_cannot_exist_without_the_clock_it_must_outlive() -> None:
+    """The second kind that resolves on a clock, held to the same requirement.
+
+    ``carries_source_clock`` covering two kinds is only worth anything if the
+    requirement it drives is enforced for both; a rule stated once and checked
+    for one member is how the second member ends up exempt.
+    """
+
+    with pytest.raises(
+        ValueError, match="SHARE_COUNT_UNCONFIRMED resolves only when its clock advances"
+    ):
+        AlertDraft(
+            kind=AlertKind.SHARE_COUNT_UNCONFIRMED,
+            created_at=NOW,
+            message="m",
+            account_id=MANUAL_ACCOUNT,
         )
 
 
@@ -557,6 +613,186 @@ def test_one_account_can_hold_two_different_alerts_at_once(evaluator: AlertEvalu
 
 
 # --------------------------------------------------------------------------
+# Section 12: re-confirming a manual share count
+# --------------------------------------------------------------------------
+
+
+def test_an_overdue_share_count_is_nudged_and_the_row_records_its_confirmation(
+    evaluator: AlertEvaluator,
+) -> None:
+    """The row remembers *which* confirmation it was raised against.
+
+    Without that, a later evaluation could only ask "is this count old?", and
+    would answer yes to a count the owner re-confirmed yesterday for a vest that
+    happened last year — resolving nothing and re-raising forever.
+    """
+
+    raised = only(evaluator.evaluate(at=NOW, accounts=[manual(CONFIRMED_LONG_AGO)]).raised)
+
+    assert raised.kind is AlertKind.SHARE_COUNT_UNCONFIRMED
+    assert raised.account_id == MANUAL_ACCOUNT
+    assert raised.item_id is None
+    assert raised.raised_source_as_of == CONFIRMED_LONG_AGO
+    assert [carried.alert.id for carried in evaluator.bulletin(at=NOW)] == [raised.id]
+
+
+def test_the_period_runs_from_the_confirmation_and_its_boundary_is_inclusive(
+    evaluator: AlertEvaluator,
+) -> None:
+    """One second short is silence; the period itself asks.
+
+    Pinned in both directions because the two failures are asymmetric and both
+    are silent: reading the comparison one way nags an owner who confirmed
+    inside the period, and the other way lets a count that is exactly due slip
+    to the next cycle.
+    """
+
+    set_on = NOW - RECONFIRM_SHARE_COUNT_AFTER
+
+    assert evaluator.evaluate(at=NOW - timedelta(seconds=1), accounts=[manual(set_on)]).raised == ()
+    assert only(
+        evaluator.evaluate(at=NOW, accounts=[manual(set_on)]).raised
+    ).raised_source_as_of == (set_on)
+
+
+def test_an_account_that_reports_no_share_count_is_never_nudged(
+    evaluator: AlertEvaluator,
+) -> None:
+    """Most accounts hold no manual quantity, and they must stay quiet.
+
+    The overdue manual account in the same evaluation is the control: without
+    it this test would also pass on an evaluator that raises nothing at all.
+    """
+
+    result = evaluator.evaluate(
+        at=NOW,
+        accounts=[
+            AccountSignal(1, is_pending_reconciliation=False),
+            manual(CONFIRMED_LONG_AGO),
+        ],
+    )
+
+    assert [alert.account_id for alert in result.raised] == [MANUAL_ACCOUNT]
+
+
+def test_a_standing_nudge_is_not_re_raised_while_the_count_stays_unconfirmed(
+    evaluator: AlertEvaluator,
+) -> None:
+    """The anti-fatigue rule, on the one kind whose condition never lapses.
+
+    An Item recovers on its own; an unconfirmed count only stops being
+    unconfirmed when the owner acts.  So this kind sits in the bulletin for as
+    long as he ignores it, and every cycle that re-raised it would restart the
+    24h prompt window — turning the nudge into the noise section 11 spends its
+    single channel avoiding.
+    """
+
+    first = only(evaluator.evaluate(at=NOW, accounts=[manual(CONFIRMED_LONG_AGO)]).raised)
+    later = NOW + timedelta(days=30)
+
+    again = evaluator.evaluate(at=later, accounts=[manual(CONFIRMED_LONG_AGO)])
+
+    assert again.raised == ()
+    assert again.resolved == ()
+    assert [carried.alert.id for carried in evaluator.bulletin(at=later)] == [first.id]
+
+
+def test_confirming_the_count_resolves_the_nudge_and_leaves_nothing_behind(
+    evaluator: AlertEvaluator,
+) -> None:
+    evaluator.evaluate(at=NOW, accounts=[manual(CONFIRMED_LONG_AGO)])
+    later = NOW + timedelta(days=1)
+
+    confirmed = evaluator.evaluate(at=later, accounts=[manual(later)])
+
+    assert only(confirmed.resolved).kind is AlertKind.SHARE_COUNT_UNCONFIRMED
+    assert confirmed.raised == ()
+    assert evaluator.bulletin(at=later) == ()
+
+
+def test_a_back_dated_confirmation_ends_the_row_but_not_the_condition(
+    evaluator: AlertEvaluator,
+) -> None:
+    """Confirming *as of* an old date is still an advance, and still overdue.
+
+    Section 12 shows a holding as "N shares, set on <date>", so the owner
+    supplies the date and can supply one in the past — correcting a count he
+    should have entered in the spring is the ordinary case, not an exotic one.
+    That advance ends this row's claim while leaving the holding exactly as
+    unconfirmed as it was: the same shape as a frozen feed catching up by a day
+    while staying five closes behind, and the reason resolving without raising
+    the replacement would publish an empty bulletin for an account that still
+    needs the owner.
+
+    The third evaluation is the other half: the replacement is anchored on the
+    new confirmation, so the same advance is not seen again on every later
+    cycle, which would churn a resolve/raise pair per evaluation forever.
+    """
+
+    first = only(evaluator.evaluate(at=NOW, accounts=[manual(CONFIRMED_LONG_AGO)]).raised)
+    later = NOW + timedelta(days=1)
+    back_dated = later - RECONFIRM_SHARE_COUNT_AFTER - timedelta(days=30)
+
+    still_unconfirmed = evaluator.evaluate(at=later, accounts=[manual(back_dated)])
+
+    assert only(still_unconfirmed.resolved).id == first.id
+    replacement = only(still_unconfirmed.raised)
+    assert replacement.id != first.id
+    assert replacement.raised_source_as_of == back_dated
+    assert [carried.alert.id for carried in evaluator.bulletin(at=later)] == [replacement.id]
+
+    quiet = evaluator.evaluate(at=later + timedelta(days=1), accounts=[manual(back_dated)])
+
+    assert (quiet.raised, quiet.resolved) == ((), ())
+
+
+def test_an_account_reported_without_its_share_count_keeps_the_nudge(
+    evaluator: AlertEvaluator,
+) -> None:
+    """ "I did not read the holding" is not "he confirmed it"."""
+
+    evaluator.evaluate(at=NOW, accounts=[manual(CONFIRMED_LONG_AGO)])
+    later = NOW + timedelta(days=1)
+
+    unread = evaluator.evaluate(at=later, accounts=[manual()])
+
+    assert unread.resolved == ()
+    assert len(evaluator.bulletin(at=later)) == 1
+
+
+def test_the_module_that_writes_the_message_cannot_reach_a_quantity() -> None:
+    """Task 27's "must not": never silently change a share count.
+
+    Checked as a property of the module rather than as a behaviour, because the
+    behaviour is unobservable — there is no assertion that catches a quantity
+    this module was never handed.  What can be checked is that it is not handed
+    one: the caller passes ``set_on`` and nothing else, and nothing here imports
+    the manual model.  A future edit that passes the ``EquityHolding`` itself —
+    the obvious convenience, and the way an alert message ends up quoting a
+    number that a publish then carries off the host — turns this red.
+    """
+
+    assert {field.name for field in fields(AccountSignal)} == {
+        "account_id",
+        "is_pending_reconciliation",
+        "freshness",
+        "share_count_set_on",
+    }
+
+    assert alerts_module.__file__ is not None
+    tree = ast.parse(Path(alerts_module.__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module is not None:
+            imported.add(node.module)
+        elif isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+
+    assert imported, "the import scan found nothing, so it proves nothing"
+    assert not any(module.split(".")[-1] == "manual" for module in imported)
+
+
+# --------------------------------------------------------------------------
 # Absence of evidence
 # --------------------------------------------------------------------------
 
@@ -727,6 +963,14 @@ def test_an_account_signal_states_a_fact_about_exactly_one_account() -> None:
         AccountSignal(1, is_pending_reconciliation=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="FreshnessAssessment"):
         AccountSignal(1, is_pending_reconciliation=False, freshness="FROZEN")  # type: ignore[arg-type]
+    # The nudge's whole answer is a subtraction against this instant, so a
+    # naive one would be a silently wrong period rather than a crash.
+    with pytest.raises(ValueError, match="share_count_set_on must be timezone-aware UTC"):
+        AccountSignal(
+            MANUAL_ACCOUNT,
+            is_pending_reconciliation=False,
+            share_count_set_on=datetime(2026, 3, 10, 15, 0),
+        )
 
 
 def only_deliverable(bulletin: tuple[DeliverableAlert, ...]) -> DeliverableAlert:
