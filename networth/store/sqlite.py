@@ -27,6 +27,7 @@ from networth.model import (
     ObservationSource,
     ReconciliationState,
     Snapshot,
+    SnapshotAccount,
     SnapshotAge,
     SnapshotAgeState,
     SnapshotCounts,
@@ -99,6 +100,11 @@ _ALERT_COLUMNS = """
 
 _ACCOUNT_COLUMNS = """
     a.id, a.item_id, a.plaid_account_id, a.currency,
+    a.freshness_policy, a.reconciliation_state
+"""
+
+_SNAPSHOT_ACCOUNT_COLUMNS = """
+    a.id, a.item_id, a.currency, a.sign,
     a.freshness_policy, a.reconciliation_state
 """
 
@@ -233,6 +239,22 @@ def _linked_account_from_row(row: tuple[object, ...]) -> LinkedAccount:
         )
     except (IndexError, TypeError, ValueError) as exc:
         raise StoredDataError("account row violates the linked-account model") from exc
+
+
+def _snapshot_account_from_row(row: tuple[object, ...]) -> SnapshotAccount:
+    try:
+        return SnapshotAccount(
+            id=_integer(row[0], field="account.id"),
+            item_id=None if row[1] is None else _integer(row[1], field="account.item_id"),
+            currency=_text(row[2], field="account.currency"),
+            sign=_integer(row[3], field="account.sign"),
+            freshness_policy=FreshnessPolicy(_text(row[4], field="account.freshness_policy")),
+            reconciliation_state=ReconciliationState(
+                _text(row[5], field="account.reconciliation_state")
+            ),
+        )
+    except (IndexError, TypeError, ValueError) as exc:
+        raise StoredDataError("account row violates the snapshot-account model") from exc
 
 
 def _observation_from_row(row: tuple[object, ...]) -> Observation:
@@ -436,6 +458,31 @@ class AccountRepository:
             )
         )
         return tuple(_linked_account_from_row(row) for row in rows)
+
+    def for_snapshot(self) -> tuple[SnapshotAccount, ...]:
+        """Every active account the owner chose to include in the headline.
+
+        ``NEW`` accounts stay in the population so the snapshot can count them
+        while excluding their values. Any archive/supersession marker excludes
+        an account independently; a half-finished transition fails closed
+        instead of double-counting an old and replacement account.
+        """
+
+        rows = _rows(
+            self._connection.execute(
+                f"""
+                SELECT {_SNAPSHOT_ACCOUNT_COLUMNS}
+                FROM account AS a
+                WHERE a.include_in_net_worth = 1
+                  AND a.reconciliation_state <> 'ARCHIVED'
+                  AND a.archived_at IS NULL
+                  AND a.superseded_by_account_id IS NULL
+                  AND a.superseded_at IS NULL
+                ORDER BY a.id
+                """
+            )
+        )
+        return tuple(_snapshot_account_from_row(row) for row in rows)
 
     def record_fetch(
         self,
