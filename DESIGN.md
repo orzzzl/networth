@@ -1743,7 +1743,8 @@ snapshot(
   account_count, stale_account_count, unknown_freshness_account_count,
   static_account_count,                -- MANUAL_STATIC; outside the age basis (§8.1 R3)
   reauth_account_count, unreconciled_account_count,
-  is_complete,                         -- FALSE if anything was carried forward or unreconciled
+  is_complete,                         -- FALSE if anything was carried forward, stale,
+                                       --   or unreconciled
   -- the total's age, as a TAGGED value, never a bare timestamp (I2, §8.1 R3):
   age_state,                           -- KNOWN | UNKNOWN | STATIC_ONLY
   as_of,                               -- the total's age; NOT NULL iff age_state = KNOWN
@@ -2935,10 +2936,13 @@ it:**
 net_worth = Σ(account value × account.sign)     -- v0: every sign is +1, so this is Σ(assets)
 ```
 
-1. **A stale account still contributes its last known value**, flagged
-   `is_carried_forward`, and the snapshot is marked `is_complete = FALSE`.
-   Rejected alternative: excluding stale accounts, which makes the total silently
-   *drop* — a different lie, and a scarier one.
+1. **A stale account still contributes its available value**, increments
+   `stale_account_count`, and makes the snapshot `is_complete = FALSE` whether
+   that value was fetched in this run or carried forward. The converse is also
+   independent: a carried-forward value makes the snapshot incomplete even when
+   its source clock is still fresh. `is_carried_forward` means reuse, not
+   staleness. Rejected alternative: excluding stale accounts, which makes the
+   total silently *drop* — a different lie, and a scarier one.
 2. The headline's age is the **tagged state** of R3 — `(age_state, as_of)` over
    the age basis — not the run time and not the last successful call. A run that
    succeeded everywhere against data that is all a week old is a week-old
@@ -2952,11 +2956,16 @@ net_worth = Σ(account value × account.sign)     -- v0: every sign is +1, so th
    Accounts with `UNKNOWN` freshness are counted **separately** from stale ones —
    "we know this is old" and "we cannot tell how old this is" are different
    admissions and merging them would launder the second into the first.
-3b. **The type makes the undated total unrepresentable.** `as_of` is not a
-   nullable timestamp that callers are trusted to check; the total is a sum type
-   (`Dated(as_of) | Undated(reason)`), so rendering code cannot reach a date
-   that does not exist and cannot forget to ask. This is the one contract worth
-   spending a type on: it is the exact line commercial aggregators cross.
+3b. **The host type makes an invalid tag/date pair unconstructible.** Python
+   represents the stored schema directly as a validated tagged product,
+   `SnapshotAge(state, as_of, oldest_known_source_as_of)`: `KNOWN` requires its
+   date, `UNKNOWN` and `STATIC_ONLY` reject one, and `SnapshotDraft` rejects an
+   aggregate figure whose clock disagrees with that age. The nullable field is
+   therefore not a caller convention pretending to be a type guarantee. Task
+   `19` carries the tag and task `21` must branch on all three states before
+   rendering; neither may turn the transport's nullable field into a date
+   without checking the tag. This is the exact line commercial aggregators
+   cross.
 3a. **Accounts pending reconciliation (§8.5) contribute nothing** and are counted
    in `unreconciled_account_count`, which forces `is_complete = FALSE`. This is
    the one place the total is knowingly understated, and it is loud about it —

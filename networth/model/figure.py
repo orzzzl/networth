@@ -94,7 +94,7 @@ class SourcedFigure:
 
 @dataclass(frozen=True, slots=True)
 class SnapshotAge:
-    """The sum type represented by ``snapshot.age_state`` and its clocks."""
+    """The validated tag represented by ``snapshot.age_state`` and its clocks."""
 
     state: SnapshotAgeState
     as_of: datetime | None

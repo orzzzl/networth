@@ -61,4 +61,47 @@ class LinkedAccount:
         )
 
 
-__all__ = ["LinkedAccount", "ReconciliationState"]
+@dataclass(frozen=True, slots=True)
+class SnapshotAccount:
+    """One active, included account considered by the snapshotter.
+
+    ``account_count`` includes every record of this type, including ``NEW``
+    accounts that deliberately contribute no value. Accounts excluded by the
+    owner and either form of archived/superseded account never become this type.
+    """
+
+    id: int
+    item_id: int | None
+    currency: str
+    sign: int
+    freshness_policy: FreshnessPolicy
+    reconciliation_state: ReconciliationState
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, int) or isinstance(self.id, bool):
+            raise TypeError("id must be an integer")
+        if self.id <= 0:
+            raise ValueError("id must be positive")
+        if self.item_id is not None:
+            if not isinstance(self.item_id, int) or isinstance(self.item_id, bool):
+                raise TypeError("item_id must be an integer or None")
+            if self.item_id <= 0:
+                raise ValueError("item_id must be positive")
+        if not isinstance(self.currency, str) or _CURRENCY.fullmatch(self.currency) is None:
+            raise ValueError("currency must be a three-letter uppercase code")
+        if not isinstance(self.sign, int) or isinstance(self.sign, bool):
+            raise TypeError("sign must be an integer")
+        if self.sign not in (-1, 1):
+            raise ValueError("sign must be -1 or 1")
+        if not isinstance(self.freshness_policy, FreshnessPolicy):
+            raise TypeError("freshness_policy must be a FreshnessPolicy")
+        if self.freshness_policy.requires_item != (self.item_id is not None):
+            owner = "requires" if self.freshness_policy.requires_item else "cannot have"
+            raise ValueError(f"{self.freshness_policy.value} {owner} an Item")
+        if not isinstance(self.reconciliation_state, ReconciliationState):
+            raise TypeError("reconciliation_state must be a ReconciliationState")
+        if self.reconciliation_state is ReconciliationState.ARCHIVED:
+            raise ValueError("an archived account cannot enter a snapshot")
+
+
+__all__ = ["LinkedAccount", "ReconciliationState", "SnapshotAccount"]

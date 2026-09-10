@@ -1,6 +1,6 @@
 """Domain types whose shape preserves money provenance."""
 
-from networth.model.account import LinkedAccount, ReconciliationState
+from networth.model.account import LinkedAccount, ReconciliationState, SnapshotAccount
 from networth.model.alert import Alert, AlertDraft, AlertKind
 from networth.model.figure import (
     AggregateSourceClock,
@@ -57,6 +57,7 @@ __all__ = [
     "Quote",
     "ReconciliationState",
     "Snapshot",
+    "SnapshotAccount",
     "SnapshotAge",
     "SnapshotAgeState",
     "SnapshotCounts",

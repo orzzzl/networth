@@ -96,7 +96,7 @@ that row. He caught it, not us.)
 | 11 | `StalenessMachine` — two axes | 04, 10 | **codex** | claude | **DONE** (#41, 2026-09-07) |
 | 12 | Full sync: holdings + balances → observations | 04, 05, 11 | **codex** | claude | **DONE** (#62, 2026-09-09) |
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
-| 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | **READY** |
+| 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | **WIP** (codex, 2026-09-09) |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
 | 27 | Periodic nudge to re-confirm a manual share count | 13, 15 | **claude** | codex | **DONE** (#65, 2026-09-09) |
@@ -1782,10 +1782,11 @@ observations" would reintroduce exactly the retroactive deformation §12 rules o
 
 **Acceptance:**
 
-- [ ] **A total cannot be constructed without its age state and staleness counts (I2) —
-      enforced in the type, not by convention.** The total is a sum type carrying
-      `(age_state, as_of)`.
-- [ ] A caller cannot obtain a bare integer total. If it can, this task is not done.
+- [x] **A total cannot be constructed without its age state and staleness counts (I2) —
+      enforced in the type, not by convention.** The host model is a validated tagged
+      product carrying `(age_state, as_of)`; §10 3b records why it is not described as a
+      static sum type that Python did not build.
+- [x] A caller cannot obtain a bare integer total. If it can, this task is not done.
 
 **Must not:** provide a convenience accessor that strips the age. That accessor is the bug
 this project exists to prevent.
@@ -1795,6 +1796,16 @@ holiday currently makes the account source clock `UNKNOWN`, even when other hold
 usable dates. Task 14 must deliberately decide whether the headline stays undateable or
 whether task 12 needs a distinct representation for "dated, but no matching market
 session"; it must not silently treat that input as the same fact as a missing date.
+
+**Decision (2026-09-09): the headline stays undateable.** A weekend/holiday date proves
+the provider supplied a date, but it does not identify a US equity market session and
+therefore cannot justify either the preceding or following close as the source clock.
+Task `12` conservatively emits `UNKNOWN`; this task preserves that tag, lets it poison the
+whole headline date under R3, and keeps the oldest usable clock only in
+`oldest_known_source_as_of` as a diagnostic. A regression combines one such holdings
+observation with a dated contributor and proves the total does not borrow the latter's date.
+No distinct task-12 representation is needed for the headline decision; adding one later
+would be diagnostic provenance, not permission to fabricate an age.
 
 ### 15 — Alerts: payload-carried delivery — **claude** *(reassigned from codex, 2026-09-09)*
 
@@ -1896,6 +1907,13 @@ execution and evidence to this codex-only row.
       deliberately; and the `ShareCountObservation` distinguishes *read, and there is no
       share count* from *not read*, which are opposite instructions and are one keyword
       apart at this call site.
+- [ ] **Before snapshotting, the run values every `MANUAL_QTY_LIVE_PRICE` account with
+      its current quote and appends that `SourcedFigure` as an `ObservationSource.QUOTE`
+      observation in the named run.** Those accounts are deliberately absent from
+      `AccountRepository.syncable()` but present in `for_snapshot()`; omitting this step
+      makes `Snapshotter` refuse the entire headline rather than silently omit the manual
+      account. The task `13` seam computes the figure; this row owns feeding it into each
+      cycle.
 - [ ] Due-ness is computed from **stored state**, not from "did the timer fire" — the
       catch-up predicate survives downtime.
 - [ ] Due on non-market days too.

@@ -17,7 +17,13 @@ from networth.model.figure import (
 
 @dataclass(frozen=True, slots=True)
 class SnapshotCounts:
-    """All counts that qualify a stored total."""
+    """All counts that qualify a stored total.
+
+    ``account_count`` is every active account included in the snapshot,
+    including an unreconciled non-contributor. The other five counts are
+    subsets; only ``unknown_freshness_account_count`` is specifically limited
+    to the contributing age basis.
+    """
 
     account_count: int
     stale_account_count: int
