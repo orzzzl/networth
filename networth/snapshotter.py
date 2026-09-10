@@ -34,6 +34,12 @@ class Snapshotter:
     aggregate figures cannot be separated from their tagged age and whose
     staleness counts are mandatory. There is deliberately no amount-only
     convenience method.
+
+    Advancing-clock accounts must have an observation in the named run. A
+    fixed manual valuation is different by design: it is a revision, so the
+    latest revision in force at ``at`` contributes without being copied into
+    every run. A missing current value therefore fails instead of silently
+    making a successful run's total smaller.
     """
 
     __slots__ = ("_staleness", "_store")
