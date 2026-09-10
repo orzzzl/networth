@@ -7,8 +7,9 @@ same machinery pointed at a number the owner typed rather than at a connection.
 from __future__ import annotations
 
 import ast
+import inspect
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from networth.alerts import (
     AccountSignal,
     AlertEvaluator,
     DeliverableAlert,
+    ShareCountObservation,
 )
 from networth.model import (
     Alert,
@@ -148,14 +150,56 @@ def only(alerts: tuple[Alert, ...]) -> Alert:
     return alerts[0]
 
 
-def manual(set_on: datetime | None = None) -> AccountSignal:
-    """Account 2, described by the one manual fact this module is given."""
+def _declared(function: Callable[..., object]) -> dict[str, str]:
+    """Every parameter and the return, as annotated in the source.
+
+    ``from __future__ import annotations`` leaves these as strings, so what is
+    compared is what a reader of the module sees rather than what it resolves to
+    — which is the point: the check is on the declaration.
+    """
+
+    signature = inspect.signature(function)
+    declared = {
+        name: str(parameter.annotation)
+        for name, parameter in signature.parameters.items()
+        if name != "self"
+    }
+    declared["return"] = str(signature.return_annotation)
+    return declared
+
+
+def _declared_fields(record: type) -> dict[str, str]:
+    return {field.name: str(field.type) for field in fields(record)}
+
+
+def manual(set_on: datetime) -> AccountSignal:
+    """Account 2, whose share count the caller read and found confirmed on a date."""
 
     return AccountSignal(
         MANUAL_ACCOUNT,
         is_pending_reconciliation=False,
-        share_count_set_on=set_on,
+        share_count=ShareCountObservation(confirmed_on=set_on),
     )
+
+
+def manual_holding_nothing() -> AccountSignal:
+    """Account 2, read this cycle, with no share count on it at all.
+
+    The second of the three states, and the one that used to be
+    indistinguishable from the third.
+    """
+
+    return AccountSignal(
+        MANUAL_ACCOUNT,
+        is_pending_reconciliation=False,
+        share_count=ShareCountObservation(confirmed_on=None),
+    )
+
+
+def manual_unread() -> AccountSignal:
+    """Account 2, reported by a caller that did not read its manual side."""
+
+    return AccountSignal(MANUAL_ACCOUNT, is_pending_reconciliation=False)
 
 
 # --------------------------------------------------------------------------
@@ -655,24 +699,34 @@ def test_the_period_runs_from_the_confirmation_and_its_boundary_is_inclusive(
     ).raised_source_as_of == (set_on)
 
 
-def test_an_account_that_reports_no_share_count_is_never_nudged(
+def test_an_account_that_holds_no_share_count_is_never_nudged(
     evaluator: AlertEvaluator,
 ) -> None:
     """Most accounts hold no manual quantity, and they must stay quiet.
 
-    The overdue manual account in the same evaluation is the control: without
-    it this test would also pass on an evaluator that raises nothing at all.
+    Both silent states are here — the account read and found holding nothing,
+    and the account nobody read — because they take different branches and only
+    one of them is about this kind at all.  The overdue manual account in the
+    same evaluation is the control: without it this test would also pass on an
+    evaluator that raises nothing at all.
     """
+
+    read_and_empty = AccountSignal(
+        1,
+        is_pending_reconciliation=False,
+        share_count=ShareCountObservation(confirmed_on=None),
+    )
 
     result = evaluator.evaluate(
         at=NOW,
-        accounts=[
-            AccountSignal(1, is_pending_reconciliation=False),
-            manual(CONFIRMED_LONG_AGO),
-        ],
+        accounts=[read_and_empty, manual(CONFIRMED_LONG_AGO)],
     )
 
     assert [alert.account_id for alert in result.raised] == [MANUAL_ACCOUNT]
+
+    evaluator.evaluate(at=NOW, accounts=[AccountSignal(1, is_pending_reconciliation=False)])
+
+    assert [carried.alert.account_id for carried in evaluator.bulletin(at=NOW)] == [MANUAL_ACCOUNT]
 
 
 def test_a_standing_nudge_is_not_re_raised_while_the_count_stays_unconfirmed(
@@ -746,6 +800,105 @@ def test_a_back_dated_confirmation_ends_the_row_but_not_the_condition(
     assert (quiet.raised, quiet.resolved) == ((), ())
 
 
+def test_a_confirmation_dated_in_the_future_cannot_clear_a_live_nudge(
+    evaluator: AlertEvaluator,
+) -> None:
+    """The branch that loses the alert, which is the half worth pinning.
+
+    A future ``confirmed_on`` is the largest advance there is, so the open row
+    resolved — and then the replacement was not raised, because ``at - set_on``
+    had gone negative.  The account went quiet with its count still
+    unconfirmed, and no later cycle brought it back while the bad clock stood.
+    Reproduced at ``1ecc36f``; found in review, not by this suite, because the
+    suite only asked whether a bad value was rejected and never asked what it
+    did to state that already existed.
+
+    So the assertion that matters is the last one: the alert that was open is
+    still open.  ``evaluate`` validates every account before it writes anything,
+    and this is what that ordering is for.
+    """
+
+    # The boundary, in both directions: an instant that has just happened is a
+    # confirmation, and one second later is not yet a fact about the past.
+    assert evaluator.evaluate(at=NOW, accounts=[manual(NOW)]).raised == ()
+    with pytest.raises(ValueError, match="share_count.confirmed_on is after the instant"):
+        evaluator.evaluate(at=NOW, accounts=[manual(NOW + timedelta(seconds=1))])
+    assert evaluator.bulletin(at=NOW) == ()
+
+    raised = only(evaluator.evaluate(at=NOW, accounts=[manual(CONFIRMED_LONG_AGO)]).raised)
+    later = NOW + timedelta(days=1)
+
+    with pytest.raises(ValueError, match="share_count.confirmed_on is after the instant"):
+        evaluator.evaluate(at=later, accounts=[manual(later + timedelta(days=364))])
+
+    assert [carried.alert.id for carried in evaluator.bulletin(at=later)] == [raised.id]
+
+
+def test_one_bad_clock_refuses_the_whole_evaluation_before_anything_is_written(
+    evaluator: AlertEvaluator,
+) -> None:
+    """Validation is a pass over every account, not a step inside each one.
+
+    A cycle evaluates every account in one call, so "refused before anything is
+    written" is a claim about the evaluation and not about the account that
+    carries the bad clock.  Checking as each account came up would leave the
+    accounts ahead of it already committed and the ones behind it unevaluated —
+    a partial cycle that no caller asked for and no return value describes,
+    since the exception carries neither list.
+
+    The sound account is deliberately first, and deliberately one that would
+    write: it raises a reconciliation alert the moment it is evaluated.
+    """
+
+    would_raise = AccountSignal(1, is_pending_reconciliation=True)
+
+    with pytest.raises(ValueError, match="share_count.confirmed_on is after the instant"):
+        evaluator.evaluate(at=NOW, accounts=[would_raise, manual(NOW + timedelta(days=1))])
+
+    assert evaluator.bulletin(at=NOW) == ()
+
+
+def test_a_source_clock_in_the_future_cannot_clear_a_live_frozen_alert(
+    evaluator: AlertEvaluator,
+) -> None:
+    """The same defect on the kind task 15 shipped, so the fix is the rule.
+
+    Probed after the finding above and reproduced on merged code: an assessment
+    whose ``source_as_of`` is in the future resolves a standing frozen alert and
+    raises nothing, leaving an account that is still frozen with an empty
+    bulletin.  Nothing produces such an assessment today — task 11 derives the
+    clock from stored observations — which is exactly why it is worth a guard
+    rather than an argument: the module that will assemble these signals has not
+    been written yet (`16`), and this module cannot see where its inputs came
+    from.
+
+    Refusing both clocks in one place makes this a property of resolving on a
+    clock.  Fixing only the kind the review named would have left the same
+    defect standing in the module that the fix was made in.
+    """
+
+    raised = only(
+        evaluator.evaluate(
+            at=NOW,
+            accounts=[AccountSignal(1, is_pending_reconciliation=False, freshness=frozen())],
+        ).raised
+    )
+    later = NOW + timedelta(days=1)
+    ahead = not_frozen(
+        later + timedelta(days=364),
+        state=FreshnessState.FRESH,
+        item_state=ItemState.HEALTHY,
+    )
+
+    with pytest.raises(ValueError, match="freshness.source_as_of is after the instant"):
+        evaluator.evaluate(
+            at=later,
+            accounts=[AccountSignal(1, is_pending_reconciliation=False, freshness=ahead)],
+        )
+
+    assert [carried.alert.id for carried in evaluator.bulletin(at=later)] == [raised.id]
+
+
 def test_an_account_reported_without_its_share_count_keeps_the_nudge(
     evaluator: AlertEvaluator,
 ) -> None:
@@ -754,42 +907,145 @@ def test_an_account_reported_without_its_share_count_keeps_the_nudge(
     evaluator.evaluate(at=NOW, accounts=[manual(CONFIRMED_LONG_AGO)])
     later = NOW + timedelta(days=1)
 
-    unread = evaluator.evaluate(at=later, accounts=[manual()])
+    unread = evaluator.evaluate(at=later, accounts=[manual_unread()])
 
     assert unread.resolved == ()
     assert len(evaluator.bulletin(at=later)) == 1
 
 
-def test_the_module_that_writes_the_message_cannot_reach_a_quantity() -> None:
-    """Task 27's "must not": never silently change a share count.
+def test_a_holding_that_is_gone_resolves_the_nudge_it_left_behind(
+    evaluator: AlertEvaluator,
+) -> None:
+    """The other absence, and it means the opposite thing.
 
-    Checked as a property of the module rather than as a behaviour, because the
-    behaviour is unobservable — there is no assertion that catches a quantity
-    this module was never handed.  What can be checked is that it is not handed
-    one: the caller passes ``set_on`` and nothing else, and nothing here imports
-    the manual model.  A future edit that passes the ``EquityHolding`` itself —
-    the obvious convenience, and the way an alert message ends up quoting a
-    number that a publish then carries off the host — turns this red.
+    A share count can stop existing: the holding is deleted, or the manual asset
+    becomes one that has no quantity to confirm.  When that happens the subject
+    of the nudge is gone, and a row asking the owner to re-confirm a number he
+    no longer has is one he cannot act on — it would sit in the bulletin for
+    good, since the only thing that resolves this kind is a clock that can never
+    advance again.
+
+    Pinned beside the test above on purpose: the two absences are one keystroke
+    apart at the call site and take opposite branches, which is exactly why they
+    stopped sharing a value.
     """
 
-    assert {field.name for field in fields(AccountSignal)} == {
-        "account_id",
-        "is_pending_reconciliation",
-        "freshness",
-        "share_count_set_on",
+    raised = only(evaluator.evaluate(at=NOW, accounts=[manual(CONFIRMED_LONG_AGO)]).raised)
+    later = NOW + timedelta(days=1)
+
+    removed = evaluator.evaluate(at=later, accounts=[manual_holding_nothing()])
+
+    assert only(removed.resolved).id == raised.id
+    assert removed.raised == ()
+    assert evaluator.bulletin(at=later) == ()
+
+
+def test_an_account_read_and_found_empty_raises_nothing_to_resolve(
+    evaluator: AlertEvaluator,
+) -> None:
+    """Resolving an absent holding must not become a way to raise one.
+
+    The branch above resolves; this asserts it does nothing else. Without it a
+    resolve-then-fall-through edit — the shape the back-dated case legitimately
+    uses two branches down — would raise a nudge for an account that has no
+    share count, and the test above would still pass.
+    """
+
+    result = evaluator.evaluate(at=NOW, accounts=[manual_holding_nothing()])
+
+    assert (result.raised, result.resolved) == ((), ())
+    assert evaluator.bulletin(at=NOW) == ()
+
+
+def test_the_whole_account_side_input_surface_is_declared_here() -> None:
+    """Task 27's "must not": never silently change a share count.
+
+    The behaviour is unobservable — there is no assertion that catches a
+    quantity this module was never handed — so what gets checked is that it is
+    not handed one.  The first attempt checked that instead by scanning imports,
+    and codex's review showed that guard was false twice over: the scan recorded
+    only ``ImportFrom.module``, so the ordinary ``from networth.model import
+    manual`` passed it; and a new ``evaluate(..., share_counts=...)`` parameter
+    would have made quantities reachable without any manual import at all.  A
+    guard that cannot fail is worse than no guard, because it is cited.
+
+    This is the replacement, and it pins the thing the guarantee is actually
+    about: **every route by which an account fact enters this module**.  There
+    are exactly three — the repository handed to the constructor, the parameters
+    of :meth:`AlertEvaluator.evaluate`, and the fields of the two records those
+    parameters carry — and each is listed with its annotation.  Widening any of
+    them, by any spelling, turns this red.
+
+    **What it does not prove**, stated so it is not cited for more than it is:
+    it does not stop this module from importing something and reading it
+    directly, which is why the constructor's one dependency is pinned above and
+    why the import test below exists as a second, narrower check.  Nor does it
+    know a quantity from an id by type — both are ``int`` — which is why this is
+    an allow-list of names rather than a hunt for suspicious ones.  Its whole
+    force is that admitting a new input is a decision someone argues for, in the
+    way that the exactly-five-kinds test above makes adding a kind a decision.
+    """
+
+    assert _declared(AlertEvaluator.__init__) == {
+        "alerts": "AlertRepository",
+        "return": "None",
     }
+    assert _declared(AlertEvaluator.evaluate) == {
+        "at": "datetime",
+        "items": "Iterable[ItemHealth]",
+        "accounts": "Iterable[AccountSignal]",
+        "return": "AlertEvaluation",
+    }
+    assert _declared_fields(AccountSignal) == {
+        "account_id": "int",
+        "is_pending_reconciliation": "bool",
+        "freshness": "FreshnessAssessment | None",
+        "share_count": "ShareCountObservation | None",
+    }
+    assert _declared_fields(ShareCountObservation) == {"confirmed_on": "datetime | None"}
+
+
+def test_the_alert_module_borrows_no_manual_vocabulary() -> None:
+    """The second route in, closed the same way: by list rather than by hunch.
+
+    Every domain name this module imports is written out, so reaching for the
+    manual model — or for anything else that could carry a quantity — is a red
+    test rather than an import that reads as housekeeping.  Listing what is
+    allowed instead of what is forbidden is deliberate: the first version of
+    this check tried to exclude ``manual`` by name and let both
+    ``from networth.model import manual`` and a re-export of an ``EquityHolding``
+    through :mod:`networth.model` straight past.  Standard-library imports are
+    not listed, because they are not what this is about and pinning them would
+    make an unrelated edit look like a boundary violation.
+    """
 
     assert alerts_module.__file__ is not None
     tree = ast.parse(Path(alerts_module.__file__).read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module is not None:
-            imported.add(node.module)
-        elif isinstance(node, ast.Import):
+        if isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            # Both halves: the module, and each name taken out of it — the
+            # missing second half is what let the plain `from networth.model
+            # import manual` through.
+            imported.add(node.module)
+            imported.update(f"{node.module}.{alias.name}" for alias in node.names)
 
     assert imported, "the import scan found nothing, so it proves nothing"
-    assert not any(module.split(".")[-1] == "manual" for module in imported)
+    assert {name for name in imported if name.split(".")[0] == "networth"} == {
+        "networth.model",
+        "networth.model.Alert",
+        "networth.model.AlertDraft",
+        "networth.model.AlertKind",
+        "networth.model.FreshnessAssessment",
+        "networth.model.ItemHealth",
+        "networth.model.ItemState",
+        "networth.model.figure",
+        "networth.model.figure.require_utc",
+        "networth.store",
+        "networth.store.AlertRepository",
+    }
 
 
 # --------------------------------------------------------------------------
@@ -963,14 +1219,12 @@ def test_an_account_signal_states_a_fact_about_exactly_one_account() -> None:
         AccountSignal(1, is_pending_reconciliation=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="FreshnessAssessment"):
         AccountSignal(1, is_pending_reconciliation=False, freshness="FROZEN")  # type: ignore[arg-type]
-    # The nudge's whole answer is a subtraction against this instant, so a
-    # naive one would be a silently wrong period rather than a crash.
-    with pytest.raises(ValueError, match="share_count_set_on must be timezone-aware UTC"):
-        AccountSignal(
-            MANUAL_ACCOUNT,
-            is_pending_reconciliation=False,
-            share_count_set_on=datetime(2026, 3, 10, 15, 0),
-        )
+    with pytest.raises(TypeError, match="ShareCountObservation"):
+        AccountSignal(1, is_pending_reconciliation=False, share_count=NOW)  # type: ignore[arg-type]
+    # The nudge's whole answer is a subtraction against the evaluation instant,
+    # so a naive clock would be a silently wrong period rather than a crash.
+    with pytest.raises(ValueError, match="confirmed_on must be timezone-aware UTC"):
+        ShareCountObservation(confirmed_on=datetime(2026, 3, 10, 15, 0))
 
 
 def only_deliverable(bulletin: tuple[DeliverableAlert, ...]) -> DeliverableAlert:

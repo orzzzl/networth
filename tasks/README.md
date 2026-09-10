@@ -99,7 +99,7 @@ that row. He caught it, not us.)
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | BLOCKED (12) |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
 | 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
-| 27 | Vest-date nudge to re-confirm a share count | 13, 15 | **claude** | codex | **WIP** (claude, 2026-09-09) |
+| 27 | Periodic nudge to re-confirm a manual share count | 13, 15 | **claude** | codex | **WIP** (claude, 2026-09-09) |
 
 ### Phase 4 — getting the number onto the phone
 
@@ -107,7 +107,7 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | BLOCKED (14) |
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | BLOCKED (17) |
-| 19 | Payload schema + `Publisher` (encrypt) | 17, 26a | **codex** | claude | BLOCKED (17) |
+| 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | BLOCKED (17) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (19) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | BLOCKED (20) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | BLOCKED (19) |
@@ -1877,6 +1877,19 @@ execution and evidence to this codex-only row.
       Funnel. Task `20` supplies the tested listener classification and owns the
       forever-after bind invariant; this row records it on the actual host.
 
+- [ ] **The run assembles the per-cycle alert facts and calls
+      `AlertEvaluator.evaluate()` before it publishes** — one `ItemHealth` per Item from
+      `10`, and one `AccountSignal` per account carrying `11`'s `FreshnessAssessment`,
+      `reconciliation_state == 'NEW'`, and a `ShareCountObservation` for its manual side.
+      Added 2026-09-09: `15` shipped four alert kinds and `27` a fifth, and **nothing
+      called the evaluator**, so all five were complete and unreachable. This row is where
+      it belongs because it already owns what runs each cycle and in what order; `19` owns
+      the other half, getting the result onto the wire. Two things the evaluator's contract
+      makes this row's problem rather than its own: a subject left out of a cycle keeps its
+      alerts (silence is not evidence), so an account skipped by an error must be skipped
+      deliberately; and the `ShareCountObservation` distinguishes *read, and there is no
+      share count* from *not read*, which are opposite instructions and are one keyword
+      apart at this call site.
 - [ ] Due-ness is computed from **stored state**, not from "did the timer fire" — the
       catch-up predicate survives downtime.
 - [ ] Due on non-market days too.
@@ -1924,11 +1937,12 @@ downtime therefore matters to a **lifetime slot** on this job, not just to a cur
 - Do not use `systemctl restart` on the general sync unit as the wake-up — it kills
   unrelated in-flight work and is still not a queue (issue #17).
 
-### 27 — Vest-date nudge to re-confirm a share count — **claude**
+### 27 — Periodic nudge to re-confirm a manual share count — **claude**
 
-**What to build.** A prompt to re-confirm a manual share count after a vest date. Manual
-quantities drift silently — the same failure this project exists to prevent, arriving from
-the manual side.
+**What to build.** A periodic prompt to re-confirm a manual share count, keyed on the date
+the owner last confirmed it. Manual quantities drift silently — the same failure this
+project exists to prevent, arriving from the manual side. *(Retitled 2026-09-09; the
+original said "after a vest date", and the paragraph below records what was wrong with it.)*
 
 **Normative:** §12, §11.
 
@@ -1937,17 +1951,18 @@ fifth; it never silently changes a quantity.
 
 **Must not:** auto-update a share count. The owner confirms.
 
-**The title names a trigger that does not exist, and what was built is §12's.** Measured
-before writing any code: the string `vest` appears twice in the whole repository —
-`DESIGN.md`'s *"the quantity does not expire, but vesting changes it"* and this row's own
-title. There is no vest date in the schema, in `model/manual.py` or anywhere in `DESIGN.md`,
-and §12's normative sentence asks for a ***periodic*** nudge to re-confirm. Building the row
-literally would mean inventing a `vest_date` column and a data-entry burden §12 never asks
-the owner for, keyed on a date only his employer knows. So the nudge is periodic and keys on
-`EquityHolding.set_on`, which §12 already defines as *"last confirmed on"* — the clock this
-task needs was shipped by `13`. Recorded here rather than only in the PR because the row's
-title is what the next reader sees; whether the title itself should change is a question for
-review, not something this task decides on its way past.
+**The old title named a trigger that does not exist.** Measured before writing any code: the
+string `vest` appears twice in the whole repository — `DESIGN.md`'s *"the quantity does not
+expire, but vesting changes it"* and this row's own former title. There is no vest date in
+the schema, in `model/manual.py` or anywhere in `DESIGN.md`, and §12's normative sentence
+asks for a ***periodic*** nudge to re-confirm. Building the row literally would have meant
+inventing a `vest_date` column and a data-entry burden §12 never asks the owner for, keyed on
+a date only his employer knows. So the nudge is periodic and keys on `EquityHolding.set_on`,
+which §12 already defines as *"last confirmed on"* — the clock this task needs was shipped by
+`13`. The first version of this paragraph left the title alone and explained it, and review
+was right to refuse that: **a knowingly false task statement plus a paragraph excusing it is
+not a resolved discrepancy**, because the title is what the next reader acts on and the
+excuse is what they find afterwards. The row is retitled; this stays as the record of why.
 
 **The period is a preference, and it is one line.** `RECONFIRM_SHARE_COUNT_AFTER` is 90 days:
 vest schedules are commonly quarterly, a drifting count is a slow error rather than an urgent
@@ -1957,15 +1972,18 @@ stored row encodes it. Deliberately **not** escalated to the owner — he alread
 decisions, one of them about alert cadence — and the argument is in the constant's own comment
 so a later reader can disagree with it in one place.
 
-**Open, and not this task's to answer: nothing calls the evaluator.** `AlertEvaluator`,
-`AccountSignal` and `evaluate(` appear **zero** times in this file, and no non-test module
-constructs an `AccountSignal`. Sections `14`, `16` and `19` do not mention alerts at all,
-though §11 requires alert state to travel inside the payload. So the four kinds `15` shipped
-and the fifth this task adds are both complete and both unreachable: whoever assembles
-account signals per cycle — reading freshness, reconciliation state and now `set_on` — is
-unassigned. This is visible from `27` rather than caused by it, and a nudge that never fires
-is indistinguishable from one that decided not to. It needs a row; picking which one is a
-review decision.
+**Nothing called the evaluator, and that gap is now closed in `16` and `19`.** Measured:
+`AlertEvaluator`, `AccountSignal` and `evaluate(` appeared **zero** times in this file, and no
+non-test module constructed an `AccountSignal`. Sections `14`, `16` and `19` did not mention
+alerts at all, though §11 requires alert state to travel inside the payload — so the four
+kinds `15` shipped and the fifth this task adds were complete and unreachable, and a nudge
+that never fires is indistinguishable from one that decided not to. The split needed no new
+owner, only the two rows whose existing responsibilities already contain it: **`16` assembles
+the per-cycle facts and calls `evaluate()`**, **`19` serializes `bulletin()` into the
+payload**. Both now carry it as an acceptance criterion. Recorded here as well because this
+is the row from which the gap was visible, and because `27` merged with the same gap open
+once already — `15` and PR #61 agreed to treat the wiring as a follow-up, and a follow-up
+nobody wrote down is how two tasks ship a feature that cannot run.
 
 ---
 
@@ -2044,6 +2062,15 @@ fact this host cannot observe — the two `doctor`s are **split by host** (issue
       decode apart on the far end, and they mean opposite things about the owner's
       remaining Items (**F2**). This lands before `19` ships, so it is part of the first
       `schema_version` rather than a bump.
+- [ ] **The payload carries the open alert set**, from `AlertEvaluator.bulletin()` — kind,
+      subject, message, and the `prompt` flag that says whether the phone may raise a local
+      notification for it. Added 2026-09-09 alongside the matching criterion on `16`. §11's
+      channel decision is that alert state travels *inside the payload* and nowhere else,
+      so until this field exists every alert the host raises is invisible to its only
+      reader, and task `22`'s alert surface has nothing to render. `bulletin()` returns the
+      whole open set on every publish, deliberately: §11's alerts persist until resolved,
+      so a cached payload must carry all of them rather than a delta. This lands inside the
+      first `schema_version`, for the same reason `26a`'s budget does.
 - [ ] `last_seq` is **pairing-scoped**. The epoch is **not** part of `seq` (issue #8);
       `publish_epoch` is a diagnostic only.
 - [ ] The five §9.3a restore cases pass separately — see `03a`.
