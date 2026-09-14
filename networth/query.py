@@ -121,7 +121,13 @@ class NetWorthQuery:
             return None
 
         accounts = self._store.accounts.for_snapshot()
-        if len(accounts) != snapshot.counts.account_count:
+        unreconciled_account_count = sum(
+            account.reconciliation_state is ReconciliationState.NEW for account in accounts
+        )
+        if (
+            len(accounts) != snapshot.counts.account_count
+            or unreconciled_account_count != snapshot.counts.unreconciled_account_count
+        ):
             raise NetWorthQueryError(
                 "the active account population no longer matches the latest snapshot; "
                 "a new snapshot is required"
@@ -141,12 +147,7 @@ class NetWorthQuery:
         )
         display_state = self._staleness.display_state(
             (account.freshness for account in reads if account.freshness is not None),
-            item_states=(
-                account.item_state
-                for account in reads
-                if account.freshness is None and account.item_state is not None
-            ),
-            unreconciled_account_count=snapshot.counts.unreconciled_account_count,
+            unreconciled_account_count=sum(account.freshness is None for account in reads),
         )
         return NetWorthRead(snapshot=snapshot, accounts=reads, display_state=display_state)
 

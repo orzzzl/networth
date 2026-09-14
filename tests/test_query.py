@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 
@@ -21,7 +23,7 @@ from networth.model import (
     SnapshotAgeState,
     SourcedFigure,
 )
-from networth.query import NetWorthQuery, NetWorthQueryError
+from networth.query import AccountRead, NetWorthQuery, NetWorthQueryError, NetWorthRead
 from networth.snapshotter import Snapshotter
 from networth.storage import migrate
 from networth.store import Store
@@ -146,6 +148,23 @@ def add_observation(
     )
 
 
+def confirmed_read(db: sqlite3.Connection, store: Store, suffix: str) -> NetWorthRead:
+    item_id = add_item(db, suffix)
+    account_id = add_account(
+        db,
+        suffix,
+        item_id=item_id,
+        policy=FreshnessPolicy.SYNCED_BALANCE,
+    )
+    run_id = f"run-{suffix}"
+    add_run(db, run_id)
+    add_observation(store, run_id, account_id, 12_345)
+    Snapshotter(store).run(run_id, at=NOW)
+    result = NetWorthQuery(store).latest()
+    assert result is not None
+    return result
+
+
 def test_latest_keeps_the_total_age_and_per_account_staleness_together(
     db: sqlite3.Connection,
     store: Store,
@@ -219,7 +238,7 @@ def test_unreconciled_account_has_no_invented_value_and_requires_action(
     db: sqlite3.Connection,
     store: Store,
 ) -> None:
-    item_id = add_item(db, "new", state=ItemState.NEEDS_REAUTH)
+    item_id = add_item(db, "new")
     add_account(
         db,
         "new",
@@ -236,7 +255,7 @@ def test_unreconciled_account_has_no_invented_value_and_requires_action(
     assert snapshot.net_worth.value_minor == 0
     assert result.accounts[0].observation is None
     assert result.accounts[0].freshness is None
-    assert result.accounts[0].item_state is ItemState.NEEDS_REAUTH
+    assert result.accounts[0].item_state is ItemState.HEALTHY
     assert result.display_state is DisplayState.ACTION_NEEDED
 
 
@@ -338,6 +357,67 @@ def test_latest_refuses_to_pair_a_stale_snapshot_with_a_new_account_population(
         NetWorthQuery(store).latest()
 
 
+def test_latest_refuses_an_equal_size_relink_population_change(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    old_item = add_item(db, "relink-old")
+    old_account = add_account(
+        db,
+        "relink-old",
+        item_id=old_item,
+        policy=FreshnessPolicy.SYNCED_BALANCE,
+    )
+    add_run(db, "run-before-relink")
+    add_observation(store, "run-before-relink", old_account, 10_000)
+    Snapshotter(store).run("run-before-relink", at=NOW)
+
+    replacement_item = add_item(db, "relink-new")
+    replacement = add_account(
+        db,
+        "relink-new",
+        item_id=replacement_item,
+        policy=FreshnessPolicy.SYNCED_BALANCE,
+        reconciliation=ReconciliationState.NEW,
+        lineage_id=old_account,
+    )
+    db.execute(
+        """
+        UPDATE account
+        SET superseded_by_account_id = ?, superseded_at = ?
+        WHERE id = ?
+        """,
+        (replacement, NOW.isoformat().replace("+00:00", "Z"), old_account),
+    )
+
+    assert [account.id for account in store.accounts.for_snapshot()] == [replacement]
+    with pytest.raises(NetWorthQueryError, match="population.*new snapshot"):
+        NetWorthQuery(store).latest()
+
+
+def test_latest_refuses_a_just_reconciled_account_until_the_next_snapshot(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    item_id = add_item(db, "reconciled")
+    account_id = add_account(
+        db,
+        "reconciled",
+        item_id=item_id,
+        policy=FreshnessPolicy.SYNCED_BALANCE,
+        reconciliation=ReconciliationState.NEW,
+    )
+    add_run(db, "run-before-reconciliation")
+    Snapshotter(store).run("run-before-reconciliation", at=NOW)
+    db.execute(
+        "UPDATE account SET reconciliation_state = 'CONFIRMED' WHERE id = ?",
+        (account_id,),
+    )
+
+    with pytest.raises(NetWorthQueryError, match="population.*new snapshot"):
+        NetWorthQuery(store).latest()
+
+
 def test_late_backdated_manual_revision_does_not_redraw_the_latest_snapshot(
     db: sqlite3.Connection,
     store: Store,
@@ -376,6 +456,143 @@ def test_late_backdated_manual_revision_does_not_redraw_the_latest_snapshot(
     assert result is not None
     assert result.snapshot.net_worth.value_minor == 30_000
     assert result.accounts[0].observation == original
+
+
+def test_future_dated_manual_revision_is_not_used_before_it_takes_effect(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    account_id = add_account(
+        db,
+        "future-property",
+        item_id=None,
+        policy=FreshnessPolicy.MANUAL_STATIC,
+    )
+    add_run(db, "run-current-property", at=NOW - timedelta(days=2))
+    current = store.observations.append(
+        revision_draft(
+            sync_run_id="run-current-property",
+            account_id=account_id,
+            valuation=PropertyValuation(30_000, "USD", NOW - timedelta(days=30)),
+            observed_at=NOW - timedelta(days=2),
+        )
+    )
+    add_run(db, "run-future-property", at=NOW - timedelta(days=1))
+    store.observations.append(
+        revision_draft(
+            sync_run_id="run-future-property",
+            account_id=account_id,
+            valuation=PropertyValuation(99_000, "USD", NOW + timedelta(days=7)),
+            observed_at=NOW - timedelta(days=1),
+        )
+    )
+    add_run(db, "run-property-snapshot")
+    Snapshotter(store).run("run-property-snapshot", at=NOW)
+
+    result = NetWorthQuery(store).latest()
+
+    assert result is not None
+    assert result.snapshot.net_worth.value_minor == 30_000
+    assert result.accounts[0].observation == current
+
+
+def test_freshness_is_evaluated_at_the_snapshot_instant(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    item_id = add_item(db, "evaluation-instant")
+    account_id = add_account(
+        db,
+        "evaluation-instant",
+        item_id=item_id,
+        policy=FreshnessPolicy.SYNCED_BALANCE,
+    )
+    add_run(db, "run-evaluation-instant")
+    add_observation(
+        store,
+        "run-evaluation-instant",
+        account_id,
+        12_345,
+        observed_at=NOW - timedelta(hours=2),
+        source_as_of=NOW - timedelta(hours=37),
+    )
+    Snapshotter(store).run("run-evaluation-instant", at=NOW)
+
+    result = NetWorthQuery(store).latest()
+
+    assert result is not None
+    assert result.accounts[0].freshness is not None
+    assert result.accounts[0].freshness.state is FreshnessState.STALE
+    assert result.display_state is DisplayState.WAITING
+
+
+def test_account_read_rejects_wrong_field_types(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    base = confirmed_read(db, store, "account-read-types").accounts[0]
+    assert base.observation is not None
+    assert base.freshness is not None
+
+    with pytest.raises(TypeError, match="account must be"):
+        AccountRead(cast(Any, object()), base.observation, base.freshness, base.item_state)
+    with pytest.raises(TypeError, match="observation must be"):
+        AccountRead(base.account, cast(Any, object()), base.freshness, base.item_state)
+    with pytest.raises(TypeError, match="freshness must be"):
+        AccountRead(base.account, base.observation, cast(Any, object()), base.item_state)
+    with pytest.raises(TypeError, match="item_state must be"):
+        AccountRead(base.account, base.observation, base.freshness, cast(Any, object()))
+
+
+def test_account_read_pins_contribution_and_item_pairings(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    base = confirmed_read(db, store, "account-read-pairings").accounts[0]
+    assert base.observation is not None
+    assert base.freshness is not None
+
+    with pytest.raises(ValueError, match="confirmed account requires"):
+        AccountRead(base.account, None, None, base.item_state)
+    new_account = replace(base.account, reconciliation_state=ReconciliationState.NEW)
+    with pytest.raises(ValueError, match="unreconciled account carries neither"):
+        AccountRead(new_account, base.observation, base.freshness, base.item_state)
+    with pytest.raises(ValueError, match="item_state is present exactly"):
+        AccountRead(base.account, base.observation, base.freshness, None)
+
+
+def test_account_read_pins_freshness_clock_and_item_state(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    base = confirmed_read(db, store, "account-read-freshness").accounts[0]
+    assert base.observation is not None
+    assert base.freshness is not None
+
+    wrong_clock = replace(base.freshness, source_as_of=SOURCE_AS_OF - timedelta(minutes=1))
+    with pytest.raises(ValueError, match="source clock"):
+        AccountRead(base.account, base.observation, wrong_clock, base.item_state)
+    wrong_item_state = replace(base.freshness, item_state=ItemState.DEGRADED)
+    with pytest.raises(ValueError, match="same Item state"):
+        AccountRead(base.account, base.observation, wrong_item_state, base.item_state)
+
+
+def test_net_worth_read_pins_field_types_and_account_count(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    result = confirmed_read(db, store, "net-worth-read-invariants")
+
+    with pytest.raises(TypeError, match="snapshot must be"):
+        NetWorthRead(cast(Any, object()), result.accounts, result.display_state)
+    with pytest.raises(TypeError, match="accounts must be"):
+        NetWorthRead(result.snapshot, cast(Any, list(result.accounts)), result.display_state)
+    with pytest.raises(TypeError, match="accounts must be"):
+        NetWorthRead(result.snapshot, cast(Any, (object(),)), result.display_state)
+    with pytest.raises(TypeError, match="display_state must be"):
+        NetWorthRead(result.snapshot, result.accounts, cast(Any, object()))
+    with pytest.raises(ValueError, match="account_count"):
+        NetWorthRead(result.snapshot, (), result.display_state)
 
 
 @pytest.mark.parametrize("account_id", [True, 0, -1])
