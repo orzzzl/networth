@@ -44,12 +44,19 @@ the same code rather than a second implementation of it.
 :class:`~networth.tokenstore.TokenStore` under the ``flow_id``
 ``start-hosted-link`` printed, and ``client_id``/``secret`` from ``/etc/networth``.
 
-*``--from-tty`` (``zelengs-macbook-air-2``).* All three are prompted for and never
-echoed, never written and never in shell history. This is (iv): the same Plaid
-credentials, a different machine, **the VPS taking no part in either API call**. The
-``link_token`` is prompted for too rather than passed in ``argv``, because the thing
-that has to cross VPS→Mac is exactly one string and `argv` is the one place it would
-persist.
+*``--from-tty --flow <id>`` (``zelengs-macbook-air-2``).* ``client_id`` and the
+secret are prompted for on **the controlling terminal**, never echoed, never written
+and never in shell history; the ``link_token`` comes from **this Mac's recovery
+record**, which ``scripts/link-start.sh`` wrote and verified at mint time. This is
+(iv): the same Plaid credentials, a different machine, **the VPS taking no part in
+either API call**.
+
+**Two prompts rather than three, and that is the shape ``07b`` inherits.** §19 step
+2a's procedure is already written — *"it already holds the recovery record and the
+``link_token``; it will prompt you for ``client_id`` and the secret"* — and ``06a``'s
+job is to be the first form of that command rather than a rehearsal of a different
+one. A third prompt would also have meant the owner pasting token material by hand,
+which is the manual copy step F7's design removes.
 
 **``--from-tty`` persists nothing, and that is a rule rather than a simplification.**
 §15 keeps ``access_token``s off this laptop; the Mac holds the backup key and the
@@ -62,10 +69,13 @@ answer the question and widen the machine while doing it.
 from __future__ import annotations
 
 import argparse
-import getpass
+import os
 import sys
+import termios
 
+from networth import link_recovery
 from networth.config import ConfigError
+from networth.link_recovery import LinkRecoveryError
 from networth.plaid.client import (
     ExchangedItem,
     LinkSessionShape,
@@ -94,14 +104,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--flow",
         metavar="ID",
-        help="the flow id start-hosted-link printed; reads its link_token from this host",
+        help=(
+            "the flow id the mint printed; names the link_token to use — from this "
+            "host's TokenStore, or from this Mac's recovery record with --from-tty"
+        ),
     )
     parser.add_argument(
         "--from-tty",
         action="store_true",
         help=(
-            "prompt for client_id, secret and link token instead of reading this "
-            "host's files — measurement (iv), run from the Mac. Persists nothing"
+            "read the link token from this Mac's recovery record and prompt on the "
+            "terminal for client_id and secret — measurement (iv). Persists nothing"
         ),
     )
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -122,22 +135,74 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _prompt_credentials(environment: PlaidEnvironment) -> tuple[PlaidCredentials, str]:
-    """Three prompts, none echoed and none reaching ``argv`` or the shell's history.
+def _read_from_tty(prompt: str) -> str:
+    """One line from the **controlling terminal**, echo off, or a refusal.
 
-    ``getpass`` reads from ``/dev/tty`` where it can, so this still refuses to be fed
-    from a pipe on a terminal-less host rather than silently accepting whatever was
-    on stdin — which would put the secret in a shell history one redirect later.
+    ``getpass.getpass`` is what this used to call and it is the wrong tool here,
+    measured rather than assumed: fed three synthetic lines on stdin with no terminal
+    available, it *accepted all three* and returned normally, warning
+    ``GetPassWarning: Can not control echo on the terminal``. That fallback is the
+    whole hazard — ``06a``'s Mac command reads a Plaid secret, and a prompt that
+    silently reads a pipe is one ``<<<`` away from putting that secret in a shell
+    history, a CI log, or a process's argv. **A warning is not a refusal.**
+
+    So the terminal is opened by name. ``/dev/tty`` *is* the controlling terminal by
+    definition, and a process that has none cannot open it (``ENXIO``) — which makes
+    the presence of a terminal the thing being tested, rather than whether stdin
+    happens to be a tty right now. Echo is turned off on that descriptor and restored
+    in a ``finally``, so a refusal partway through does not leave the owner's shell
+    silent.
     """
-    client_id = getpass.getpass("Plaid client_id (not echoed): ")
-    secret = getpass.getpass(f"Plaid {environment.value} secret (not echoed): ")
-    link_token = getpass.getpass("link token from the VPS (not echoed): ")
-    if not (client_id and secret and link_token):
-        raise ConfigError("all three prompts are required; nothing was read")
-    return (
-        PlaidCredentials(environment=environment, client_id=client_id, secret=secret),
-        link_token,
-    )
+    try:
+        descriptor = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError as exc:
+        raise ConfigError(
+            "--from-tty needs a controlling terminal and this process has none. "
+            "Run it from a terminal; piped or redirected input is refused rather "
+            "than read, because a Plaid secret read off a pipe has already been "
+            "written down somewhere"
+        ) from exc
+    try:
+        terminal = os.fdopen(descriptor, "r+", buffering=1, encoding="utf-8", errors="replace")
+    except OSError:
+        os.close(descriptor)
+        raise
+    with terminal:
+        try:
+            original = termios.tcgetattr(descriptor)
+        except termios.error as exc:
+            raise ConfigError("/dev/tty opened but is not a terminal we can silence") from exc
+        silenced = list(original)
+        silenced[3] = int(silenced[3]) & ~termios.ECHO
+        try:
+            termios.tcsetattr(descriptor, termios.TCSAFLUSH, silenced)
+            terminal.write(prompt)
+            terminal.flush()
+            line = terminal.readline()
+        finally:
+            termios.tcsetattr(descriptor, termios.TCSAFLUSH, original)
+            terminal.write("\n")
+            terminal.flush()
+    if not line:
+        raise ConfigError("the terminal closed before the prompt was answered")
+    return line.rstrip("\r\n")
+
+
+def _prompt_credentials(environment: PlaidEnvironment) -> PlaidCredentials:
+    """Two prompts, neither echoed and neither reaching ``argv`` or shell history.
+
+    **Two, not three.** The ``link_token`` is no longer asked for: ``link-start.sh``
+    puts it in this Mac's recovery record at mint time, and this verb reads it from
+    there. A third prompt would have rehearsed a call path ``07b`` does not have —
+    §19 step 2a's procedure is "it already holds the recovery record and the
+    ``link_token``, it will prompt you for ``client_id`` and the secret" — and
+    ``06a``'s job is to be the first form of that command, not a throwaway.
+    """
+    client_id = _read_from_tty("Plaid client_id (not echoed): ")
+    secret = _read_from_tty(f"Plaid {environment.value} secret (not echoed): ")
+    if not (client_id and secret):
+        raise ConfigError("both prompts are required; nothing was read")
+    return PlaidCredentials(environment=environment, client_id=client_id, secret=secret)
 
 
 def _link_token_from_this_host(environment: PlaidEnvironment, flow_id: str) -> str:
@@ -170,16 +235,21 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
             return 2
 
         if args.from_tty:
-            if args.flow:
+            if not args.flow:
                 print(
-                    "--flow and --from-tty are different credential sources; --from-tty "
-                    "prompts for the link token because this host has no token store "
-                    "for it",
+                    "--from-tty reads the link token from this Mac's recovery record, "
+                    "so --flow <id> is required; it is the id link-start.sh printed",
                     file=sys.stderr,
                 )
                 return 2
-            print("source        prompts (measurement (iv)); this host stores nothing")
-            credentials, link_token = _prompt_credentials(environment)
+            directory = link_recovery.mac_recovery_directory()
+            print(f"source        {directory} + two prompts (measurement (iv))")
+            # The record is read *before* the prompts on purpose. A missing record is
+            # the likeliest failure on this path, and discovering it after the owner
+            # has typed his Plaid secret would have spent the one thing this command
+            # asks of him for nothing.
+            link_token = link_recovery.load(directory, args.flow).link_token.reveal()
+            credentials = _prompt_credentials(environment)
         else:
             if not args.flow:
                 print("--flow is required unless --from-tty is given", file=sys.stderr)
@@ -192,7 +262,7 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
 
         client = PlaidClient(credentials)
         poll = client.link_token_get(link_token)
-    except (ConfigError, PlaidCallError, TokenStoreError) as exc:
+    except (ConfigError, PlaidCallError, TokenStoreError, LinkRecoveryError) as exc:
         # Every one of these redacts itself; printing `exc` is safe because of that
         # property, not because this handler checked anything.
         print(f"complete-hosted-link failed: {exc}", file=sys.stderr)
@@ -282,8 +352,14 @@ def _measure_duplicate_exchange(
         second = client.item_public_token_exchange(public_token)
     except PlaidCallError as exc:
         # The expected branch, and still recorded as an observation rather than as a
-        # pass: the error *code* is what 07a branches on.
+        # pass: the error *code* is what 07a branches on, so it is printed as its own
+        # line rather than left inside a message that deliberately carries no body.
+        # `error_code` is validated against the taxonomy's grammar by the client, so
+        # this line cannot become the place a Plaid error body reaches a transcript;
+        # `None` means Plaid sent no code we can name, which is itself the
+        # measurement and is never rendered as a code.
         print(f"  second      REFUSED — {exc}")
+        print(f"  error_code  {exc.error_code!r}")
     else:
         print(f"  second      ACCEPTED — request_id {second.request_id!r}")
         print(

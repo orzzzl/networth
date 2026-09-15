@@ -107,6 +107,14 @@ _MISSING = object()
 # promise total: no free text from a Plaid body can reach a log through here.
 _REQUEST_ID = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 
+#: Plaid's `error_code` taxonomy is SCREAMING_SNAKE_CASE. Narrower than
+#: :data:`_REQUEST_ID` on purpose: this is the one *classification* field lifted
+#: out of an error body, and the grammar is what makes lifting it safe. A body
+#: whose `error_code` is a sentence, a credential, or 400 bytes of anything
+#: matches nothing here and is dropped — so :class:`PlaidCallError` cannot be
+#: turned into a channel for the body it exists to withhold.
+_ERROR_CODE = re.compile(r"\A[A-Z][A-Z0-9_]{0,63}\Z")
+
 
 def _request_id_of(exc: ApiException) -> str | None:
     body = getattr(exc, "body", None)
@@ -138,7 +146,22 @@ class PlaidCallError(RuntimeError):
     ``secret``, and this message gets printed, logged and pasted into PRs. The
     step and the exception type locate the failure; Plaid's own dashboard has
     the rest, by request id.
+
+    ``error_code`` is the one exception, and it is **structured data rather than
+    message text**. Task ``06a``'s measurement (ii) has to record *which* code a
+    duplicate exchange is refused with, because ``07a``'s ``EXCHANGE_UNCERTAIN``
+    recovery branches on it — and a message that says only "HTTP 400" turns that
+    measurement into a run that proves the call was refused and cannot say why.
+    Keeping the code off ``str(self)`` is what lets both things be true at once:
+    every existing handler still prints a message with nothing in it, and the one
+    caller that needs the classification asks for it by name. It is *validated
+    rather than trusted*, against :data:`_ERROR_CODE`, so a body that carries
+    something else under that key is dropped rather than printed.
     """
+
+    def __init__(self, message: str, *, error_code: str | None = None) -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class _PlaidApi(Protocol):
@@ -836,9 +859,16 @@ class PlaidClient:
                 if reference is not None
                 else "the body carried no request id"
             )
+            code, _kind = _api_exception_fields(exc)
             raise PlaidCallError(
                 f"{step} failed: Plaid returned HTTP {exc.status} "
-                f"(body not shown — {where} in the Plaid dashboard)"
+                f"(body not shown — {where} in the Plaid dashboard)",
+                # Attached, never interpolated: the message is what gets printed
+                # by every handler that has ever existed, and it stays free of
+                # the body. A caller that wants the classification reads the
+                # attribute, which is how measurement (ii) records a code
+                # without widening the promise for everyone else.
+                error_code=code if code is not None and _ERROR_CODE.match(code) else None,
             ) from None
         except _TRANSPORT_ERRORS as exc:
             raise PlaidCallError(f"{step} failed: {type(exc).__name__}") from None

@@ -88,6 +88,10 @@ REAP_AFTER: Final = timedelta(hours=7)
 _FILE_MODE: Final = 0o600
 _DIR_MODE: Final = 0o700
 
+#: §15's inventoried location on ``zelengs-macbook-air-2``, beside the backup key.
+_DEFAULT_MAC_RECOVERY_DIRECTORY: Final = "~/agents/secrets/networth-link-recovery"
+RECOVERY_DIRECTORY_ENV: Final = "NETWORTH_LINK_RECOVERY_DIR"
+
 _FLOW_ID_RE: Final = re.compile(r"\A[0-9a-f]{32}\Z")
 
 #: Written into every record and checked on read. A record whose shape this
@@ -296,6 +300,26 @@ def record_has_no_deadline(text: str) -> bool:
 def reap_after_from(now: datetime) -> datetime:
     """The local hygiene bound, from **this** machine's clock. See :data:`REAP_AFTER`."""
     return _aware(now, field="now") + REAP_AFTER
+
+
+def mac_recovery_directory() -> Path:
+    """Where ``zelengs-macbook-air-2`` keeps its second copies (§15).
+
+    Resolved in one place because two programs on this Mac have to agree on it —
+    ``scripts/link-start.sh`` writes the record and ``complete-hosted-link
+    --from-tty`` reads it — and a path spelled twice is a path that drifts. There
+    is **no VPS fallback**: this directory belongs to the Mac, and ``AGENTS.md``
+    forbids either host's code reaching into the other's, which is exactly the
+    bug rev 13 of ``DESIGN.md`` described (VPS code opening a file on a laptop).
+
+    The environment variable exists so the tests can point it somewhere
+    disposable. It names a *directory*, never material, so overriding it moves
+    where a record is written and can never disclose one.
+    """
+    override = os.environ.get(RECOVERY_DIRECTORY_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path(_DEFAULT_MAC_RECOVERY_DIRECTORY).expanduser()
 
 
 def record_path(directory: Path, flow_id: str) -> Path:
