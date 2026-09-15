@@ -351,7 +351,179 @@ def test_start_hosted_link_is_reachable_and_is_the_only_verb_that_prints_a_url(
     # removed from the verb in PR #59 and must not return through the transport.
     script = Path("scripts/sandbox-rehearsal-remote.sh").read_text(encoding="utf-8")
     assert "--print-url" not in script
-    assert "complete-hosted-link" not in script, (
-        "complete-hosted-link needs --flow and a mode flag, and this runner forwards "
-        "neither; listing it would make it reachable and always broken"
+
+
+def test_complete_hosted_link_reaches_the_host_with_both_of_its_arguments(
+    tmp_path: Path,
+) -> None:
+    """The other half of 06a, and the reason this transport grew two options.
+
+    Until this existed the verb was on neither allow-list, deliberately: it takes
+    arguments and nothing here forwarded any, so listing it would have made it
+    reachable and always broken. The argument vector is read back from the stub
+    rather than inferred from the script's text — the mode decides whether a
+    `public_token` is spent, so "the script mentions --link-mode somewhere" is not
+    the property worth asserting.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+    sha = head_sha()
+    flow = "0123456789abcdef0123456789abcdef"
+
+    result = run(
+        sha,
+        "--verb",
+        "complete-hosted-link",
+        "--flow",
+        flow,
+        "--link-mode",
+        "retrieve-only",
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+            "NETWORTH_VPS_TARGET": "root@198.51.100.1",
+        },
     )
+
+    assert result.returncode == 0, result.stderr
+    argv = argv_log.read_text().splitlines()
+    assert argv[-1] == (
+        f"sudo -u networth -H bash -s -- {sha}  --verb complete-hosted-link "
+        f"--flow {flow} --link-mode retrieve-only"
+    )
+    # The mode is in the transcript, because the transcript outlives the run and
+    # `--exchange` and `--retrieve-only` differ by a spent lifetime slot.
+    assert "--retrieve-only" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("flow", "why"),
+    [
+        ("0123456789ABCDEF0123456789abcdef", "uppercase is not how new_flow_id spells it"),
+        ("0123456789abcdef0123456789abcde", "31 characters"),
+        ("0123456789abcdef0123456789abcdef0", "33 characters"),
+        ("0123456789abcdef0123456789abcde;", "a separator the shell would read"),
+        ("$(id)", "a substitution"),
+        ("../../etc/networth", "a path"),
+    ],
+)
+def test_a_flow_id_that_is_not_32_hex_characters_never_reaches_the_wire(
+    flow: str, why: str, tmp_path: Path
+) -> None:
+    """Checked against the grammar of a `flow_id`, not against a list of frightening
+    spellings — `uuid.uuid4().hex` is 32 lowercase hex characters and nothing else.
+
+    The `ssh` stub is absent from PATH so a refusal that did not land would fail this
+    test by connecting.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+
+    result = run(
+        FULL_SHA,
+        "--verb",
+        "complete-hosted-link",
+        "--flow",
+        flow,
+        "--link-mode",
+        "exchange",
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+        },
+    )
+
+    assert result.returncode == 2, why
+    assert "flow id" in result.stderr
+    assert not argv_log.exists(), "the refusal came after ssh was invoked"
+
+
+@pytest.mark.parametrize(
+    "link_mode",
+    ["--exchange", "exchange; id", "EXCHANGE", "retrieve", "", "exchange twice"],
+)
+def test_a_link_mode_outside_the_allow_list_never_reaches_the_wire(
+    link_mode: str, tmp_path: Path
+) -> None:
+    """Three plain words, and the flag is built from the one that matched.
+
+    `--exchange` is in this list on purpose: the allow-list holds words, so the
+    spelling that is *already* an option is not one of them. That is what keeps the
+    thing interpolated into the remote command from being an option nobody listed.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+
+    result = run(
+        FULL_SHA,
+        "--verb",
+        "complete-hosted-link",
+        "--flow",
+        "0123456789abcdef0123456789abcdef",
+        "--link-mode",
+        link_mode,
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "link mode" in result.stderr or "--link-mode needs a name" in result.stderr
+    assert not argv_log.exists(), "the refusal came after ssh was invoked"
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (("--verb", "complete-hosted-link", "--link-mode", "exchange"), "needs --flow"),
+        (
+            ("--verb", "complete-hosted-link", "--flow", "0" * 32),
+            "needs --link-mode",
+        ),
+        (
+            (
+                "--paths-only",
+                "--verb",
+                "complete-hosted-link",
+                "--flow",
+                "0" * 32,
+                "--link-mode",
+                "exchange",
+            ),
+            "no --paths-only form",
+        ),
+        (("--flow", "0" * 32, "--link-mode", "exchange"), "only to complete-hosted-link"),
+        (("--verb", "start-hosted-link", "--flow", "0" * 32), "only to complete-hosted-link"),
+    ],
+)
+def test_the_couplings_are_refused_before_a_connection_is_opened(
+    args: tuple[str, ...], expected: str, tmp_path: Path
+) -> None:
+    """Each of these otherwise fails on the far side of a hash-pinned install.
+
+    A caller who omits the mode would watch a venv get built before argparse told
+    him the run was never going to work, and one who passes `--flow` to a verb that
+    ignores it would get a *successful* run that measured nothing. Both are refused
+    on this Mac instead, which is the same placement as the verb allow-list and for
+    the same reason.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+
+    result = run(
+        FULL_SHA,
+        *args,
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+        },
+    )
+
+    assert result.returncode == 2
+    assert expected in result.stderr
+    assert not argv_log.exists(), "the refusal came after ssh was invoked"

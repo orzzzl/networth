@@ -472,3 +472,119 @@ def test_verb_with_nothing_after_it_is_a_usage_error_not_a_silent_default(
     assert result.returncode == 2
     assert "--verb needs a name" in result.stderr
     assert list(tmp_path.iterdir()) == []
+
+
+VALID_FLOW = "0123456789abcdef0123456789abcdef"
+
+
+@pytest.mark.parametrize(
+    "flow",
+    ["0123456789ABCDEF0123456789abcdef", "0" * 31, "0" * 33, "$(id)", "0" * 31 + ";"],
+)
+def test_the_runner_checks_the_flow_id_itself_and_does_not_trust_the_caller(
+    flow: str, tmp_path: Path
+) -> None:
+    """The transport validates this too, and that is not this check's justification.
+
+    The runner is what executes on the host holding the Plaid master credential, and
+    it is reachable by anything that can pipe a script to that user — the Mac-side
+    check is a convenience for the caller, not a guarantee to the callee. A `flow_id`
+    is `uuid.uuid4().hex`, so the grammar is 32 lowercase hex characters.
+    """
+    result = run(
+        FULL_SHA,
+        "--verb",
+        "complete-hosted-link",
+        "--flow",
+        flow,
+        "--link-mode",
+        "exchange",
+        tmpdir=tmp_path,
+    )
+
+    assert result.returncode == 2
+    assert "flow id" in result.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("link_mode", ["--exchange", "exchange; id", "EXCHANGE", "retrieve"])
+def test_the_runner_checks_the_link_mode_against_its_own_allow_list(
+    link_mode: str, tmp_path: Path
+) -> None:
+    """Three plain words. `--exchange` is refused on purpose: the list holds words,
+    and the flag is built from the word that matched — so the one spelling that is
+    already an option is not a value this ever accepts."""
+    result = run(
+        FULL_SHA,
+        "--verb",
+        "complete-hosted-link",
+        "--flow",
+        VALID_FLOW,
+        "--link-mode",
+        link_mode,
+        tmpdir=tmp_path,
+    )
+
+    assert result.returncode == 2
+    assert "link mode" in result.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (("--verb", "complete-hosted-link", "--link-mode", "exchange"), "needs --flow"),
+        (("--verb", "complete-hosted-link", "--flow", VALID_FLOW), "needs --link-mode"),
+        (
+            (
+                "--paths-only",
+                "--verb",
+                "complete-hosted-link",
+                "--flow",
+                VALID_FLOW,
+                "--link-mode",
+                "exchange",
+            ),
+            "no --paths-only form",
+        ),
+        (("--flow", VALID_FLOW, "--link-mode", "exchange"), "only to complete-hosted-link"),
+        (
+            ("--verb", "probe-hosted-link", "--link-mode", "exchange"),
+            "only to complete-hosted-link",
+        ),
+    ],
+)
+def test_the_runner_refuses_the_couplings_before_it_installs_anything(
+    args: tuple[str, ...], expected: str, tmp_path: Path
+) -> None:
+    """Every one of these is otherwise an argparse error at the end of a
+    hash-pinned install — or, for the last two, a *successful* run that silently
+    measured nothing the caller asked for."""
+    result = run(FULL_SHA, *args, tmpdir=tmp_path)
+
+    assert result.returncode == 2
+    assert expected in result.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_mode_flag_reaching_the_verb_is_built_from_the_allow_listed_word() -> None:
+    """The one assertion in this file that reads the script instead of running it,
+    and the reason is worth stating rather than hiding.
+
+    Reaching the module invocation means passing the credential check, and
+    `/etc/networth/plaid-sandbox.env` is a hardcoded path on the sync host by
+    deliberate design — "read where the owner installed it, never a copy". Making it
+    overridable so a test could reach past it would trade a real refusal for
+    coverage, which is the wrong direction. Its `--paths-only` sibling is reachable
+    and is tested by behaviour; this branch is not, and saying so here is better than
+    a test that pretends otherwise.
+
+    What is pinned is the property that matters: the option handed to the verb is
+    *constructed* from a word that matched the allow-list, so it cannot be a spelling
+    nobody listed, and the arguments are separate argv words rather than one
+    interpolated string.
+    """
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert '-m networth "$verb" --flow "$flow" "--$link_mode"' in script
+    assert 'readonly ALLOWED_LINK_MODES="retrieve-only exchange exchange-twice"' in script

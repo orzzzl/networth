@@ -101,15 +101,24 @@
 #
 # Usage, on the host, as the service user:
 #
-#   ./sandbox-rehearsal.sh <40-hex-commit> [--paths-only] [--verb <name>]
+#   ./sandbox-rehearsal.sh <40-hex-commit> [--paths-only] [--verb <name>] \
+#       [--flow <id>] [--link-mode <name>]
 #
 # --verb defaults to `rehearse-sandbox` (task 06). `probe-hosted-link` is task
 # 06a's F7 criterion 2: mint a Hosted Link token and poll it before completion.
 # `start-hosted-link` is task 06a's owner-run half: it mints a Sandbox session and
-# prints its URL, which is the widening described above.
+# prints its URL, which is the widening described above. `complete-hosted-link`
+# is the other end of that session and the only verb taking arguments of its own:
+# `--flow` names the session `start-hosted-link` minted and `--link-mode` says
+# which of 06a's three measurements to take. Neither has a default — the mode
+# decides whether a `public_token` is spent, and a default that exchanges is a
+# default that spends.
 #
 # `--paths-only` builds the environment and asks the verb which paths it selects,
-# then stops. It makes no Plaid call, so it is the safe first run.
+# then stops. It makes no Plaid call, so it is the safe first run. It has no
+# `complete-hosted-link` form: that verb selects the same two paths
+# `start-hosted-link --paths-only` already prints, so the combination is refused
+# rather than answered twice.
 
 set -euo pipefail
 
@@ -120,7 +129,12 @@ set -euo pipefail
 readonly REPO_URL="${NETWORTH_REHEARSAL_ORIGIN:-https://github.com/orzzzl/networth}"
 readonly CREDENTIAL="/etc/networth/plaid-sandbox.env"
 readonly DEFAULT_VERB="rehearse-sandbox"
-readonly ALLOWED_VERBS="rehearse-sandbox probe-hosted-link start-hosted-link"
+readonly ALLOWED_VERBS="rehearse-sandbox probe-hosted-link start-hosted-link complete-hosted-link"
+# Named without their leading dashes so the allow-list holds plain words and the
+# flag is *built* here from a word that matched one of them. A list of strings
+# that already look like options is one careless expansion away from carrying an
+# option nobody listed.
+readonly ALLOWED_LINK_MODES="retrieve-only exchange exchange-twice"
 readonly BUILD_REQUIREMENTS="requirements-build.txt"
 readonly RUNTIME_REQUIREMENTS="requirements-runtime.txt"
 
@@ -133,8 +147,10 @@ commit="${1:-}"
 shift || true
 mode=""
 verb="$DEFAULT_VERB"
+flow=""
+link_mode=""
 
-[ -n "$commit" ] || die "usage: $0 <40-hex-commit> [--paths-only] [--verb <name>]"
+[ -n "$commit" ] || die "usage: $0 <40-hex-commit> [--paths-only] [--verb <name>] [--flow <id>] [--link-mode <name>]"
 case "$commit" in
 *[!0-9a-f]* | "") die "'$commit' is not a full commit id: 40 lowercase hex characters, no branch, no tag — a ref that can move is not the thing that was reviewed" ;;
 esac
@@ -148,7 +164,17 @@ while [ "$#" -gt 0 ]; do
 		verb="${1:-}"
 		[ -n "$verb" ] || die "--verb needs a name; the allow-list is: $ALLOWED_VERBS"
 		;;
-	*) die "unknown argument '$1'; the options are --paths-only and --verb <name>" ;;
+	--flow)
+		shift || true
+		flow="${1:-}"
+		[ -n "$flow" ] || die "--flow needs the id start-hosted-link printed"
+		;;
+	--link-mode)
+		shift || true
+		link_mode="${1:-}"
+		[ -n "$link_mode" ] || die "--link-mode needs a name; the allow-list is: $ALLOWED_LINK_MODES"
+		;;
+	*) die "unknown argument '$1'; the options are --paths-only, --verb <name>, --flow <id> and --link-mode <name>" ;;
 	esac
 	shift || true
 done
@@ -157,11 +183,41 @@ done
 # into the command the caller sends over ssh, and the list of spellings that mean
 # something to a shell is not one anybody finishes writing — the SSH-option review
 # rounds on this project cost four cycles proving exactly that. The set of verbs
-# this runner may execute is three words long, so name them.
+# this runner may execute is four words long, so name them.
 case " $ALLOWED_VERBS " in
 *" $verb "*) ;;
 *) die "'$verb' is not a verb this runner may execute; the allow-list is: $ALLOWED_VERBS" ;;
 esac
+
+# `complete-hosted-link` is the first verb that needs arguments of its own, and
+# both of them are checked the way the commit is: against the grammar of the
+# thing itself, never against a list of spellings a shell might find
+# interesting. A `flow_id` is `uuid.uuid4().hex` (`tokenstore.new_flow_id`), so
+# 32 lowercase hex characters is the whole of it.
+if [ -n "$flow" ]; then
+	case "$flow" in
+	*[!0-9a-f]* | "") die "'$flow' is not a flow id: 32 lowercase hex characters, as start-hosted-link printed it" ;;
+	esac
+	[ "${#flow}" -eq 32 ] || die "'$flow' is not a flow id (32 hex characters)"
+fi
+
+if [ -n "$link_mode" ]; then
+	case " $ALLOWED_LINK_MODES " in
+	*" $link_mode "*) ;;
+	*) die "'$link_mode' is not a link mode; the allow-list is: $ALLOWED_LINK_MODES" ;;
+	esac
+fi
+
+# The couplings, refused here rather than left to argparse on the far side of an
+# install. Each one is a caller who will otherwise watch a venv get built before
+# being told the run was never going to work.
+if [ "$verb" = "complete-hosted-link" ]; then
+	[ "$mode" != "--paths-only" ] || die "complete-hosted-link has no --paths-only form; the paths it would print are the ones start-hosted-link --paths-only already prints for this environment"
+	[ -n "$flow" ] || die "complete-hosted-link needs --flow <id>: the flow id start-hosted-link printed"
+	[ -n "$link_mode" ] || die "complete-hosted-link needs --link-mode <name>; the allow-list is: $ALLOWED_LINK_MODES. There is no default: a default that exchanges is a default that spends"
+elif [ -n "$flow" ] || [ -n "$link_mode" ]; then
+	die "--flow and --link-mode mean something only to complete-hosted-link, and '$verb' would silently ignore them"
+fi
 
 # The environment refusal, before a single byte is installed. An unset variable
 # is fine — this script supplies sandbox itself — but a caller who set production
@@ -258,6 +314,12 @@ printf 'dependencies  installed from the reviewed lock, hash-verified\n\n'
 status=0
 if [ "$mode" = "--paths-only" ]; then
 	PYTHONPATH="$src" "$venv/bin/python" -m networth "$verb" --print-paths-only || status=$?
+elif [ -n "$link_mode" ]; then
+	# `--$link_mode` is built from a word that matched the allow-list above, so
+	# the option that reaches the verb is one of exactly three spellings. These
+	# are separate argv words rather than an interpolated string; nothing here
+	# goes through a shell again.
+	PYTHONPATH="$src" "$venv/bin/python" -m networth "$verb" --flow "$flow" "--$link_mode" || status=$?
 else
 	PYTHONPATH="$src" "$venv/bin/python" -m networth "$verb" || status=$?
 fi
