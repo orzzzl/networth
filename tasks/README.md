@@ -2139,8 +2139,10 @@ re-encrypting**.
       mutation-pinned; a benign constant must make a named test fail.
 - [ ] The publication ledger is success-only. A failed attempt rolls back, inserts no
       `publication` row, and does not advance `seq`; §6.4 monitoring uses the age of the
-      last committed success. Remove the unused `ok` / `error` failure shape from the
-      initial schema and stop claiming that this table records failed attempts.
+      last committed success. Add a numbered `0005` migration that removes
+      `publication.ok` and `publication.error` for fresh databases and databases already
+      at version 1 or later — do not edit `0001` and silently leave existing databases on
+      the old shape. Stop claiming that this table records failed attempts.
 
 This task owns §19 step 3.4's forever-after bind invariant. Task `16`, which depends on
 this row, owns the one-time live post-install comparison against the approved public
