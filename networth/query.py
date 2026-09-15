@@ -145,6 +145,16 @@ class NetWorthQuery:
             )
             for account in accounts
         )
+        reconstructed_total = sum(
+            account.observation.figure.value_minor * account.account.sign
+            for account in reads
+            if account.observation is not None
+        )
+        if reconstructed_total != snapshot.net_worth.value_minor:
+            raise NetWorthQueryError(
+                "the active account values no longer match the latest snapshot; "
+                "a new snapshot is required"
+            )
         display_state = self._staleness.display_state(
             (account.freshness for account in reads if account.freshness is not None),
             unreconciled_account_count=sum(account.freshness is None for account in reads),

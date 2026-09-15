@@ -418,6 +418,64 @@ def test_latest_refuses_a_just_reconciled_account_until_the_next_snapshot(
         NetWorthQuery(store).latest()
 
 
+def test_latest_refuses_offsetting_confirm_and_relink_until_the_next_snapshot(
+    db: sqlite3.Connection,
+    store: Store,
+) -> None:
+    old_item = add_item(db, "offset-old")
+    old_account = add_account(
+        db,
+        "offset-old",
+        item_id=old_item,
+        policy=FreshnessPolicy.SYNCED_BALANCE,
+    )
+    pending_item = add_item(db, "offset-pending")
+    pending_account = add_account(
+        db,
+        "offset-pending",
+        item_id=pending_item,
+        policy=FreshnessPolicy.SYNCED_BALANCE,
+        reconciliation=ReconciliationState.NEW,
+    )
+    add_run(db, "run-before-offsetting-actions")
+    add_observation(store, "run-before-offsetting-actions", old_account, 10_000)
+    add_observation(store, "run-before-offsetting-actions", pending_account, 7_000)
+    snapshot = Snapshotter(store).run("run-before-offsetting-actions", at=NOW)
+
+    db.execute(
+        "UPDATE account SET reconciliation_state = 'CONFIRMED' WHERE id = ?",
+        (pending_account,),
+    )
+    replacement_item = add_item(db, "offset-replacement")
+    replacement = add_account(
+        db,
+        "offset-replacement",
+        item_id=replacement_item,
+        policy=FreshnessPolicy.SYNCED_BALANCE,
+        reconciliation=ReconciliationState.NEW,
+        lineage_id=old_account,
+    )
+    db.execute(
+        """
+        UPDATE account
+        SET superseded_by_account_id = ?, superseded_at = ?
+        WHERE id = ?
+        """,
+        (replacement, NOW.isoformat().replace("+00:00", "Z"), old_account),
+    )
+
+    accounts = store.accounts.for_snapshot()
+    assert snapshot.net_worth.value_minor == 10_000
+    assert len(accounts) == snapshot.counts.account_count == 2
+    assert (
+        sum(account.reconciliation_state is ReconciliationState.NEW for account in accounts)
+        == snapshot.counts.unreconciled_account_count
+        == 1
+    )
+    with pytest.raises(NetWorthQueryError, match="values.*new snapshot"):
+        NetWorthQuery(store).latest()
+
+
 def test_late_backdated_manual_revision_does_not_redraw_the_latest_snapshot(
     db: sqlite3.Connection,
     store: Store,
