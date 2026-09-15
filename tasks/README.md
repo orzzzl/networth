@@ -2142,7 +2142,12 @@ re-encrypting**.
       last committed success. Add a numbered `0005` migration that removes
       `publication.ok` and `publication.error` for fresh databases and databases already
       at version 1 or later — do not edit `0001` and silently leave existing databases on
-      the old shape. Stop claiming that this table records failed attempts.
+      the old shape. The migration must preserve every `published_envelope` row, including
+      the active one, and keep `publication_seq_must_increase` in force: rebuilding
+      `publication` otherwise cascades into `published_envelope` and drops the trigger.
+      Pin both invariants with a test that migrates a database containing a publication
+      and its active envelope, then rejects an out-of-order `seq`. Stop claiming that this
+      table records failed attempts.
 
 This task owns §19 step 3.4's forever-after bind invariant. Task `16`, which depends on
 this row, owns the one-time live post-install comparison against the approved public
