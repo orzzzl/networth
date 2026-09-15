@@ -317,16 +317,21 @@ def test_print_url_is_not_a_thing_this_transport_can_forward(tmp_path: Path) -> 
     assert not argv_log.exists()
 
 
-def test_start_hosted_link_is_reachable_and_is_the_only_verb_that_prints_a_url(
+def test_start_hosted_link_is_reachable_and_no_verb_gained_a_url_flag(
     tmp_path: Path,
 ) -> None:
     """The widening, pinned: one allow-list entry, and no new flag anywhere.
 
-    `start-hosted-link` is task 06a's owner-run half and it exists to put a hosted
-    URL on his screen, so the transport has to carry it. What must *not* have come
-    with it is a way to make some other verb print one — the refusal this script's
-    header describes is an absence of options, and an absence is exactly what stops
-    being checked once the headline case is allowed through.
+    `start-hosted-link` is task 06a's owner-run half, so the transport has to carry
+    it. What must *not* have come with it is a way to make any verb print a URL —
+    the refusal this script's header describes is an absence of options, and an
+    absence is exactly what stops being checked once the headline case is allowed
+    through.
+
+    **Since PR #75 no verb reachable here prints a URL at all**: `start-hosted-link`
+    emits a marked payload that `scripts/link-start.sh` pipes into
+    `absorb-hosted-link`, which is where the URL is shown. So this test pins the
+    absence of the flag, and `test_link_start_script.py` pins who does the showing.
     """
     key = tmp_path / "key"
     key.write_text("not a real key")

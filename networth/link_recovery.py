@@ -114,6 +114,14 @@ FORBIDDEN_FIELDS: Final = frozenset(
 )
 
 
+#: The one line of a VPS transcript the Mac is meant to read rather than show.
+#: A marker rather than "the last line" or "the JSON-looking one": the mint runs
+#: at the end of a transport that prints its own commit, origin, identity and
+#: workspace, so the driver is reading a mixed stream and has to identify the
+#: payload by something the stream cannot produce by accident.
+MINT_WIRE_MARKER: Final = "networth-link-mint-v1:"
+
+
 class LinkRecoveryError(Exception):
     """A recovery record could not be written, read back, or trusted."""
 
@@ -300,6 +308,108 @@ def record_has_no_deadline(text: str) -> bool:
 def reap_after_from(now: datetime) -> datetime:
     """The local hygiene bound, from **this** machine's clock. See :data:`REAP_AFTER`."""
     return _aware(now, field="now") + REAP_AFTER
+
+
+@dataclass(frozen=True, slots=True)
+class MintResult:
+    """What one machine's mint has to tell the other, and nothing more.
+
+    **Deliberately not a serialised** :class:`RecoveryRecord`. The record carries
+    two fields the VPS is not allowed to decide: ``reap_after``, which
+    :func:`reap_after_from` computes from *the Mac's* clock because deriving a
+    local deadline from a remote stamp is the cross-machine comparison §9.1 rule
+    1 refuses; and ``second_copy_verified_at``, which is a statement about a
+    write that has not happened yet. A wire format that carried them would let
+    the far side hand this machine a verification it never performed.
+
+    So the wire carries the mint's *observations* — and the hosted URL, which is
+    not part of the record at all and is the thing the driver is holding back
+    until the record is verified.
+
+    ``link_token`` is the credential here, so this object has the same
+    ``__repr__`` discipline as :class:`RecoveryRecord`: the timestamps render,
+    the material does not.
+    """
+
+    flow_id: str
+    link_token: Secret
+    minted_at: datetime
+    link_token_expires_at: datetime | None
+    url_lifetime_seconds: int | None
+    hosted_link_url: str
+
+    def __repr__(self) -> str:
+        return (
+            "MintResult(flow_id=<redacted>, link_token=<redacted>, "
+            f"minted_at={self.minted_at!r}, "
+            f"link_token_expires_at={self.link_token_expires_at!r}, "
+            f"url_lifetime_seconds={self.url_lifetime_seconds!r}, "
+            "hosted_link_url=<redacted>)"
+        )
+
+    def to_wire(self) -> str:
+        """One line: the marker, then compact JSON. Never more than one line.
+
+        The transcript this travels in is read line by line, so a payload that
+        could contain a newline would be a payload that could be split by the
+        stream it rides in. ``json.dumps`` escapes newlines, which is what makes
+        the single-line claim hold for any value rather than for the values we
+        expect.
+        """
+        payload = {
+            "flow_id": self.flow_id,
+            "link_token": self.link_token.reveal(),
+            "minted_at": self.minted_at.isoformat(),
+            "link_token_expires_at": (
+                None
+                if self.link_token_expires_at is None
+                else self.link_token_expires_at.isoformat()
+            ),
+            "url_lifetime_seconds": self.url_lifetime_seconds,
+            "hosted_link_url": self.hosted_link_url,
+        }
+        return MINT_WIRE_MARKER + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_wire(cls, line: str) -> MintResult:
+        if not line.startswith(MINT_WIRE_MARKER):
+            raise CorruptRecord("not a mint payload line")
+        try:
+            payload = json.loads(line[len(MINT_WIRE_MARKER) :])
+        except json.JSONDecodeError as exc:
+            # The value is never echoed. This is the branch where the remainder
+            # of the line is arbitrary, and it is arbitrary *and* adjacent to a
+            # link token — the one combination that must not reach a message.
+            raise CorruptRecord("the mint payload is not JSON") from exc
+        if not isinstance(payload, dict):
+            raise CorruptRecord("the mint payload is not an object")
+        present = FORBIDDEN_FIELDS & set(payload)
+        if present:
+            raise CorruptRecord(
+                f"the mint payload carries {sorted(present)}, which mint time cannot know (§4)"
+            )
+        try:
+            return cls(
+                flow_id=payload["flow_id"],
+                link_token=Secret(payload["link_token"]),
+                minted_at=_aware(datetime.fromisoformat(payload["minted_at"]), field="minted_at"),
+                link_token_expires_at=_optional_instant(payload, "link_token_expires_at"),
+                url_lifetime_seconds=payload["url_lifetime_seconds"],
+                hosted_link_url=payload["hosted_link_url"],
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CorruptRecord("the mint payload is missing or misshapes a field") from exc
+
+    def as_record(self, *, now: datetime) -> RecoveryRecord:
+        """The record this Mac will write, with **this machine's** reap deadline."""
+        return RecoveryRecord(
+            flow_id=self.flow_id,
+            link_token=self.link_token,
+            minted_at=self.minted_at,
+            link_token_expires_at=self.link_token_expires_at,
+            url_lifetime_seconds=self.url_lifetime_seconds,
+            reap_after=reap_after_from(now),
+        )
 
 
 def mac_recovery_directory() -> Path:

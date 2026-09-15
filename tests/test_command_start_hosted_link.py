@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from networth import link_recovery
 from networth.cli import discover
 from networth.commands import probe_hosted_link, start_hosted_link
 from networth.plaid import environment as environment_module
@@ -159,13 +160,18 @@ def test_the_url_is_printed_and_the_link_token_is_durable_under_its_flow_id(
     )
 
 
-def test_the_link_token_itself_is_never_printed(
+def test_the_token_leaves_only_on_the_marked_payload_line_and_the_url_not_at_all(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The URL is spendable and is printed on purpose; the token is not and is not.
+    """The two things this verb holds, and where each one is allowed to go.
 
-    They travel together through this verb, which is exactly when one gets printed
-    beside the other by accident.
+    The token now *does* leave the process — that is how the Mac gets its second
+    copy — but on exactly one line, marked, for a pipe to read. Every other line is
+    the transcript the owner watches, and none of them may carry it.
+
+    The URL goes the other way: it does not leave here at all. §4 wants the second
+    copy verified before any URL is shown, this process runs on the VPS, so a URL
+    printed here is by construction one printed before that copy exists.
     """
     _install(monkeypatch, tmp_path, env="sandbox")
     _over_a_fake_sdk(monkeypatch, FakeSandboxApi())
@@ -173,8 +179,44 @@ def test_the_link_token_itself_is_never_printed(
     assert start_hosted_link.run(_args()) == 0
 
     captured = capsys.readouterr()
-    assert LINK_TOKEN not in captured.out
+    payloads = [
+        line
+        for line in captured.out.splitlines()
+        if line.startswith(link_recovery.MINT_WIRE_MARKER)
+    ]
+    assert len(payloads) == 1
+    assert LINK_TOKEN in payloads[0]
+    transcript = "\n".join(
+        line
+        for line in captured.out.splitlines()
+        if not line.startswith(link_recovery.MINT_WIRE_MARKER)
+    )
+    assert LINK_TOKEN not in transcript
     assert LINK_TOKEN not in captured.err
+    assert HOSTED_LINK_URL not in transcript
+    assert HOSTED_LINK_URL not in captured.err
+
+
+def test_a_terminal_on_stdout_is_refused_before_anything_is_minted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A terminal keeps what it is shown -- scrollback, a `script` capture, a photo.
+
+    The payload carries a `link_token`, so the destination is checked rather than
+    assumed, and it is checked *before* the mint: a refusal that happened after would
+    have created a Plaid session nobody can reach.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    api = FakeSandboxApi()
+    _over_a_fake_sdk(monkeypatch, api)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+
+    assert start_hosted_link.run(_args()) == 2
+
+    captured = capsys.readouterr()
+    assert "stdout is a terminal" in captured.err
+    assert "link_token_create" not in api.called, "a session was minted for a refused run"
+    assert link_recovery.MINT_WIRE_MARKER not in captured.out
 
 
 def test_a_failed_store_prints_no_url_at_all(

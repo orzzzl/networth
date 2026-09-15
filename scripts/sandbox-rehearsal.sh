@@ -74,12 +74,25 @@
 #     anywhere that turns a URL on for a verb that does not print one, so refusal
 #     (1) is untouched for `probe-hosted-link` and `rehearse-sandbox`, and a test
 #     still asserts it;
-#   - the URL is **Sandbox-only** — `start-hosted-link` refuses any other
-#     environment before the credential is read, so what lands in a transcript can
-#     spend nothing that counts against the ten lifetime slots; and
-#   - the verb makes the `link_token` durable *before* it prints, so a URL on a
-#     transcript always has a surviving handle to `/link/token/get`. A printed URL
-#     with no handle is the expensive outcome, and it is the one that verb refuses.
+#   - it is **Sandbox-only** — `start-hosted-link` refuses any other environment
+#     before the credential is read, so nothing that reaches a transcript here can
+#     spend anything counting against the ten lifetime slots; and
+#   - the verb makes the `link_token` durable *before* it emits anything.
+#
+# **AND THE URL IS NO LONGER WHAT REACHES THIS TRANSCRIPT — A `link_token` IS.**
+# *(Task 06a, PR #75 review, option A.)* §4 requires the second copy of the
+# recovery record to be on `zelengs-macbook-air-2` and read back before any URL is
+# shown, and a verb running here cannot satisfy that. So `start-hosted-link` no
+# longer prints a URL at all: it emits one marked line carrying the mint result,
+# `scripts/link-start.sh` pipes this transcript into `networth absorb-hosted-link`
+# on the Mac, and that verb writes the copy, verifies it, and prints the URL.
+#
+# **What that changes for anyone attaching a transcript to a PR**: the sensitive
+# line is no longer an openable URL, it is a credential. The verb refuses to run
+# with a terminal on stdout, and the driver consumes the line rather than showing
+# it — but a transcript captured by redirecting this script's stdout to a file
+# would contain it. `scripts/link-start.sh` is the only supported caller for this
+# verb, and it is the one that makes the line go nowhere.
 #
 # What a reader must not conclude from this paragraph: that the refusals were
 # soft. They were not, and the Production half of them is unchanged — task 08
@@ -107,7 +120,7 @@
 # --verb defaults to `rehearse-sandbox` (task 06). `probe-hosted-link` is task
 # 06a's F7 criterion 2: mint a Hosted Link token and poll it before completion.
 # `start-hosted-link` is task 06a's owner-run half: it mints a Sandbox session and
-# prints its URL, which is the widening described above. `complete-hosted-link`
+# emits it for the Mac-side driver, which is the widening described above. `complete-hosted-link`
 # is the other end of that session and the only verb taking arguments of its own:
 # `--flow` names the session `start-hosted-link` minted and `--link-mode` says
 # which of 06a's three measurements to take. Neither has a default — the mode
