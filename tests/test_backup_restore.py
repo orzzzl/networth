@@ -14,12 +14,13 @@ from pathlib import Path
 import pytest
 
 from networth.backup.archive import CURRENT_ARCHIVE, BackupBuilder, verify_archive
-from networth.backup.crypto import AuthenticationError, open_sealed, seal
+from networth.backup.crypto import open_sealed, seal
 from networth.backup.drill import run_restore_drill
 from networth.backup.puller import PENDING_REPORTS, CurrentReceipt, LocalBackupState
 from networth.backup.restore import RestoreError, restore_archive, restored_files_are_private
 from networth.backup.state import BackupStateStore
 from networth.backup.transport import FetchedArchive, RemoteProbe, TransportError
+from networth.payload import PayloadAuthenticationError, PayloadEnvelope, open_payload, seal_payload
 from networth.storage import migrate
 from networth.tokenstore import SecretKind, TokenStore, new_flow_id
 
@@ -33,14 +34,26 @@ class _ReplayVerdict(StrEnum):
     REFUSED = "refused"
 
 
-def _envelope(pairing_id: str, seq: int, key: bytes) -> bytes:
-    return seal(
-        json.dumps(
-            {"pairing_id": pairing_id, "seq": seq},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode(),
+def _envelope(pairing_id: str, seq: int, key: bytes) -> PayloadEnvelope:
+    published_at = "2026-09-07T09:00:00.000000Z"
+    plaintext = json.dumps(
+        {
+            "schema_version": "1",
+            "pairing_id": pairing_id,
+            "seq": str(seq),
+            "published_at": published_at,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return seal_payload(
+        plaintext,
         key,
+        schema_version="1",
+        pairing_id=pairing_id,
+        seq=str(seq),
+        published_at=published_at,
+        nonce=seq.to_bytes(12, "big"),
     )
 
 
@@ -53,10 +66,10 @@ class _PairingScopedGuard:
     last_seq: int | None = None
     downgrade_warning: bool = False
 
-    def receive(self, candidate: bytes) -> _ReplayVerdict:
+    def receive(self, candidate: PayloadEnvelope) -> _ReplayVerdict:
         try:
-            raw = json.loads(open_sealed(candidate, self.key))
-        except (AuthenticationError, UnicodeDecodeError, json.JSONDecodeError):
+            raw = json.loads(open_payload(candidate, self.key))
+        except (PayloadAuthenticationError, UnicodeDecodeError, json.JSONDecodeError):
             self.downgrade_warning = True
             return _ReplayVerdict.REFUSED
         if not isinstance(raw, dict):
@@ -65,18 +78,23 @@ class _PairingScopedGuard:
         pairing_id, seq = raw.get("pairing_id"), raw.get("seq")
         if (
             pairing_id != self.pairing_id
-            or not isinstance(seq, int)
-            or isinstance(seq, bool)
-            or seq <= 0
+            or pairing_id != candidate.pairing_id
+            or not isinstance(seq, str)
+            or not seq.isdecimal()
+            or seq != candidate.seq
         ):
             self.downgrade_warning = True
             return _ReplayVerdict.REFUSED
-        if self.last_seq is not None and seq < self.last_seq:
+        parsed_seq = int(seq)
+        if parsed_seq <= 0:
             self.downgrade_warning = True
             return _ReplayVerdict.REFUSED
-        if self.last_seq == seq:
+        if self.last_seq is not None and parsed_seq < self.last_seq:
+            self.downgrade_warning = True
+            return _ReplayVerdict.REFUSED
+        if self.last_seq == parsed_seq:
             return _ReplayVerdict.UNCHANGED
-        self.last_seq = seq
+        self.last_seq = parsed_seq
         self.downgrade_warning = False
         return _ReplayVerdict.ACCEPTED
 
