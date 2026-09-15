@@ -110,7 +110,7 @@ that row. He caught it, not us.)
 | 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | **DONE** (#74, 2026-09-15) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **READY** |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | BLOCKED (20) |
-| 21 | Flutter app skeleton | 19 | **claude** | codex | **READY** |
+| 21 | Flutter app skeleton | 19 | **claude** | codex | **WIP** (#77) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | BLOCKED (21) |
 | 24 | Release signing + APK delivery | 20, 21, 22 | **claude** | codex | BLOCKED |
