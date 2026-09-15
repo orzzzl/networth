@@ -1,4 +1,4 @@
-"""The Mac's second copy of a Link flow's recovery record (`DESIGN.md` §16).
+"""The Mac's second copy of a Link flow's recovery record (`DESIGN.md` §4, §15).
 
 Every test here is about one of three properties, because those are the three
 this record exists for and the three a later refactor can quietly destroy:
@@ -137,7 +137,7 @@ def test_reap_after_is_generous_by_construction() -> None:
 
     Reaping late costs one inert file; reaping early destroys the disaster copy
     while the flow is still live. The bound must stay on the late side of every
-    clock in §16's table.
+    clock in §4's probe table.
     """
     every_clock_in_the_table = timedelta(minutes=30) + timedelta(minutes=30) + timedelta(hours=6)
 
@@ -335,7 +335,7 @@ def test_a_write_that_fails_raises_the_refusal_type(
         link_recovery.store_and_verify(tmp_path, a_record(), holder="mac", now=NOW)
 
 
-# --- deletion: the two callers §16 allows ---------------------------------------
+# --- deletion: the two callers §4 allows ----------------------------------------
 
 
 def test_delete_removes_the_record_and_reports_whether_it_was_there(tmp_path: Path) -> None:

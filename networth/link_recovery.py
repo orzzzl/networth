@@ -1,6 +1,7 @@
 """The second copy of a Link flow's recovery record, held by the Mac.
 
-**Why a copy on a second machine exists at all** (`DESIGN.md` §16, rev 17). The
+**Why a copy on a second machine exists at all** (`DESIGN.md` §4, rev 17; the
+disaster row it answers is in §14a.1, and §15 inventories the file). The
 `link_token` is the key to `/link/token/get`, and by **F7** that call is the only
 way a completed Hosted Link session's `public_token` can be retrieved — there is
 no frontend integration, so nothing ever appears in the owner's browser to paste.
@@ -36,15 +37,23 @@ discipline §8.1 applies to data). ``link_token_expires_at`` is **Plaid's**: the
 long the hosted URL stays openable, and it is *not echoed back*, so ``None`` means
 "did not ask, Plaid's default applies, we do not know it" rather than any number.
 
-    **Divergence from `DESIGN.md` §16, raised rather than absorbed.** §16 names
-    this field ``hosted_url_expires_at``. What the mint response actually carries
-    is the *link token's* expiry, and the URL's lifetime is the other clock — the
-    one that is never echoed back. Storing Plaid's number under a name that says
+    **Divergence from `DESIGN.md`, raised rather than absorbed.** The document
+    names this field ``hosted_url_expires_at`` in **three** places — §4's
+    narrative, §7's ``link_flow`` table, and §15's secrets inventory — so this is
+    not one sentence to reword. What the mint response actually carries is the
+    *link token's* expiry, and the URL's lifetime is the other clock, the one
+    that is never echoed back. Storing Plaid's number under a name that says
     "URL" would merge exactly the two clocks this project keeps separating, and
     it would do it inside the record the disaster procedure reads. The field is
     therefore named for what it holds. **The document and this module disagree on
     a name and agree on the content**; which one changes is a review decision,
     not one this module should make quietly.
+
+    §7's copy is the one to look at first: its comment reads "30 minutes for a
+    hosted link **token**, measured (§4)" directly under a column named for the
+    **URL**, and §4's probe table measured the token lifetime while listing
+    ``url_lifetime_seconds`` as a separate request parameter that "can widen it".
+    The two clocks are already named in the same breath there.
 
 ``reap_after`` is computed **from this machine's clock, at the moment the record
 is created** — deliberately not ``minted_at + …``. ``minted_at`` is stamped on the
@@ -68,7 +77,7 @@ from typing import Any, Final
 from networth.tokenstore import Secret
 
 #: ``30 min`` URL lifetime + ``30 min`` token lifetime + ``6 h`` session retention,
-#: rounded up (`DESIGN.md` §16). A *local hygiene bound*, not a recovery deadline:
+#: rounded up (`DESIGN.md` §4). A *local hygiene bound*, not a recovery deadline:
 #: nothing consults it to decide whether an exchange is still possible, and the
 #: real deadlines are derived from observed session timestamps once they exist.
 REAP_AFTER: Final = timedelta(hours=7)
@@ -89,7 +98,7 @@ SCHEMA: Final = "networth.link-recovery.1"
 
 #: Field names this record is **forbidden** to carry. Not a style rule: a
 #: deadline here is a number guessed from mint time that a later reader would
-#: treat as measured (§16, rev 18). See :func:`record_has_no_deadline`.
+#: treat as measured (§4, rev 18). See :func:`record_has_no_deadline`.
 FORBIDDEN_FIELDS: Final = frozenset(
     {
         "session_retention_expires_at",
@@ -248,7 +257,7 @@ class RecoveryRecord:
         present = FORBIDDEN_FIELDS & set(payload)
         if present:
             raise CorruptRecord(
-                f"recovery record carries {sorted(present)}, which mint time cannot know (§16)"
+                f"recovery record carries {sorted(present)}, which mint time cannot know (§4)"
             )
         try:
             return cls(
@@ -275,7 +284,7 @@ def _optional_instant(payload: dict[str, Any], field: str) -> datetime | None:
 def record_has_no_deadline(text: str) -> bool:
     """Whether a serialised record is free of guessed-deadline fields.
 
-    Exported so the rule §16 states in prose is *asserted* somewhere. A rule that
+    Exported so the rule §4 states in prose is *asserted* somewhere. A rule that
     lives only in a paragraph is one refactor away from being reintroduced, and
     the way this one comes back is someone helpfully adding the field a reader
     "obviously needs".
@@ -314,8 +323,8 @@ def store_and_verify(
 ) -> RecoveryRecord:
     """Write the record, ``fsync`` it, read it back, and stamp the verification.
 
-    This is §16's "copies the recovery record to this Mac and reads it back
-    **before it prints anything**". The read-back is a byte comparison against
+    This is §4's second copy: pulled to this Mac, ``fsync``ed and read back
+    **before the URL is printed**. The read-back is a byte comparison against
     what was written, not a re-parse of it, because a truncated file can still
     parse into an object that looks right.
 
@@ -380,7 +389,7 @@ def load(directory: Path, flow_id: str) -> RecoveryRecord:
 def delete(directory: Path, flow_id: str) -> bool:
     """Remove one flow's record; ``False`` if it was already gone.
 
-    §16 gives this two callers and no more: the driver deletes on a successful
+    §4 gives this two callers and no more: the driver deletes on a successful
     exchange (it holds the interactive key and has just read the outcome), and
     the unattended puller deletes on :meth:`RecoveryRecord.expired`. Anything
     that would need to ask the VPS for a flow's *status* is not implementable on
