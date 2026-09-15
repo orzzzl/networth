@@ -39,7 +39,7 @@ import argparse
 import sys
 from datetime import UTC, datetime
 
-from networth import link_recovery
+from networth import link_recovery, mac_identity
 from networth.link_recovery import LinkRecoveryError, MintResult
 
 SUMMARY = "Absorb a VPS mint on stdin, verify this Mac's copy, then show the URL (06a)."
@@ -103,11 +103,30 @@ def run(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Measured before the record is written, and the measurement *is* the value
+    # stamped into it. Passing a literal here — which is what this did until the
+    # PR #75 re-review — meant the field asserting which machine holds the second
+    # copy was the one field nobody had checked, so a run from any other checkout
+    # certified the wrong computer (`DESIGN.md` §4). There is deliberately no
+    # parameter to override `holder` with: the only way to name a holder is to be
+    # one.
+    try:
+        holder = mac_identity.verify()
+    except mac_identity.WrongHost as exc:
+        print(f"\nabsorb-hosted-link refused: {exc}", file=sys.stderr)
+        print(
+            "no record was written and no URL is printed. Nothing has been spent: "
+            "the slot goes when Link completes (F2a) and nobody has been given a URL "
+            "to complete. The link token on the VPS expires on Plaid's clock",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         record = link_recovery.store_and_verify(
             directory,
             result.as_record(now=datetime.now(UTC)),
-            holder="zelengs-macbook-air-2",
+            holder=holder,
             now=datetime.now(UTC),
         )
     except LinkRecoveryError as exc:

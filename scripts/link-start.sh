@@ -63,6 +63,15 @@ head="$(git rev-parse HEAD)"
 
 command -v uv >/dev/null || die "no uv on this Mac; the absorbing half runs from this checkout"
 
+# Asked before the mint rather than after it. `absorb-hosted-link` checks the same
+# thing before it writes the record — that is the check that matters, because it is
+# the one standing between a wrong machine and a record claiming otherwise — but by
+# the time the absorbing half runs, a live `link_token` exists on the VPS. Asking
+# here costs nothing and refuses while there is still nothing to refuse: by F2a no
+# slot can be spent through a token that was never minted.
+uv run --quiet networth verify-this-mac ||
+	die "this Mac is not the machine the second copy belongs on (the refusal above says which address it looked for). Nothing was minted"
+
 printf 'driver        %s (this Mac writes the second copy, and shows the URL)\n' "$0"
 printf 'commit        %s, on both halves\n' "$commit"
 printf 'recovery dir  %s\n\n' "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}"

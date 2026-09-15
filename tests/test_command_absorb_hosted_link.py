@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from networth import link_recovery
+from networth import link_recovery, mac_identity
 from networth.cli import discover
 from networth.commands import absorb_hosted_link
 from networth.link_recovery import MintResult, SecondCopyUnverified
@@ -58,6 +58,12 @@ def _feed(
 ) -> argparse.Namespace:
     monkeypatch.setenv(link_recovery.RECOVERY_DIRECTORY_ENV, str(tmp_path / "link-recovery"))
     monkeypatch.setattr("sys.stdin", io.StringIO("\n".join(lines) + "\n"))
+    # The absorber measures which machine it is on before it writes the holder
+    # field, so the suite has to say which machine it expects to be. Pointing it
+    # at an address every machine holds keeps the bind real — the check still has
+    # to pass for the record to exist — while letting these run off the Mac.
+    monkeypatch.setenv(mac_identity.ADDRESS_ENV, "127.0.0.1")
+    monkeypatch.setenv(mac_identity.HOLDER_ENV, "test-host")
     return argparse.Namespace(commit=COMMIT)
 
 
@@ -75,7 +81,11 @@ def test_the_url_appears_only_after_the_second_copy_reads_back(
     out = capsys.readouterr().out
     record = link_recovery.load(link_recovery.mac_recovery_directory(), FLOW_ID)
     assert record.link_token.reveal() == LINK_TOKEN
-    assert record.second_copy_holder == "zelengs-macbook-air-2"
+    # The holder is whatever the machine check verified, never a literal the
+    # absorber chose — which is the point of the field. Here that is the test
+    # identity; in production it is `zelengs-macbook-air-2`, and the refusal path
+    # below is what makes the difference observable.
+    assert record.second_copy_holder == "test-host"
     assert record.second_copy_verified_at is not None
     assert HOSTED_URL in out
     # Ordering, asserted as ordering: the verification line is above the URL in the
@@ -211,3 +221,48 @@ def test_the_next_command_carries_a_mode_and_therefore_parses(
         mode = words[words.index("--link-mode") + 1]
         parsed = parser.parse_args(["--flow", FLOW_ID, f"--{mode}"])
         assert parsed.flow == FLOW_ID
+
+
+def test_the_wrong_machine_writes_no_record_and_shows_no_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The blocker this check exists for, stated as an outcome rather than a call.
+
+    Before PR #75's re-review the holder field was a literal, so this run produced
+    a complete, valid-looking record on the wrong computer — and the URL with it.
+    The assertion that matters is not "verify was called": it is that the directory
+    is empty afterwards and no URL was printed.
+    """
+    args = _feed(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _wire()))
+    # An address no machine holds (RFC 5737), so the bind genuinely fails.
+    monkeypatch.setenv(mac_identity.ADDRESS_ENV, "192.0.2.1")
+
+    assert absorb_hosted_link.run(args) == 2
+
+    captured = capsys.readouterr()
+    assert HOSTED_URL not in captured.out
+    assert HOSTED_URL not in captured.err
+    # The token was on stdin and must not have been echoed while refusing.
+    assert LINK_TOKEN not in captured.out
+    assert LINK_TOKEN not in captured.err
+    directory = link_recovery.mac_recovery_directory()
+    assert not directory.exists() or list(directory.glob("*.json")) == []
+
+
+def test_the_holder_field_is_the_verified_identity_and_not_a_literal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two different verified identities produce two different stamps.
+
+    A hardcoded holder passes any single-value assertion, which is how the original
+    defect survived a green suite. Varying the identity is what distinguishes a
+    measurement from a constant: the record has to follow it.
+    """
+    args = _feed(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _wire()))
+    monkeypatch.setenv(mac_identity.HOLDER_ENV, "some-other-machine")
+
+    assert absorb_hosted_link.run(args) == 0
+    capsys.readouterr()
+
+    record = link_recovery.load(link_recovery.mac_recovery_directory(), FLOW_ID)
+    assert record.second_copy_holder == "some-other-machine"

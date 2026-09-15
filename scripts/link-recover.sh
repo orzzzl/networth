@@ -52,6 +52,18 @@ export NETWORTH_ENV=sandbox
 
 command -v uv >/dev/null || die "no uv on this Mac; this runs the verb from this checkout"
 
+# Before the record is read and before the owner is asked for anything. Measurement
+# (iv) is "does retrieval and exchange work **from the second host**", so a run on
+# some other machine does not produce a weaker version of that answer — it produces
+# a wrong one, recorded as evidence. Refusing here also means the two prompts never
+# happen on a machine that had no business collecting them.
+#
+# `hostname` is printed below for the transcript and is NOT the check: this Mac
+# answers `Zelengs-MacBook-Air.local`, which does not distinguish the owner's Airs
+# from each other. The address does; see `networth/mac_identity.py`.
+uv run --quiet networth verify-this-mac ||
+	die "this Mac is not the second host measurement (iv) is about (the refusal above says which address it looked for). Nothing was read and nothing was prompted for"
+
 printf 'host          %s (measurement (iv): the VPS takes no part in either call)\n' "$(hostname)"
 printf 'flow          %s\n' "$flow"
 printf 'recovery dir  %s\n' "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}"

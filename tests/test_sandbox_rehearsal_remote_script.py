@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from typing import IO, Any
 
 import pytest
 
@@ -550,7 +551,7 @@ def test_the_couplings_are_refused_before_a_connection_is_opened(
 
 
 def run_with_stdout(
-    *args: str, stdout: object, tmp_path: Path, env: dict[str, str] | None = None
+    *args: str, stdout: int | IO[Any], tmp_path: Path, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run the script with stdout pointed somewhere specific.
 
@@ -562,7 +563,7 @@ def run_with_stdout(
     environment.update(env or {})
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
-        stdout=stdout,  # type: ignore[arg-type]
+        stdout=stdout,
         stderr=subprocess.PIPE,
         text=True,
         cwd=str(REPO_ROOT),

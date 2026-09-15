@@ -46,6 +46,19 @@ def run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedPr
     )
 
 
+# The driver refuses to run anywhere but the Mac that holds the second copy, and a
+# CI runner is not that machine. Pointing the requirement at an address every
+# machine holds keeps the *measurement* real — the bind still has to succeed, and
+# the holder stamped in the record is still the one that was checked — while
+# letting the pipeline under test run anywhere. Without this the suite passed on
+# the developer's Mac and failed everywhere else, which was verified by pointing
+# it at an unheld address and watching three tests go red.
+ON_THIS_MACHINE = {
+    "NETWORTH_MAC_IDENTITY_ADDRESS": "127.0.0.1",
+    "NETWORTH_MAC_IDENTITY_HOLDER": "test-host",
+}
+
+
 def test_the_script_parses() -> None:
     assert subprocess.run(["bash", "-n", str(SCRIPT)]).returncode == 0
 
@@ -176,6 +189,7 @@ def test_the_url_is_printed_by_the_absorbing_half_after_the_record_exists(
             "NETWORTH_LINK_RECOVERY_DIR": str(recovery),
             "PATH": f"{_uv_stub(tmp_path)}:{os.environ['PATH']}",
             "PYTHONPATH": str(REPO_ROOT),
+            **ON_THIS_MACHINE,
         },
         timeout=180,
     )
@@ -220,6 +234,7 @@ def test_a_mint_this_mac_cannot_record_prints_no_url(tmp_path: Path) -> None:
             "NETWORTH_LINK_RECOVERY_DIR": str(blocker / "under-a-file"),
             "PATH": f"{_uv_stub(tmp_path)}:{os.environ['PATH']}",
             "PYTHONPATH": str(REPO_ROOT),
+            **ON_THIS_MACHINE,
         },
         timeout=180,
     )
@@ -243,6 +258,7 @@ def test_a_mint_half_that_fails_is_reported_as_the_mint_half(tmp_path: Path) -> 
             "NETWORTH_LINK_RECOVERY_DIR": str(tmp_path / "link-recovery"),
             "PATH": f"{_uv_stub(tmp_path)}:{os.environ['PATH']}",
             "PYTHONPATH": str(REPO_ROOT),
+            **ON_THIS_MACHINE,
         },
         timeout=180,
     )
@@ -266,3 +282,42 @@ def test_the_driver_names_which_half_failed() -> None:
     assert "this Mac did not record it" in source
     # `set -e` around a pipeline would exit before either message could be chosen.
     assert "set +e" in source
+
+
+def test_the_wrong_machine_is_refused_before_anything_is_minted(tmp_path: Path) -> None:
+    """Refused one step earlier than the absorber would have refused it.
+
+    The absorbing half checks the same thing before it writes the record, and that
+    is the check that protects the record's meaning. But by the time it runs, a live
+    `link_token` exists on the VPS. Asking here costs nothing and refuses while there
+    is still nothing to refuse — by F2a no slot can be spent through a token that was
+    never minted.
+
+    The witness is the transport stub's argv file: it is written on every call, so
+    its absence is the absence of the mint.
+    """
+    repo, sha = _throwaway_checkout(tmp_path, MINT_TRANSCRIPT)
+    recovery = tmp_path / "link-recovery"
+
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "link-start.sh"), sha],
+        capture_output=True,
+        text=True,
+        cwd=str(repo),
+        env={
+            **os.environ,
+            "NETWORTH_LINK_RECOVERY_DIR": str(recovery),
+            "PATH": f"{_uv_stub(tmp_path)}:{os.environ['PATH']}",
+            "PYTHONPATH": str(REPO_ROOT),
+            **ON_THIS_MACHINE,
+            # An address no machine holds (RFC 5737), so the bind genuinely fails.
+            "NETWORTH_MAC_IDENTITY_ADDRESS": "192.0.2.1",
+        },
+        timeout=180,
+    )
+
+    assert result.returncode != 0
+    assert "192.0.2.1" in result.stderr
+    assert not (tmp_path / "remote.argv").exists(), "the mint half ran anyway"
+    assert not recovery.exists() or list(recovery.glob("*.json")) == []
+    assert "hosted/synthetic" not in result.stdout
