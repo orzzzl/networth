@@ -433,3 +433,81 @@ def test_piped_input_is_refused_because_there_is_no_controlling_terminal(
     assert "piped-secret-never-read" not in transcript
     assert "GetPassWarning" not in transcript
     assert "the suite makes no live call" not in transcript, "a Plaid call was attempted"
+
+
+# --- the normal end of a record's life ----------------------------------------
+
+
+def _mac_record(now: datetime) -> Path:
+    directory = link_recovery.mac_recovery_directory()
+    link_recovery.store_and_verify(
+        directory,
+        link_recovery.RecoveryRecord(
+            flow_id=FLOW_ID,
+            link_token=Secret(LINK_TOKEN),
+            minted_at=now,
+            link_token_expires_at=None,
+            url_lifetime_seconds=None,
+            reap_after=link_recovery.reap_after_from(now),
+        ),
+        holder="test-host",
+        now=now,
+    )
+    return link_recovery.record_path(directory, FLOW_ID)
+
+
+def test_a_successful_exchange_removes_this_mac_s_recovery_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The record exists so a *stranded* flow can still be recovered (§4). An
+    exchanged flow cannot be stranded, so keeping its link token is residue — and
+    this is the only path that knows the exchange happened. Without it every
+    rehearsal left a file behind indefinitely, which is what the puller's sweep
+    then had to bound."""
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _store_the_link_token()
+    record = _mac_record(datetime(2026, 9, 15, 11, 0, tzinfo=UTC))
+    _over_a_fake_sdk(monkeypatch, _Finished())
+
+    assert complete_hosted_link.run(_args(exchange=True)) == 0
+
+    assert not record.exists()
+    assert "cleaned" in capsys.readouterr().out
+
+
+def test_retrieve_only_keeps_the_record_because_that_flow_is_still_live(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measurement (i) comes back to this same flow after 30 minutes and needs the
+    record to do it. Cleaning up here would delete the input to the measurement."""
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _store_the_link_token()
+    record = _mac_record(datetime(2026, 9, 15, 11, 0, tzinfo=UTC))
+    _over_a_fake_sdk(monkeypatch, _Finished())
+
+    assert complete_hosted_link.run(_args(retrieve_only=True)) == 0
+    capsys.readouterr()
+
+    assert record.exists()
+
+
+def test_a_cleanup_fault_is_a_note_and_never_fails_a_landed_exchange(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A non-zero exit here would tell the owner the exchange did not land, send him
+    to a recovery procedure for a finished flow, and be false."""
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _store_the_link_token()
+    _mac_record(datetime(2026, 9, 15, 11, 0, tzinfo=UTC))
+    _over_a_fake_sdk(monkeypatch, _Finished())
+
+    def refuse(*args: Any, **kwargs: Any) -> bool:
+        raise OSError("synthetic unlink failure")
+
+    monkeypatch.setattr(link_recovery, "delete", refuse)
+
+    assert complete_hosted_link.run(_args(exchange=True)) == 0
+
+    captured = capsys.readouterr()
+    assert "exchanged     1 public_token(s)" in captured.out
+    assert "was not removed" in captured.err

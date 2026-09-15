@@ -349,3 +349,121 @@ def test_delete_removes_the_record_and_reports_whether_it_was_there(tmp_path: Pa
 def test_loading_a_flow_with_no_record_says_so(tmp_path: Path) -> None:
     with pytest.raises(LinkRecoveryError, match="no recovery record"):
         link_recovery.load(tmp_path, new_flow_id())
+
+
+# --- the unattended sweep -----------------------------------------------------
+#
+# Until PR #75's re-review `delete()` had no caller outside this file, so every
+# record `link-start.sh` wrote stayed on the Mac for good: the normal path did not
+# clean up and nothing scanned for expiry. These tests are about the four states a
+# sweep can find, and the interesting one is the fourth.
+
+
+def _store(directory: Path, *, flow_id: str, now: datetime) -> Path:
+    link_recovery.store_and_verify(
+        directory, a_record(flow_id=flow_id, now=now), holder="test-host", now=now
+    )
+    return link_recovery.record_path(directory, flow_id)
+
+
+def test_an_expired_record_is_deleted(tmp_path: Path) -> None:
+    flow = "a" * 32
+    path = _store(tmp_path / "recovery", flow_id=flow, now=NOW)
+
+    outcome = link_recovery.reap_expired(tmp_path / "recovery", now=NOW + REAP_AFTER)
+
+    assert outcome.deleted == (flow,)
+    assert not path.exists()
+
+
+def test_a_live_record_is_kept(tmp_path: Path) -> None:
+    """Reaping early destroys the disaster copy while the flow is still live, which
+    is the expensive direction; reaping late costs one inert file."""
+    flow = "b" * 32
+    path = _store(tmp_path / "recovery", flow_id=flow, now=NOW)
+
+    outcome = link_recovery.reap_expired(
+        tmp_path / "recovery", now=NOW + REAP_AFTER - timedelta(seconds=1)
+    )
+
+    assert outcome.deleted == ()
+    assert outcome.kept == (flow,)
+    assert path.exists()
+
+
+def test_a_fresh_unreadable_record_is_reported_and_left_alone(tmp_path: Path) -> None:
+    """`store_and_verify` creates the file with `O_EXCL` and then writes into it,
+    with no temporary name — so a crash between those two steps leaves a real
+    `<flow>.json` holding a fragment. It may still be being written right now, and
+    it may hold a live token someone can salvage by hand, so a recent one stays."""
+    directory = link_recovery.ensure_directory(tmp_path / "recovery")
+    partial = directory / f"{'c' * 32}.json"
+    partial.write_text('{"schema":"networth.link-recovery.1","flow_id":', encoding="utf-8")
+
+    outcome = link_recovery.reap_expired(directory, now=NOW)
+
+    assert outcome.unreadable == ("c" * 32,)
+    assert outcome.discarded == ()
+    assert partial.exists()
+
+
+def test_an_old_unreadable_record_is_discarded_on_its_own_mtime(tmp_path: Path) -> None:
+    """The case an expiry-only sweep would keep **forever**.
+
+    A fragment has no readable `reap_after`, so "delete when expired" can never
+    fire on it — which reintroduces the permanent-record defect through the back
+    door. Its mtime is a local fact that needs no parsing, so the same bound
+    applies to the file instead of to its contents.
+    """
+    directory = link_recovery.ensure_directory(tmp_path / "recovery")
+    flow = "d" * 32
+    partial = directory / f"{flow}.json"
+    partial.write_text("{not json at all", encoding="utf-8")
+    stale = (NOW - REAP_AFTER - timedelta(hours=1)).timestamp()
+    os.utime(partial, (stale, stale))
+
+    outcome = link_recovery.reap_expired(directory, now=NOW)
+
+    assert outcome.discarded == (flow,)
+    assert outcome.unreadable == ()
+    assert not partial.exists()
+
+
+def test_a_sweep_separates_every_state_in_one_pass(tmp_path: Path) -> None:
+    """The real directory holds a mix, and one state must not shadow another."""
+    directory = link_recovery.ensure_directory(tmp_path / "recovery")
+    expired = "1" * 32
+    live = "2" * 32
+    fragment = "3" * 32
+    _store(directory, flow_id=expired, now=NOW - REAP_AFTER)
+    _store(directory, flow_id=live, now=NOW)
+    (directory / f"{fragment}.json").write_text("{", encoding="utf-8")
+
+    outcome = link_recovery.reap_expired(directory, now=NOW)
+
+    assert outcome.deleted == (expired,)
+    assert outcome.kept == (live,)
+    assert outcome.unreadable == (fragment,)
+    assert link_recovery.load(directory, live).flow_id == live
+
+
+def test_a_missing_directory_is_not_an_error(tmp_path: Path) -> None:
+    """The sweep runs inside an unattended backup pull on a Mac that may never have
+    minted anything. A hygiene pass must not be able to fail its host."""
+    outcome = link_recovery.reap_expired(tmp_path / "never-created", now=NOW)
+
+    assert outcome == link_recovery.ReapOutcome()
+    assert not outcome
+
+
+def test_files_that_are_not_records_are_left_untouched(tmp_path: Path) -> None:
+    """The directory is `~/agents/secrets/networth-link-recovery`, and a sweep that
+    deleted by pattern rather than by parse could take a neighbour with it."""
+    directory = link_recovery.ensure_directory(tmp_path / "recovery")
+    stranger = directory / "notes.txt"
+    stranger.write_text("not mine", encoding="utf-8")
+
+    outcome = link_recovery.reap_expired(directory, now=NOW + REAP_AFTER)
+
+    assert outcome == link_recovery.ReapOutcome()
+    assert stranger.exists()

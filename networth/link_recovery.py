@@ -66,6 +66,7 @@ disaster copy while the flow is still live.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -545,3 +546,98 @@ def _fsync_directory(directory: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+@dataclass(frozen=True, slots=True)
+class ReapOutcome:
+    """What one unattended sweep did, named per file so it can be journalled."""
+
+    deleted: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()
+    discarded: tuple[str, ...] = ()
+    unreadable: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.deleted or self.discarded)
+
+
+def reap_expired(directory: Path, *, now: datetime) -> ReapOutcome:
+    """Delete the records whose local hygiene bound has passed.
+
+    §4 bounds a *crashed* flow's record with :data:`REAP_AFTER` on **this
+    machine's** clock, and §15 is why the bound is all this can use: the
+    unattended puller authenticates with the restricted key, whose dispatcher
+    cannot ask the VPS for a flow's status. So this deletes on
+    :meth:`RecoveryRecord.expired` and on nothing else — it never decides that a
+    flow is finished, only that this copy of it has outlived its purpose.
+
+    **A record that will not parse is the interesting case**, and it is the one
+    the harness produces: :func:`store_and_verify` creates the file with
+    ``O_EXCL`` and writes into it, with no temporary name, so a crash between
+    those two steps leaves a real ``<flow>.json`` holding a fragment. It has no
+    readable ``reap_after``, so an expiry-only sweep would keep it **forever** —
+    which is precisely the "records become permanent" failure this exists to
+    stop, reintroduced through the back door.
+
+    It is not deleted on sight either, because "unparseable" and "being written
+    right now" look identical from outside, and the file may hold a live token
+    someone can still salvage by hand. The file's own mtime is a local fact that
+    needs no parsing, so an unreadable record is discarded once *it* is older
+    than :data:`REAP_AFTER` and reported until then.
+
+    Never raises for a missing directory or a file that vanishes underneath it:
+    this runs inside an unattended backup pull, and a hygiene sweep must not be
+    able to fail the thing it is a passenger on.
+    """
+
+    directory = Path(directory)
+    if not directory.is_dir():
+        return ReapOutcome()
+
+    moment = _aware(now, field="now")
+    deleted: list[str] = []
+    kept: list[str] = []
+    discarded: list[str] = []
+    unreadable: list[str] = []
+
+    for path in sorted(directory.glob("*.json")):
+        flow_id = path.stem
+        try:
+            record = RecoveryRecord.from_json(path.read_text(encoding="utf-8"))
+        except (LinkRecoveryError, OSError, ValueError):
+            try:
+                written = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+            except OSError:
+                continue
+            if moment - written >= REAP_AFTER:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                else:
+                    discarded.append(flow_id)
+                    continue
+            unreadable.append(flow_id)
+            continue
+
+        if not record.expired(moment):
+            kept.append(flow_id)
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        deleted.append(flow_id)
+
+    if deleted or discarded:
+        # Make the removals durable, but never fail the sweep over it: the files
+        # are already unlinked, and this runs inside an unattended backup pull.
+        with contextlib.suppress(OSError):
+            _fsync_directory(directory)
+
+    return ReapOutcome(
+        deleted=tuple(deleted),
+        kept=tuple(kept),
+        discarded=tuple(discarded),
+        unreadable=tuple(unreadable),
+    )

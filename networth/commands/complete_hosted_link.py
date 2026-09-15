@@ -316,6 +316,19 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
     else:
         print("stored        nothing — --from-tty persists no credential (§15)")
 
+    # The normal end of a flow's life on this Mac, and the only path that *knows*
+    # the exchange happened. The record exists so a stranded flow can still be
+    # recovered (§4); an exchanged one cannot be stranded, so keeping its
+    # `link_token` is residue. The unattended reaper in the puller is the crash
+    # backstop and bounds the worst case at `reap_after` — this is the normal
+    # path, and without it every rehearsal left a file behind indefinitely.
+    #
+    # Deliberately not on the `--retrieve-only` path above, which returns earlier:
+    # that flow is still live on purpose, and measurement (i) comes back to it
+    # after 30 minutes with the record it needs.
+    if args.flow:
+        _discard_recovery_record(args.flow)
+
     if not args.exchange_twice:
         return 0
 
@@ -385,3 +398,28 @@ def _measure_duplicate_exchange(
         "07a is written against"
     )
     return 0
+
+
+def _discard_recovery_record(flow_id: str) -> None:
+    """Remove this Mac's second copy, and never fail a completed exchange over it.
+
+    Ordering matters here in a way it does not elsewhere in this file: the
+    exchange has already happened and any credential is already stored, so a
+    cleanup fault is a note rather than a failure. Returning non-zero at this
+    point would tell the owner the exchange did not land, which would be false
+    and would send him to a recovery procedure for a flow that is finished.
+
+    On the VPS this finds nothing and says nothing: the second copy is the Mac's
+    file, and `delete` reports an absent record rather than raising.
+    """
+    directory = link_recovery.mac_recovery_directory()
+    try:
+        removed = link_recovery.delete(directory, flow_id)
+    except (LinkRecoveryError, OSError) as exc:
+        print(
+            f"note          this Mac's recovery record was not removed: {exc}",
+            file=sys.stderr,
+        )
+        return
+    if removed:
+        print(f"cleaned       removed this Mac's recovery record for {flow_id}")

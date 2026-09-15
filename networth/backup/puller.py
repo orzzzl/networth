@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
+from networth import link_recovery
 from networth.backup.archive import (
     CURRENT_ARCHIVE,
     ArchiveKind,
@@ -282,8 +283,45 @@ class BackupPuller:
     def flush_pending(self) -> None:
         flush_pending_reports(self.state, self.transport)
 
+    def _reap_link_recovery(self, now: datetime) -> dict[str, object]:
+        """Sweep this Mac's Link recovery records. Never fail the pull for it.
+
+        Wired here because this is the only unattended process that already runs
+        on `zelengs-macbook-air-2` on a schedule (§15's KeepAlive puller), and the
+        records are written on that same machine — the harness had
+        `link_recovery.delete()` with no caller outside the tests, which made a
+        crashed flow's record permanent.
+
+        It runs **before** the transfer rather than after a successful one: a pull
+        that keeps failing is exactly when records pile up, so making hygiene
+        conditional on the backup working would withhold it when it is most
+        needed.
+
+        A sweep is a passenger. Any fault in it is swallowed into a journal line
+        rather than allowed to cost the backup — but swallowed *visibly*, because
+        an unattended cleanup nobody can see failing is the same defect one layer
+        in.
+        """
+        try:
+            outcome = link_recovery.reap_expired(link_recovery.mac_recovery_directory(), now=now)
+        except Exception as exc:  # noqa: BLE001 - a hygiene sweep may not fail a pull
+            return {"link_reap_error": f"{type(exc).__name__}: {exc}"}
+
+        # Named per flow rather than counted, because the useful question later is
+        # *which* record went. A flow id is not a secret: it is printed in the
+        # mint transcript and in the follow-up command the driver shows.
+        summary: dict[str, object] = {}
+        if outcome.deleted:
+            summary["link_records_reaped"] = list(outcome.deleted)
+        if outcome.discarded:
+            summary["link_records_discarded"] = list(outcome.discarded)
+        if outcome.unreadable:
+            summary["link_records_unreadable"] = list(outcome.unreadable)
+        return summary
+
     def run_once(self) -> PullResult:
         started_at = self._clock()
+        reaped = self._reap_link_recovery(started_at)
         power = self._power_reader()
         temporary = self.state.directory / f".tmp-pull-{uuid.uuid4().hex}"
         destination = self.state.directory / CURRENT_ARCHIVE
@@ -350,6 +388,7 @@ class BackupPuller:
                     "run_at": started_at.isoformat(),
                     "transferred": transferred,
                     "verified": True,
+                    **reaped,
                 }
             )
             return PullResult(archive_id, transferred, recorded, power)
@@ -363,6 +402,7 @@ class BackupPuller:
                     "run_at": started_at.isoformat(),
                     "transferred": transferred,
                     "verified": verified_copy,
+                    **reaped,
                 }
             )
             raise
