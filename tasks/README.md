@@ -105,7 +105,7 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **READY** |
+| 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **WIP** (codex, 2026-09-10) |
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | BLOCKED (17) |
 | 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | BLOCKED (17) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (19) |
@@ -2046,6 +2046,9 @@ First consumer; proves the seam before a phone exists.
 
 - [ ] Must be able to print a total with **no date** without reaching for one. This is the
       first place task `14`'s tagged age is rendered.
+- [ ] If the active account population no longer matches the latest snapshot, print no
+      headline and exit non-zero. `doctor` must still name the mismatch and say that a new
+      successful snapshot is required; this state must not become a generic blank screen.
 
 **Acceptance — `doctor` prints:**
 
@@ -2087,6 +2090,9 @@ fact this host cannot observe — the two `doctor`s are **split by host** (issue
       **envelope and canonical length-delimited AAD encoding of §6.1** — both ends must
       build those bytes identically or nothing decrypts.
 - [ ] The payload carries the total's age as task `14`'s tagged `(age_state, as_of)`.
+- [ ] A population-mismatch refusal from `NetWorthQuery` aborts publication without
+      advancing `seq` or replacing the last envelope. The phone retains that prior payload
+      and ages it under §9.2 instead of receiving a total paired with current account rows.
 - [ ] **The payload carries `26a`'s Item-budget result, tagged available or unavailable.**
       The phone cannot call `26a` — it is host-side Python reading the host's SQLite — so
       the number reaches the app only if `Publisher` puts it here, and task `26` is
