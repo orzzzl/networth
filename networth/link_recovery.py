@@ -602,6 +602,15 @@ def reap_expired(directory: Path, *, now: datetime) -> ReapOutcome:
 
     for path in sorted(directory.glob("*.json")):
         flow_id = path.stem
+        # The name is the only evidence this module owns the file, and it is
+        # checked before the file is read or unlinked rather than after. The
+        # glob alone is not ownership: this is a dedicated secrets directory,
+        # but a `notes.json` or any future metadata beside the records parses as
+        # nothing, and the malformed branch below deletes what it cannot parse
+        # once it is old enough. Without this line that branch reclassifies a
+        # neighbour as a crashed partial record and removes it.
+        if not _FLOW_ID_RE.match(flow_id):
+            continue
         try:
             record = RecoveryRecord.from_json(path.read_text(encoding="utf-8"))
         except (LinkRecoveryError, OSError, ValueError):

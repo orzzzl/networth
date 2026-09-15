@@ -458,12 +458,56 @@ def test_a_missing_directory_is_not_an_error(tmp_path: Path) -> None:
 
 def test_files_that_are_not_records_are_left_untouched(tmp_path: Path) -> None:
     """The directory is `~/agents/secrets/networth-link-recovery`, and a sweep that
-    deleted by pattern rather than by parse could take a neighbour with it."""
+    deleted by pattern rather than by parse could take a neighbour with it.
+
+    The `.txt` half of this was not a test of anything and is kept only as the
+    boundary: the glob is `*.json`, so `notes.txt` was never a candidate and the
+    assertion could not have failed. **The case that matters is an old `.json`
+    neighbour**, because it *is* selected, it parses as no record at all, and the
+    malformed branch deletes what it cannot parse once the file is old enough —
+    so before the flow-id check this directory's own metadata was on a
+    seven-hour timer.
+    """
     directory = link_recovery.ensure_directory(tmp_path / "recovery")
     stranger = directory / "notes.txt"
     stranger.write_text("not mine", encoding="utf-8")
+    metadata = directory / "notes.json"
+    metadata.write_text('{"note": "not a recovery record"}', encoding="utf-8")
+    ancient = (NOW - REAP_AFTER - timedelta(days=3)).timestamp()
+    os.utime(metadata, (ancient, ancient))
 
     outcome = link_recovery.reap_expired(directory, now=NOW + REAP_AFTER)
 
     assert outcome == link_recovery.ReapOutcome()
     assert stranger.exists()
+    assert metadata.exists()
+
+
+@pytest.mark.parametrize(
+    "stem",
+    [
+        "e" * 31,  # one short
+        "e" * 33,  # one long
+        ("E" * 32),  # uppercase: the record's own grammar is lowercase hex
+        f"{'e' * 31}g",  # not hex
+        f"{'e' * 32}.backup",  # a suffixed copy someone made by hand
+    ],
+)
+def test_only_an_exact_flow_id_name_is_evidence_this_module_owns_the_file(
+    tmp_path: Path, stem: str
+) -> None:
+    """Names that merely resemble a flow id are neighbours, not partial records.
+
+    Each of these is old enough and unparseable, so every one of them would be
+    discarded by the malformed branch if ownership were decided by the glob.
+    """
+    directory = link_recovery.ensure_directory(tmp_path / "recovery")
+    impostor = directory / f"{stem}.json"
+    impostor.write_text("{", encoding="utf-8")
+    ancient = (NOW - REAP_AFTER - timedelta(days=3)).timestamp()
+    os.utime(impostor, (ancient, ancient))
+
+    outcome = link_recovery.reap_expired(directory, now=NOW + REAP_AFTER)
+
+    assert outcome == link_recovery.ReapOutcome()
+    assert impostor.exists()
