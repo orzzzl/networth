@@ -137,7 +137,10 @@ def run(args: argparse.Namespace) -> int:
             print(
                 "refusing to mint: this verb writes a link token to stdout for "
                 "scripts/link-start.sh to absorb, and stdout is a terminal. Run it "
-                "through that driver, or redirect stdout into one",
+                "through that driver, which pipes this stdout into "
+                "'networth absorb-hosted-link'. Do not redirect it into a file "
+                "instead: a terminal keeps the token in scrollback and a file keeps "
+                "it on disk, and only the pipe consumes it",
                 file=sys.stderr,
             )
             return 2

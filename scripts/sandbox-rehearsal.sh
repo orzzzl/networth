@@ -90,9 +90,15 @@
 # **What that changes for anyone attaching a transcript to a PR**: the sensitive
 # line is no longer an openable URL, it is a credential. The verb refuses to run
 # with a terminal on stdout, and the driver consumes the line rather than showing
-# it — but a transcript captured by redirecting this script's stdout to a file
-# would contain it. `scripts/link-start.sh` is the only supported caller for this
-# verb, and it is the one that makes the line go nowhere.
+# it. *(Until the PR #75 re-review this paragraph ended by recording a residual —
+# that redirecting this script's stdout to a file would still capture the line.
+# It would, and nothing on this machine could have noticed: sshd hands this
+# process a pipe whether the Mac end is the absorber or `> mint.log`. The check
+# therefore had to go where the destination is observable, and now lives in
+# `scripts/sandbox-rehearsal-remote.sh`, which requires fd 1 to be a FIFO before
+# it opens the connection. The residual is closed, on the only side that could
+# close it.)* `scripts/link-start.sh` is the only supported caller for this verb,
+# and it is the one that makes the line go nowhere.
 #
 # What a reader must not conclude from this paragraph: that the refusals were
 # soft. They were not, and the Production half of them is unchanged — task 08

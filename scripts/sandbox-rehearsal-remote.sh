@@ -134,6 +134,30 @@ elif [ -n "$flow" ] || [ -n "$link_mode" ]; then
 	die "--flow and --link-mode mean something only to complete-hosted-link, and '$verb' would silently ignore them"
 fi
 
+# WHERE THE TOKEN'S DESTINATION IS DECIDED, AND WHY IT IS HERE.
+# `start-hosted-link` writes a `link_token` to stdout for `absorb-hosted-link` to
+# take off the pipe. **Only this side can see where that stdout goes.** sshd hands
+# the remote child a pipe whichever local destination the transcript ends in, so
+# the verb's own check cannot tell `| networth absorb-hosted-link` from
+# `> mint.log`; by the time those bytes are distinguishable they are already on a
+# disk. The verb still refuses a terminal — that refusal is about display and
+# stays where it is — but a file is refused here, before `ssh` opens a connection
+# to the host holding the Plaid master credential, and therefore before anything
+# is minted. Nothing spent, by F2a, because nothing exists to spend.
+#
+# Measured on this Mac rather than assumed: `| cat` makes fd 1 a FIFO (`-p`),
+# `> mint.log` a regular file (`-f`), and `> /dev/null` a character device (`-c`).
+# Requiring the FIFO is therefore the one condition that admits the supported
+# caller and nothing else — a file, a terminal and a discard all fail it. That is
+# deliberate: `scripts/link-start.sh` is the only destination that consumes the
+# token, and any other is either keeping it or losing it.
+#
+# `--paths-only` is exempt because it returns before the mint and prints paths.
+if [ "$verb" = "start-hosted-link" ] && [ "$mode" != "--paths-only" ]; then
+	[ -p /dev/fd/1 ] ||
+		die "this verb writes a link token to stdout and stdout is not a pipe. Run it through scripts/link-start.sh, which pipes it into 'networth absorb-hosted-link' on this Mac; redirecting it into a file would put a spendable credential on disk. Refused here rather than on the host, because the host is handed a pipe either way and cannot tell the difference"
+fi
+
 case "$service_user" in
 *[!a-z0-9_-]* | "") die "'$service_user' is not a plain user name" ;;
 esac
