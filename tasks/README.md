@@ -107,10 +107,10 @@ that row. He caught it, not us.)
 |---|---|---|---|---|---|
 | 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **DONE** (#71, 2026-09-14) |
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | **READY** |
-| 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | **WIP** (codex, 2026-09-14) |
-| 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (19) |
+| 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | **DONE** (#74, 2026-09-15) |
+| 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **READY** |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | BLOCKED (20) |
-| 21 | Flutter app skeleton | 19 | **claude** | codex | BLOCKED (19) |
+| 21 | Flutter app skeleton | 19 | **claude** | codex | **READY** |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | BLOCKED (21) |
 | 24 | Release signing + APK delivery | 20, 21, 22 | **claude** | codex | BLOCKED |
@@ -2083,18 +2083,18 @@ fact this host cannot observe — the two `doctor`s are **split by host** (issue
 
 **Normative:** §6.1, §6.3.1, §6.4, §9.3, **§9.3a**. Issue **#8**.
 
-**Acceptance:**
+**Acceptance:** *(all eight met in #74, merged `b15d683`)*
 
-- [ ] The payload carries `published_at`, `publish_interval_seconds`, `grace_seconds` and a
+- [x] The payload carries `published_at`, `publish_interval_seconds`, `grace_seconds` and a
       monotonic `seq`.
-- [ ] `schema_version`, `pairing_id`, `seq` and `published_at` go in the **AAD**, in the
+- [x] `schema_version`, `pairing_id`, `seq` and `published_at` go in the **AAD**, in the
       **envelope and canonical length-delimited AAD encoding of §6.1** — both ends must
       build those bytes identically or nothing decrypts.
-- [ ] The payload carries the total's age as task `14`'s tagged `(age_state, as_of)`.
-- [ ] A population-mismatch refusal from `NetWorthQuery` aborts publication without
+- [x] The payload carries the total's age as task `14`'s tagged `(age_state, as_of)`.
+- [x] A population-mismatch refusal from `NetWorthQuery` aborts publication without
       advancing `seq` or replacing the last envelope. The phone retains that prior payload
       and ages it under §9.2 instead of receiving a total paired with current account rows.
-- [ ] **The payload carries `26a`'s Item-budget result, tagged available or unavailable.**
+- [x] **The payload carries `26a`'s Item-budget result, tagged available or unavailable.**
       The phone cannot call `26a` — it is host-side Python reading the host's SQLite — so
       the number reaches the app only if `Publisher` puts it here, and task `26` is
       unbuildable without it. `26a` refuses to answer rather than return a count its stored
@@ -2105,7 +2105,7 @@ fact this host cannot observe — the two `doctor`s are **split by host** (issue
       decode apart on the far end, and they mean opposite things about the owner's
       remaining Items (**F2**). This lands before `19` ships, so it is part of the first
       `schema_version` rather than a bump.
-- [ ] **The payload carries the open alert set**, from `AlertEvaluator.bulletin()` — kind,
+- [x] **The payload carries the open alert set**, from `AlertEvaluator.bulletin()` — kind,
       subject, message, and the `prompt` flag that says whether the phone may raise a local
       notification for it. Added 2026-09-09 alongside the matching criterion on `16`. §11's
       channel decision is that alert state travels *inside the payload* and nowhere else,
@@ -2114,9 +2114,9 @@ fact this host cannot observe — the two `doctor`s are **split by host** (issue
       whole open set on every publish, deliberately: §11's alerts persist until resolved,
       so a cached payload must carry all of them rather than a delta. This lands inside the
       first `schema_version`, for the same reason `26a`'s budget does.
-- [ ] `last_seq` is **pairing-scoped**. The epoch is **not** part of `seq` (issue #8);
+- [x] `last_seq` is **pairing-scoped**. The epoch is **not** part of `seq` (issue #8);
       `publish_epoch` is a diagnostic only.
-- [ ] The five §9.3a restore cases pass separately — see `03a`.
+- [x] The five §9.3a restore cases pass separately — see `03a`.
 
 **Must not:** re-read the row you just wrote to confirm SQLite wrote it. That tests
 SQLite. And do not re-add the epoch to `seq` without removing the pairing scope — two
@@ -2130,6 +2130,24 @@ is `ACTIVE`, `404` otherwise, reassembling the §6.1 header from stored columns 
 re-encrypting**.
 
 **Normative:** §16, §6.4, §6.3.1, §15.1.
+
+**Acceptance — carried from #74's review, explicitly non-blocking for task `19`:**
+
+- [ ] A multi-account wire regression proves `Publisher` copies non-zero
+      `static_account_count`, `reauth_account_count`, and `unreconciled_account_count`, plus
+      a non-`CONFIRMED` `reconciliation_state`, into the encrypted payload. Each field is
+      mutation-pinned; a benign constant must make a named test fail.
+- [ ] The publication ledger is success-only. A failed attempt rolls back, inserts no
+      `publication` row, and does not advance `seq`; §6.4 monitoring uses the age of the
+      last committed success. Add a numbered `0005` migration that removes
+      `publication.ok` and `publication.error` for fresh databases and databases already
+      at version 1 or later — do not edit `0001` and silently leave existing databases on
+      the old shape. The migration must preserve every `published_envelope` row, including
+      the active one, and keep `publication_seq_must_increase` in force: rebuilding
+      `publication` otherwise cascades into `published_envelope` and drops the trigger.
+      Pin both invariants with a test that migrates a database containing a publication
+      and its active envelope, then rejects an out-of-order `seq`. Stop claiming that this
+      table records failed attempts.
 
 This task owns §19 step 3.4's forever-after bind invariant. Task `16`, which depends on
 this row, owns the one-time live post-install comparison against the approved public
