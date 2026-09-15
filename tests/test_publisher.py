@@ -69,6 +69,7 @@ def _setup_snapshot(
     connection: sqlite3.Connection,
     *,
     alert: bool = False,
+    is_carried_forward: bool = False,
     source_as_of: datetime | None = SOURCE_AS_OF,
 ) -> tuple[int, int]:
     institution = connection.execute(
@@ -130,7 +131,7 @@ def _setup_snapshot(
             ),
             source=ObservationSource.PLAID_BALANCE,
             fetched_at=NOW,
-            is_carried_forward=False,
+            is_carried_forward=is_carried_forward,
         )
     )
     snapshot = Snapshotter(store).run("run-publisher", at=NOW)
@@ -284,6 +285,45 @@ def test_unknown_total_age_keeps_its_tag_and_never_invents_a_date(
     assert total["unknown_freshness_account_count"] == 1
 
 
+def test_publication_preserves_non_benign_honesty_fields_and_account_alert_subject(
+    db: sqlite3.Connection,
+) -> None:
+    _, account_id = _setup_snapshot(
+        db,
+        is_carried_forward=True,
+        source_as_of=NOW - timedelta(days=45),
+    )
+    Store(db).alerts.raise_alert(
+        AlertDraft(
+            kind=AlertKind.PENDING_RECONCILIATION,
+            created_at=NOW,
+            message="Confirm the synthetic account mapping.",
+            account_id=account_id,
+        )
+    )
+    db.commit()
+
+    document = _document(_publisher(db).publish(at=NOW).envelope)
+
+    assert document["total"]["is_complete"] is False
+    assert document["total"]["stale_account_count"] == 1
+    assert document["connection_state"] == "ACTION_NEEDED"
+    assert document["accounts"][0]["freshness"] == {
+        "as_of": _timestamp(NOW - timedelta(days=45)),
+        "is_carried_forward": True,
+        "market_days_without_advance": 30,
+        "state": "FROZEN",
+    }
+    assert document["alerts"] == [
+        {
+            "kind": "PENDING_RECONCILIATION",
+            "message": "Confirm the synthetic account mapping.",
+            "prompt": True,
+            "subject": {"id": account_id, "kind": "ACCOUNT"},
+        }
+    ]
+
+
 def test_empty_snapshot_is_tagged_static_only_instead_of_dated_at_publication(
     db: sqlite3.Connection,
 ) -> None:
@@ -337,6 +377,17 @@ def test_second_publication_replaces_only_the_ciphertext_and_keeps_the_audit_row
     assert _stored_envelope(db)[0] == second.id
     assert _document(second.envelope)["alerts"][0]["prompt"] is False
     assert db.execute("SELECT notified_at FROM alert").fetchone() == (_timestamp(NOW),)
+
+
+def test_default_nonce_is_fresh_per_publication(db: sqlite3.Connection) -> None:
+    _setup_snapshot(db)
+    publisher = Publisher(db, lambda _reference: KEY)
+
+    first = publisher.publish(at=NOW)
+    second = publisher.publish(at=NOW + timedelta(hours=1))
+
+    assert len(first.envelope.nonce) == 12
+    assert first.envelope.nonce != second.envelope.nonce
 
 
 def test_population_refusal_keeps_sequence_and_last_envelope_unchanged(
