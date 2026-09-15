@@ -40,7 +40,7 @@ set -euo pipefail
 
 readonly RUNNER="scripts/sandbox-rehearsal.sh"
 readonly DEFAULT_VERB="rehearse-sandbox"
-readonly ALLOWED_VERBS="rehearse-sandbox probe-hosted-link"
+readonly ALLOWED_VERBS="rehearse-sandbox probe-hosted-link start-hosted-link"
 key="${NETWORTH_VPS_KEY:-$HOME/agents/secrets/networth-vps.key}"
 target="${NETWORTH_VPS_TARGET:-root@100.102.245.37}"
 service_user="${NETWORTH_SERVICE_USER:-networth}"

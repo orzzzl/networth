@@ -55,27 +55,41 @@
 # body. This script adds the commit, the origin, the paths, the verb and the
 # identity it ran as, and nothing else.
 #
-# **THE HOSTED URL CANNOT REACH A TRANSCRIPT, AND TWO INDEPENDENT REFUSALS SAY
-# SO.** A hosted URL is openable by whoever holds it, and finishing Link through
-# it spends a lifetime Item slot (F2a). Every transcript this script produces is
-# an artefact that outlives the run and gets attached to a PR. So, as landed:
+# **A HOSTED URL REACHES A TRANSCRIPT THROUGH EXACTLY ONE VERB, AND THAT IS NEW.**
+# A hosted URL is openable by whoever holds it, and finishing Link through it
+# spends a lifetime Item slot (F2a). Every transcript this script produces is an
+# artefact that outlives the run and gets attached to a PR. Until `start-hosted-link`
+# there were two independent refusals and no way through them:
 #
 #   1. `probe-hosted-link` **has no option that prints the URL** — the verb's
 #      parser does not define one, and a test asserts its absence; and
-#   2. this script forwards no such flag, and its allow-list admits only the
+#   2. this script forwarded no such flag, and its allow-list admitted only the
 #      verb name itself.
 #
-# Either alone would do it; both exist because the two are edited by different
-# people at different times. *(An earlier draft of this comment described a
-# `--print-url` flag on the verb. That flag was removed before merge — it was
-# withheld-by-default rather than absent — and this paragraph outlived it by one
-# round, telling the next editor to protect against a hazard that no longer
-# existed while implying the capability was there to be re-enabled. Found in PR
-# #59's round-2 review.)*
+# **`start-hosted-link` is the deliberate widening this comment told the next
+# editor to make here rather than in advance**, and it is made in the change that
+# needs it (task 06a, session 1). It is the narrowest shape that works:
 #
-# The owner-run half of task 06a does need the URL on his screen. That is a
-# deliberate widening of **both** refusals above, and it belongs in the change
-# that adds it — not in a flag left lying here in advance.
+#   - the widening is *one allow-list entry*, not a flag. There is still no option
+#     anywhere that turns a URL on for a verb that does not print one, so refusal
+#     (1) is untouched for `probe-hosted-link` and `rehearse-sandbox`, and a test
+#     still asserts it;
+#   - the URL is **Sandbox-only** — `start-hosted-link` refuses any other
+#     environment before the credential is read, so what lands in a transcript can
+#     spend nothing that counts against the ten lifetime slots; and
+#   - the verb makes the `link_token` durable *before* it prints, so a URL on a
+#     transcript always has a surviving handle to `/link/token/get`. A printed URL
+#     with no handle is the expensive outcome, and it is the one that verb refuses.
+#
+# What a reader must not conclude from this paragraph: that the refusals were
+# soft. They were not, and the Production half of them is unchanged — task 08
+# mints Production URLs, run by the owner, and not through this runner.
+#
+# *(An earlier draft of this comment described a `--print-url` flag on the verb.
+# That flag was removed before merge — it was withheld-by-default rather than
+# absent — and the paragraph outlived it by one round, telling the next editor to
+# protect against a hazard that no longer existed while implying the capability
+# was there to be re-enabled. Found in PR #59's round-2 review.)*
 #
 # WHY A VERB PARAMETER RATHER THAN A SECOND COPY OF THIS SCRIPT. Everything above
 # — the commit verification, the hash-pinned lock, the no-build-isolation install,
@@ -91,6 +105,8 @@
 #
 # --verb defaults to `rehearse-sandbox` (task 06). `probe-hosted-link` is task
 # 06a's F7 criterion 2: mint a Hosted Link token and poll it before completion.
+# `start-hosted-link` is task 06a's owner-run half: it mints a Sandbox session and
+# prints its URL, which is the widening described above.
 #
 # `--paths-only` builds the environment and asks the verb which paths it selects,
 # then stops. It makes no Plaid call, so it is the safe first run.
@@ -104,7 +120,7 @@ set -euo pipefail
 readonly REPO_URL="${NETWORTH_REHEARSAL_ORIGIN:-https://github.com/orzzzl/networth}"
 readonly CREDENTIAL="/etc/networth/plaid-sandbox.env"
 readonly DEFAULT_VERB="rehearse-sandbox"
-readonly ALLOWED_VERBS="rehearse-sandbox probe-hosted-link"
+readonly ALLOWED_VERBS="rehearse-sandbox probe-hosted-link start-hosted-link"
 readonly BUILD_REQUIREMENTS="requirements-build.txt"
 readonly RUNTIME_REQUIREMENTS="requirements-runtime.txt"
 
@@ -141,7 +157,7 @@ done
 # into the command the caller sends over ssh, and the list of spellings that mean
 # something to a shell is not one anybody finishes writing — the SSH-option review
 # rounds on this project cost four cycles proving exactly that. The set of verbs
-# this runner may execute is two words long, so name them.
+# this runner may execute is three words long, so name them.
 case " $ALLOWED_VERBS " in
 *" $verb "*) ;;
 *) die "'$verb' is not a verb this runner may execute; the allow-list is: $ALLOWED_VERBS" ;;

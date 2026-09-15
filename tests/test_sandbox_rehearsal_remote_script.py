@@ -233,7 +233,7 @@ def test_a_verb_outside_the_allow_list_never_reaches_the_wire(verb: str, tmp_pat
     The verb is interpolated into the command string handed to ssh, so it is the one
     argument here that could carry shell meaning. This project has already paid four
     review rounds establishing that the set of spellings a shell finds interesting is
-    not one anybody finishes enumerating, so the check is "is it one of these two
+    not one anybody finishes enumerating, so the check is "is it one of these three
     words" rather than "does it contain anything frightening" — and `backup` and `demo`
     are in this list precisely because they *are* real verbs of this CLI and still must
     not be runnable on the host holding the Plaid master credential.
@@ -315,3 +315,43 @@ def test_print_url_is_not_a_thing_this_transport_can_forward(tmp_path: Path) -> 
     assert result.returncode == 2
     assert "unknown argument '--print-url'" in result.stderr
     assert not argv_log.exists()
+
+
+def test_start_hosted_link_is_reachable_and_is_the_only_verb_that_prints_a_url(
+    tmp_path: Path,
+) -> None:
+    """The widening, pinned: one allow-list entry, and no new flag anywhere.
+
+    `start-hosted-link` is task 06a's owner-run half and it exists to put a hosted
+    URL on his screen, so the transport has to carry it. What must *not* have come
+    with it is a way to make some other verb print one — the refusal this script's
+    header describes is an absence of options, and an absence is exactly what stops
+    being checked once the headline case is allowed through.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+    sha = head_sha()
+
+    result = run(
+        sha,
+        "--verb",
+        "start-hosted-link",
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+            "NETWORTH_VPS_TARGET": "root@198.51.100.1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    argv = argv_log.read_text().splitlines()
+    assert argv[-1] == f"sudo -u networth -H bash -s -- {sha}  --verb start-hosted-link"
+    # The allow-list grew by one word and gained no option. `--print-url` was
+    # removed from the verb in PR #59 and must not return through the transport.
+    script = Path("scripts/sandbox-rehearsal-remote.sh").read_text(encoding="utf-8")
+    assert "--print-url" not in script
+    assert "complete-hosted-link" not in script, (
+        "complete-hosted-link needs --flow and a mode flag, and this runner forwards "
+        "neither; listing it would make it reachable and always broken"
+    )
