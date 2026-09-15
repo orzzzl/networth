@@ -105,9 +105,9 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **WIP** (codex, 2026-09-10) |
-| 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | BLOCKED (17) |
-| 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | BLOCKED (17) |
+| 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **DONE** (#71, 2026-09-14) |
+| 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | **READY** |
+| 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | **READY** |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | BLOCKED (19) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | BLOCKED (20) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | BLOCKED (19) |
@@ -2031,7 +2031,8 @@ nobody wrote down is how two tasks ship a feature that cannot run.
 
 **Normative:** §10, §7.
 
-**Acceptance:** history joins on `lineage_id` so a re-link does not break the curve.
+**Acceptance:** *(met in #71, merged `c5f2a5d`)* history joins on `lineage_id` so a
+re-link does not break the curve.
 
 **Must not:** write anything. No side effects.
 
