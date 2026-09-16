@@ -28,17 +28,20 @@ and dropped the number rather than correcting it to a figure that drifts again.)
   advancing clock would read a future instant as the largest advance there is,
   resolve, and then decline to raise the replacement — losing the alert
   entirely.  Refused up front, before anything is written.
-- **A frozen-data alert resolves only on an advancing source clock.**  Not on a
-  successful call, and — the case that is easy to get wrong — not when the Item
-  leaves ``HEALTHY`` and the account therefore stops being classified
+- **A frozen-data alert resolves only on a source clock that advances *out of*
+  frozen.**  Not on a successful call; not on an advance that leaves the account
+  still five closes behind; and — the case that is easy to get wrong — not when
+  the Item leaves ``HEALTHY`` and the account therefore stops being classified
   ``FROZEN`` at all.  The data is just as frozen as it was; only the evidence
   changed.
-- **Resolving that row is not the same as the condition ending.**  A feed that
-  is a week late can advance a day and still be frozen, so an evaluation that
-  resolves on the advance raises the replacement against the new clock *in the
-  same evaluation*.  Otherwise a still-frozen account publishes an empty
-  bulletin for a full cycle — the alert would be lost exactly where this module
-  claims it cannot be.
+- **One freeze is one row.**  A feed that is a week late can advance a day and
+  remain frozen, so that advance ends nothing: the open row stays open and
+  records the clock it is *now* stuck at.  This module used to resolve it and
+  raise a replacement in the same evaluation, which kept the bulletin non-empty
+  but handed the condition a row with no ``notified_at`` — restarting section
+  11's 24-hour window on every creep, so a source that moves several times a day
+  prompted several times a day.  The owner decided against that in escalation
+  ``15df493e``; updating in place keeps the prompt history with the condition.
 
 Publication overdue is deliberately absent; see
 :mod:`networth.model.alert`.
@@ -344,20 +347,25 @@ class AlertEvaluator:
                 )
             if assessment.source_as_of is None or assessment.source_as_of <= raised_for:
                 return
-            # The clock advanced, so this row's claim — "stuck at ``raised_for``"
-            # — is over, and section 11 resolves it on exactly that.  What it
-            # does not do is stop the account being frozen: task 11 counts the
-            # market closes *after* ``source_as_of``, not the time since the
-            # clock last moved, so a feed running a week late can advance a day
-            # and still be five closes behind.  Falling through to the raise
-            # below is therefore not an optimisation — resolving without it
-            # would drop a live condition, and the next ``bulletin()`` would
-            # carry nothing at all for an account that is still frozen.
-            #
-            # The order is forced rather than chosen: migration 0004's partial
-            # index allows one open alert per subject, so the old row must close
-            # before the replacement can exist.
+            # The clock advanced.  Whether that ended anything depends on where
+            # it advanced *to*: task 11 counts the market closes after
+            # ``source_as_of`` rather than the time since the clock last moved,
+            # so a feed running a week late can gain a day and still be five
+            # closes behind.
+            if assessment.frozen_alert_required:
+                # Still frozen, so this is the same freeze and section 11 keeps
+                # one row for it.  Updating in place rather than resolving and
+                # re-raising is the owner's decision in escalation ``15df493e``:
+                # a replacement row carries no ``notified_at``, so every creep
+                # would buy a fresh prompt and a source that moves several times
+                # a day would prompt several times a day.  The row's claim is
+                # "stuck, currently at X"; X moving does not make it a different
+                # claim, and keeping the row keeps its prompt history with it.
+                self._alerts.advance_source_clock(open_alert.id, to=assessment.source_as_of)
+                return
+            # It advanced out of frozen: the condition this row names is over.
             resolved.append(self._alerts.resolve(open_alert.id, at=at))
+            return
 
         if assessment.frozen_alert_required:
             raised.append(
