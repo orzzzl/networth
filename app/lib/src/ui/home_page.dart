@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../l10n/generated/app_localizations.dart';
 import '../data/snapshot_source.dart';
+import '../debug_log.dart';
 import '../domain/phone_payload.dart';
 import 'snapshot_view.dart';
 
@@ -47,10 +48,14 @@ class _HomePageState extends State<HomePage> {
               // `'${snapshot.error}'` under the summary, which put raw internal
               // text like `Bad state: no payload` in front of the owner — past
               // the i18n layer, in a shape nobody chose, and with no bound on
-              // what an exception might have put in its message. It goes to the
-              // debug log instead, where a developer can read it and the owner
-              // is not asked to.
-              debugPrint('snapshot unreadable: ${snapshot.error}');
+              // what an exception might have put in its message.
+              //
+              // It goes to [debugLog], not to `debugPrint`: the second round of
+              // this review found that `debugPrint` still logs in release, so
+              // the first fix had moved the unbounded text off the screen and
+              // left it in the shipped APK's logcat. `debugLog` compiles away
+              // outside a debug build; see `src/debug_log.dart`.
+              debugLog('snapshot unreadable: ${snapshot.error}');
               return _Message(icon: Icons.error_outline, text: l10n.snapshotUnreadable);
             }
             final payload = snapshot.data;

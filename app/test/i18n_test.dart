@@ -77,11 +77,17 @@ void main() {
         if (line.trimLeft().startsWith('//')) {
           continue;
         }
-        // `debugPrint` is the sanctioned destination for internal text: it is a
-        // developer channel, not a surface the owner reads. Naming it here is
-        // the whole allowance, so a second such channel has to be added on
-        // purpose rather than by resembling one.
-        if (line.contains('debugPrint(')) {
+        // `debugLog` is the sanctioned destination for internal text: not a
+        // surface the owner reads, and not one a release build reaches at all.
+        //
+        // This exemption used to name `debugPrint`, and that was the defect the
+        // next review round found: the exempted name has to *be* the boundary,
+        // and `debugPrint` is not one — it logs in release too. Exempting it
+        // here meant this guard was quietly sanctioning the unbounded exception
+        // text it had just chased off the screen. `release_log_test.dart` is
+        // what makes `debugLog` the only printer in `lib/`, so naming it here
+        // is now an allowance with something behind it.
+        if (line.contains('debugLog(')) {
           continue;
         }
         if (interpolated.hasMatch(line)) {
@@ -108,6 +114,10 @@ void main() {
     // The bypass the first version of this file missed entirely.
     expect(interpolated.hasMatch(r"                detail: '\${snapshot.error}',"), isTrue);
     expect(interpolated.hasMatch('        Text(l10n.totalAsOf(stamp)),'), isFalse);
+    // The interpolation exemption is a name, so it is worth pinning which name:
+    // the one that compiles away in release, not the one that does not.
+    expect(r"debugLog('x: ${e}');".contains('debugLog('), isTrue);
+    expect(r"debugPrint('x: ${e}');".contains('debugLog('), isFalse);
   });
 
   test('every key in the ARB is used by the app', () {
