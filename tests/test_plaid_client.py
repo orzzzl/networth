@@ -579,6 +579,71 @@ def test_nothing_but_a_plain_token_escapes_the_body_the_error_refuses_to_show() 
         assert "nested" not in message
 
 
+def test_the_error_code_is_carried_as_data_and_stays_out_of_the_message() -> None:
+    """Task 06a measurement (ii) has to record *which* code refused a duplicate
+    exchange; every existing handler prints ``str(exc)`` and must keep getting a
+    message with no body in it. Both, from one raise."""
+    client = raising_sandbox_client(
+        api_exception(
+            400,
+            json.dumps(
+                {
+                    "request_id": "abc123XYZ",
+                    "error_code": "INVALID_PUBLIC_TOKEN",
+                    "error_message": "leaked prose the message must not carry",
+                }
+            ),
+        )
+    )
+
+    with pytest.raises(PlaidCallError) as caught:
+        client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+    assert caught.value.error_code == "INVALID_PUBLIC_TOKEN"
+    assert "INVALID_PUBLIC_TOKEN" not in str(caught.value)
+    assert "leaked" not in str(caught.value)
+
+
+def test_an_error_code_that_is_not_a_plaid_code_is_dropped_rather_than_carried() -> None:
+    """The grammar is what makes lifting this field safe, so it is tested at the
+    shapes an error body takes when it is not the one we expected — including the
+    one that would turn a classification field into a second channel for the body."""
+    smuggled = (
+        "secret sandbox-abc123 leaked",
+        "invalid_public_token",
+        "INVALID PUBLIC TOKEN",
+        "INVALID-PUBLIC-TOKEN",
+        "HAS\nNEWLINE",
+        "A" * 65,
+        "",
+        {"nested": "object"},
+        1234,
+        None,
+    )
+    for code in smuggled:
+        client = raising_sandbox_client(api_exception(400, json.dumps({"error_code": code})))
+
+        with pytest.raises(PlaidCallError) as caught:
+            client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+        assert caught.value.error_code is None, code
+        assert "leaked" not in str(caught.value)
+        assert "nested" not in str(caught.value)
+
+
+def test_a_transport_failure_carries_no_error_code_because_plaid_never_answered() -> None:
+    """``None`` means one thing: Plaid named no code. A transport failure that
+    reported some default here would let a caller branch on a code nobody sent."""
+    client = raising_sandbox_client(
+        urllib3.exceptions.ReadTimeoutError(None, "/x", "timed out")  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(PlaidCallError) as caught:
+        client.first_institution_supporting(products=("investments",), country_codes=("US",))
+
+    assert caught.value.error_code is None
+
+
 def test_a_public_token_that_did_not_come_back_is_a_failure() -> None:
     client, _ = sandbox_client(
         sandbox_public_token_create=SimpleNamespace(public_token=None),

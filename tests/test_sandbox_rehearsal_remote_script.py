@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from typing import IO, Any
 
 import pytest
 
@@ -233,7 +234,7 @@ def test_a_verb_outside_the_allow_list_never_reaches_the_wire(verb: str, tmp_pat
     The verb is interpolated into the command string handed to ssh, so it is the one
     argument here that could carry shell meaning. This project has already paid four
     review rounds establishing that the set of spellings a shell finds interesting is
-    not one anybody finishes enumerating, so the check is "is it one of these two
+    not one anybody finishes enumerating, so the check is "is it one of these three
     words" rather than "does it contain anything frightening" — and `backup` and `demo`
     are in this list precisely because they *are* real verbs of this CLI and still must
     not be runnable on the host holding the Plaid master credential.
@@ -315,3 +316,378 @@ def test_print_url_is_not_a_thing_this_transport_can_forward(tmp_path: Path) -> 
     assert result.returncode == 2
     assert "unknown argument '--print-url'" in result.stderr
     assert not argv_log.exists()
+
+
+def test_start_hosted_link_is_reachable_and_no_verb_gained_a_url_flag(
+    tmp_path: Path,
+) -> None:
+    """The widening, pinned: one allow-list entry, and no new flag anywhere.
+
+    `start-hosted-link` is task 06a's owner-run half, so the transport has to carry
+    it. What must *not* have come with it is a way to make any verb print a URL —
+    the refusal this script's header describes is an absence of options, and an
+    absence is exactly what stops being checked once the headline case is allowed
+    through.
+
+    **Since PR #75 no verb reachable here prints a URL at all**: `start-hosted-link`
+    emits a marked payload that `scripts/link-start.sh` pipes into
+    `absorb-hosted-link`, which is where the URL is shown. So this test pins the
+    absence of the flag, and `test_link_start_script.py` pins who does the showing.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+    sha = head_sha()
+
+    result = run(
+        sha,
+        "--verb",
+        "start-hosted-link",
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+            "NETWORTH_VPS_TARGET": "root@198.51.100.1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    argv = argv_log.read_text().splitlines()
+    assert argv[-1] == f"sudo -u networth -H bash -s -- {sha}  --verb start-hosted-link"
+    # The allow-list grew by one word and gained no option. `--print-url` was
+    # removed from the verb in PR #59 and must not return through the transport.
+    script = Path("scripts/sandbox-rehearsal-remote.sh").read_text(encoding="utf-8")
+    assert "--print-url" not in script
+
+
+def test_complete_hosted_link_reaches_the_host_with_both_of_its_arguments(
+    tmp_path: Path,
+) -> None:
+    """The other half of 06a, and the reason this transport grew two options.
+
+    Until this existed the verb was on neither allow-list, deliberately: it takes
+    arguments and nothing here forwarded any, so listing it would have made it
+    reachable and always broken. The argument vector is read back from the stub
+    rather than inferred from the script's text — the mode decides whether a
+    `public_token` is spent, so "the script mentions --link-mode somewhere" is not
+    the property worth asserting.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+    sha = head_sha()
+    flow = "0123456789abcdef0123456789abcdef"
+
+    result = run(
+        sha,
+        "--verb",
+        "complete-hosted-link",
+        "--flow",
+        flow,
+        "--link-mode",
+        "retrieve-only",
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+            "NETWORTH_VPS_TARGET": "root@198.51.100.1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    argv = argv_log.read_text().splitlines()
+    assert argv[-1] == (
+        f"sudo -u networth -H bash -s -- {sha}  --verb complete-hosted-link "
+        f"--flow {flow} --link-mode retrieve-only"
+    )
+    # The mode is in the transcript, because the transcript outlives the run and
+    # `--exchange` and `--retrieve-only` differ by a spent lifetime slot.
+    assert "--retrieve-only" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("flow", "why"),
+    [
+        ("0123456789ABCDEF0123456789abcdef", "uppercase is not how new_flow_id spells it"),
+        ("0123456789abcdef0123456789abcde", "31 characters"),
+        ("0123456789abcdef0123456789abcdef0", "33 characters"),
+        ("0123456789abcdef0123456789abcde;", "a separator the shell would read"),
+        ("$(id)", "a substitution"),
+        ("../../etc/networth", "a path"),
+    ],
+)
+def test_a_flow_id_that_is_not_32_hex_characters_never_reaches_the_wire(
+    flow: str, why: str, tmp_path: Path
+) -> None:
+    """Checked against the grammar of a `flow_id`, not against a list of frightening
+    spellings — `uuid.uuid4().hex` is 32 lowercase hex characters and nothing else.
+
+    The `ssh` stub is absent from PATH so a refusal that did not land would fail this
+    test by connecting.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+
+    result = run(
+        FULL_SHA,
+        "--verb",
+        "complete-hosted-link",
+        "--flow",
+        flow,
+        "--link-mode",
+        "exchange",
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+        },
+    )
+
+    assert result.returncode == 2, why
+    assert "flow id" in result.stderr
+    assert not argv_log.exists(), "the refusal came after ssh was invoked"
+
+
+@pytest.mark.parametrize(
+    "link_mode",
+    ["--exchange", "exchange; id", "EXCHANGE", "retrieve", "", "exchange twice"],
+)
+def test_a_link_mode_outside_the_allow_list_never_reaches_the_wire(
+    link_mode: str, tmp_path: Path
+) -> None:
+    """Three plain words, and the flag is built from the one that matched.
+
+    `--exchange` is in this list on purpose: the allow-list holds words, so the
+    spelling that is *already* an option is not one of them. That is what keeps the
+    thing interpolated into the remote command from being an option nobody listed.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+
+    result = run(
+        FULL_SHA,
+        "--verb",
+        "complete-hosted-link",
+        "--flow",
+        "0123456789abcdef0123456789abcdef",
+        "--link-mode",
+        link_mode,
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "link mode" in result.stderr or "--link-mode needs a name" in result.stderr
+    assert not argv_log.exists(), "the refusal came after ssh was invoked"
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (("--verb", "complete-hosted-link", "--link-mode", "exchange"), "needs --flow"),
+        (
+            ("--verb", "complete-hosted-link", "--flow", "0" * 32),
+            "needs --link-mode",
+        ),
+        (
+            (
+                "--paths-only",
+                "--verb",
+                "complete-hosted-link",
+                "--flow",
+                "0" * 32,
+                "--link-mode",
+                "exchange",
+            ),
+            "no --paths-only form",
+        ),
+        (("--flow", "0" * 32, "--link-mode", "exchange"), "only to complete-hosted-link"),
+        (("--verb", "start-hosted-link", "--flow", "0" * 32), "only to complete-hosted-link"),
+    ],
+)
+def test_the_couplings_are_refused_before_a_connection_is_opened(
+    args: tuple[str, ...], expected: str, tmp_path: Path
+) -> None:
+    """Each of these otherwise fails on the far side of a hash-pinned install.
+
+    A caller who omits the mode would watch a venv get built before argparse told
+    him the run was never going to work, and one who passes `--flow` to a verb that
+    ignores it would get a *successful* run that measured nothing. Both are refused
+    on this Mac instead, which is the same placement as the verb allow-list and for
+    the same reason.
+    """
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+
+    result = run(
+        FULL_SHA,
+        *args,
+        env={
+            "PATH": f"{stub_dir}:{os.environ['PATH']}",
+            "NETWORTH_VPS_KEY": str(key),
+        },
+    )
+
+    assert result.returncode == 2
+    assert expected in result.stderr
+    assert not argv_log.exists(), "the refusal came after ssh was invoked"
+
+
+# ---------------------------------------------------------------------------
+# Where the minted token is allowed to land.
+#
+# `start-hosted-link` writes a `link_token` to stdout. The verb itself refuses a
+# terminal, but it cannot refuse a file: it runs on the VPS, and sshd gives it a
+# pipe whether the Mac end of that pipe is `networth absorb-hosted-link` or
+# `> mint.log`. The destination is only observable on this side, so the check is
+# on this side, and these tests read it from the side that can see it.
+#
+# The discriminator is measured, not assumed: `| cat` makes fd 1 a FIFO, a
+# redirect makes it a regular file, and `> /dev/null` makes it a character
+# device. Requiring the FIFO admits the supported caller and nothing else.
+# ---------------------------------------------------------------------------
+
+
+def run_with_stdout(
+    *args: str, stdout: int | IO[Any], tmp_path: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run the script with stdout pointed somewhere specific.
+
+    The module's `run()` uses `capture_output=True`, which makes fd 1 a pipe — the
+    supported case. These tests need the unsupported ones, which means choosing the
+    destination rather than letting subprocess choose it.
+    """
+    environment = dict(os.environ)
+    environment.update(env or {})
+    return subprocess.run(
+        ["bash", str(SCRIPT), *args],
+        stdout=stdout,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=environment,
+        timeout=120,
+    )
+
+
+def mint_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    stub_dir, argv_log, _ = ssh_stub(tmp_path)
+    return {
+        "PATH": f"{stub_dir}:{os.environ['PATH']}",
+        "NETWORTH_VPS_KEY": str(key),
+        "NETWORTH_VPS_TARGET": "root@198.51.100.1",
+    }, argv_log
+
+
+def test_a_mint_redirected_into_a_regular_file_refuses_before_ssh_is_reached(
+    tmp_path: Path,
+) -> None:
+    """The blocker this check exists for: `... --verb start-hosted-link > mint.log`.
+
+    Refused *before* the connection, so the refusal is not "we minted a token and
+    then declined to show it" — nothing is minted, and by F2a nothing can be spent
+    through a token that does not exist. The proof of that ordering is that the ssh
+    stub was never invoked: it records its argv on every call, so the absence of the
+    log file is the absence of the call.
+    """
+    env, argv_log = mint_env(tmp_path)
+    transcript = tmp_path / "mint.log"
+
+    with transcript.open("w") as handle:
+        result = run_with_stdout(
+            head_sha(),
+            "--verb",
+            "start-hosted-link",
+            stdout=handle,
+            tmp_path=tmp_path,
+            env=env,
+        )
+
+    assert result.returncode == 2
+    assert "not a pipe" in result.stderr
+    assert not argv_log.exists(), "ssh was reached; the refusal came too late to matter"
+    # Not even the header lines reached the file. A partial transcript would mean
+    # the check sits below the printfs, which is a different guarantee.
+    assert transcript.read_text() == ""
+
+
+def test_a_mint_discarded_to_dev_null_is_refused_too(tmp_path: Path) -> None:
+    """`/dev/null` is not a file, and the rule is still "the pipe or nothing".
+
+    Worth pinning separately because it is the case a "no regular files" rule would
+    let through, and it is not harmless: it mints a live token on the VPS and throws
+    away the only copy of it, which is the crash state measurement (i) exists to
+    bound rather than a way to run the verb safely.
+    """
+    env, argv_log = mint_env(tmp_path)
+
+    with open(os.devnull, "w") as handle:
+        result = run_with_stdout(
+            head_sha(),
+            "--verb",
+            "start-hosted-link",
+            stdout=handle,
+            tmp_path=tmp_path,
+            env=env,
+        )
+
+    assert result.returncode == 2
+    assert "not a pipe" in result.stderr
+    assert not argv_log.exists()
+
+
+def test_the_supported_pipe_still_reaches_the_host(tmp_path: Path) -> None:
+    """`scripts/link-start.sh`'s shape, kept green.
+
+    This is the other half of the check and the one that makes it a discriminator
+    rather than a blanket refusal: the same command whose only difference is that
+    fd 1 is a FIFO goes through, with the mint verb intact on the wire.
+    """
+    env, argv_log = mint_env(tmp_path)
+    sha = head_sha()
+
+    result = run_with_stdout(
+        sha,
+        "--verb",
+        "start-hosted-link",
+        stdout=subprocess.PIPE,
+        tmp_path=tmp_path,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    argv = argv_log.read_text().splitlines()
+    assert argv[-1] == f"sudo -u networth -H bash -s -- {sha}  --verb start-hosted-link"
+
+
+def test_paths_only_is_exempt_because_it_returns_before_the_mint(tmp_path: Path) -> None:
+    """The exemption, pinned so it is a decision rather than an oversight.
+
+    `--paths-only` prints which credential and item files the environment selects
+    and returns before any Plaid call, so its stdout carries no token and redirecting
+    it to a file is how anyone would reasonably read it.
+    """
+    env, argv_log = mint_env(tmp_path)
+    sha = head_sha()
+    listing = tmp_path / "paths.txt"
+
+    with listing.open("w") as handle:
+        result = run_with_stdout(
+            sha,
+            "--verb",
+            "start-hosted-link",
+            "--paths-only",
+            stdout=handle,
+            tmp_path=tmp_path,
+            env=env,
+        )
+
+    assert result.returncode == 0, result.stderr
+    argv = argv_log.read_text().splitlines()
+    assert argv[-1] == (
+        f"sudo -u networth -H bash -s -- {sha} --paths-only --verb start-hosted-link"
+    )

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from networth import link_recovery
 from networth.backup.archive import (
     ArchiveKind,
     ArchiveVerificationError,
@@ -31,7 +32,7 @@ from networth.backup.puller import (
 from networth.backup.state import BackupStateStore, open_database
 from networth.backup.transport import FetchedArchive, RemoteProbe, TransportError
 from networth.storage import migrate
-from networth.tokenstore import SecretKind, TokenStore, new_flow_id
+from networth.tokenstore import Secret, SecretKind, TokenStore, new_flow_id
 
 KEY = bytes(range(32))
 NOW = datetime(2026, 9, 7, 10, 0, tzinfo=UTC)
@@ -428,3 +429,140 @@ def test_power_source_is_read_from_pmset_each_time(
     monkeypatch.setattr("networth.backup.puller.subprocess.run", run)
     assert read_power_source() is expected
     assert calls == [["pmset", "-g", "batt"]]
+
+
+# --- the Link recovery sweep rides along on the pull --------------------------
+#
+# `link_recovery.delete()` had no caller outside its own tests, so a crashed flow's
+# record stayed on this Mac indefinitely. The puller is the only unattended process
+# that already runs here on a schedule, which is why the sweep is wired into it —
+# and why a fault in the sweep may not be allowed to cost a backup.
+
+
+def _expired_record(directory: Path, flow_id: str) -> Path:
+    written_at = NOW - link_recovery.REAP_AFTER - timedelta(hours=1)
+    link_recovery.store_and_verify(
+        directory,
+        link_recovery.RecoveryRecord(
+            flow_id=flow_id,
+            link_token=Secret("link-sandbox-not-a-real-token"),
+            minted_at=written_at,
+            link_token_expires_at=None,
+            url_lifetime_seconds=None,
+            reap_after=link_recovery.reap_after_from(written_at),
+        ),
+        holder="test-host",
+        now=written_at,
+    )
+    return link_recovery.record_path(directory, flow_id)
+
+
+def test_a_pull_reaps_expired_link_records_and_names_them_in_the_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recovery = tmp_path / "link-recovery"
+    monkeypatch.setenv(link_recovery.RECOVERY_DIRECTORY_ENV, str(recovery))
+    flow = "a" * 32
+    record = _expired_record(recovery, flow)
+    current, probe, archive_id, _ = _archives(tmp_path)
+    destination = tmp_path / "mac-copy"
+
+    BackupPuller(
+        transport=FakeTransport(current, archive_id, probe),
+        destination=destination,
+        backup_key=KEY,
+        clock=lambda: NOW,
+        power_reader=lambda: PowerSource.AC,
+    ).run_once()
+
+    assert not record.exists()
+    journal = json.loads((destination / PULL_JOURNAL).read_text().splitlines()[-1])
+    # Named rather than counted: the useful question later is *which* record went.
+    assert journal["link_records_reaped"] == [flow]
+
+
+def test_a_pull_with_nothing_to_reap_says_nothing_about_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A journal line that carried a constant zero on every pull would be noise in
+    the one file the owner reads to find out what the unattended half did."""
+    monkeypatch.setenv(link_recovery.RECOVERY_DIRECTORY_ENV, str(tmp_path / "never-created"))
+    current, probe, archive_id, _ = _archives(tmp_path)
+    destination = tmp_path / "mac-copy"
+
+    BackupPuller(
+        transport=FakeTransport(current, archive_id, probe),
+        destination=destination,
+        backup_key=KEY,
+        clock=lambda: NOW,
+        power_reader=lambda: PowerSource.AC,
+    ).run_once()
+
+    journal = json.loads((destination / PULL_JOURNAL).read_text().splitlines()[-1])
+    assert not [key for key in journal if key.startswith("link_")]
+
+
+def test_a_broken_sweep_is_journalled_and_does_not_fail_the_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep is a passenger. If it throws, the backup still has to land — but
+    visibly, because an unattended cleanup nobody can see failing is the same
+    defect one layer in."""
+
+    def explode(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("synthetic sweep fault")
+
+    monkeypatch.setattr(link_recovery, "reap_expired", explode)
+    current, probe, archive_id, _ = _archives(tmp_path)
+    destination = tmp_path / "mac-copy"
+
+    result = BackupPuller(
+        transport=FakeTransport(current, archive_id, probe),
+        destination=destination,
+        backup_key=KEY,
+        clock=lambda: NOW,
+        power_reader=lambda: PowerSource.AC,
+    ).run_once()
+
+    assert result.archive_id == archive_id
+    assert (destination / "current.nwb").read_bytes() == current
+    journal = json.loads((destination / PULL_JOURNAL).read_text().splitlines()[-1])
+    assert journal["link_reap_error"] == "RuntimeError: synthetic sweep fault"
+
+
+def test_the_sweep_runs_before_the_transfer_so_a_failing_pull_still_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pull that keeps failing is exactly when records pile up, so hygiene must
+    not be conditional on the backup working."""
+    recovery = tmp_path / "link-recovery"
+    monkeypatch.setenv(link_recovery.RECOVERY_DIRECTORY_ENV, str(recovery))
+    flow = "b" * 32
+    record = _expired_record(recovery, flow)
+    destination = tmp_path / "mac-copy"
+
+    class Broken:
+        pull_records: list[tuple[str, str]] = []
+
+        def fetch_archive(self, kind: object, destination: Path) -> object:
+            raise TransportError("synthetic transport failure")
+
+        def build_probe(self) -> object:
+            raise TransportError("synthetic transport failure")
+
+        def record_pull(self, archive_id: str, verdict: str) -> None: ...
+
+        def record_drill(self, archive_id: str, verdict: str) -> None: ...
+
+    with pytest.raises(TransportError):
+        BackupPuller(
+            transport=Broken(),  # type: ignore[arg-type]
+            destination=destination,
+            backup_key=KEY,
+            clock=lambda: NOW,
+            power_reader=lambda: PowerSource.AC,
+        ).run_once()
+
+    assert not record.exists(), "the sweep was skipped because the pull failed"
+    journal = json.loads((destination / PULL_JOURNAL).read_text().splitlines()[-1])
+    assert journal["link_records_reaped"] == [flow]
