@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import socket
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -84,8 +85,16 @@ def _database(path: Path) -> None:
 
 
 @contextmanager
-def _running_server(database: Path) -> Iterator[tuple[str, int]]:
-    server = SnapshotHTTPServer(("127.0.0.1", 0), SnapshotReader(database))
+def _running_server(
+    database: Path,
+    *,
+    connection_timeout: float = 5.0,
+) -> Iterator[tuple[str, int]]:
+    server = SnapshotHTTPServer(
+        ("127.0.0.1", 0),
+        SnapshotReader(database),
+        connection_timeout=connection_timeout,
+    )
     address = server.server_address
     host, port = str(address[0]), int(address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -98,8 +107,14 @@ def _running_server(database: Path) -> Iterator[tuple[str, int]]:
         server.server_close()
 
 
-def _request(address: tuple[str, int], method: str, path: str) -> tuple[int, bytes, dict[str, str]]:
-    connection = http.client.HTTPConnection(*address, timeout=5)
+def _request(
+    address: tuple[str, int],
+    method: str,
+    path: str,
+    *,
+    timeout: float = 5.0,
+) -> tuple[int, bytes, dict[str, str]]:
+    connection = http.client.HTTPConnection(*address, timeout=timeout)
     try:
         connection.request(method, path)
         response = connection.getresponse()
@@ -168,3 +183,39 @@ def test_serving_connection_is_read_only_by_open_mode_and_query_guard(tmp_path: 
             connection.execute("DELETE FROM published_envelope")
     finally:
         connection.close()
+
+
+def test_keep_alive_client_cannot_starve_another_snapshot_reader(tmp_path: Path) -> None:
+    database = tmp_path / "networth.db"
+    _database(database)
+
+    with _running_server(database) as address:
+        kept_open = http.client.HTTPConnection(*address, timeout=1.0)
+        try:
+            kept_open.request("GET", "/snapshot")
+            first = kept_open.getresponse()
+            assert (first.status, first.read()) == (200, ENVELOPE.to_json())
+
+            assert _request(address, "GET", "/snapshot", timeout=1.0)[:2] == (
+                200,
+                ENVELOPE.to_json(),
+            )
+        finally:
+            kept_open.close()
+
+
+def test_silent_client_is_reaped_without_starving_snapshot_readers(tmp_path: Path) -> None:
+    database = tmp_path / "networth.db"
+    _database(database)
+
+    with _running_server(database, connection_timeout=0.2) as address:
+        silent = socket.create_connection(address, timeout=1.0)
+        try:
+            assert _request(address, "GET", "/snapshot", timeout=1.0)[:2] == (
+                200,
+                ENVELOPE.to_json(),
+            )
+            silent.settimeout(2.0)
+            assert silent.recv(1) == b""
+        finally:
+            silent.close()

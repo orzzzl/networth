@@ -262,6 +262,54 @@ def test_success_only_migration_preserves_every_envelope_and_sequence_trigger() 
         connection.close()
 
 
+def test_success_only_migration_refuses_to_orphan_a_failed_publication_envelope() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        _apply_migrations_through(connection, 4)
+        _insert_sync_run(connection, "run-failed-publication-v4")
+        snapshot_id = _insert_snapshot(connection, "run-failed-publication-v4")
+        connection.execute(
+            "INSERT INTO pairing(id, created_at, key_ref, state) "
+            "VALUES ('pair-failed-publication-v4', ?, "
+            "'payload-key/failed-publication-v4', 'ACTIVE')",
+            (NOW,),
+        )
+        connection.execute(
+            """
+            INSERT INTO publication(
+                id, snapshot_id, pairing_id, seq, schema_version, published_at, ok, error
+            ) VALUES (1, ?, 'pair-failed-publication-v4', 1, '1', ?, 0,
+                      'synthetic failed attempt')
+            """,
+            (snapshot_id, NOW),
+        )
+        connection.execute(
+            """
+            INSERT INTO published_envelope(
+                publication_id, pairing_id, schema_version, seq, published_at,
+                nonce, ciphertext, is_active
+            ) VALUES (1, 'pair-failed-publication-v4', '1', '1', ?, ?, ?, 1)
+            """,
+            (NOW, b"n" * 12, b"ciphertext" + b"t" * 16),
+        )
+        connection.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
+            migrate(connection)
+
+        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
+        assert connection.execute("SELECT ok, error FROM publication WHERE id = 1").fetchone() == (
+            0,
+            "synthetic failed attempt",
+        )
+        assert connection.execute(
+            "SELECT nonce, ciphertext, is_active FROM published_envelope WHERE publication_id = 1"
+        ).fetchone() == (b"n" * 12, b"ciphertext" + b"t" * 16, 1)
+    finally:
+        connection.close()
+
+
 def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
     database_path = tmp_path / "networth.db"
     connection = sqlite3.connect(database_path)

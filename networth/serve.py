@@ -9,7 +9,7 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
 
@@ -82,11 +82,23 @@ class SnapshotReader:
             raise SnapshotServeError("stored envelope violates the wire contract") from exc
 
 
-class SnapshotHTTPServer(HTTPServer):
+DEFAULT_CONNECTION_TIMEOUT_SECONDS = 5.0
+
+
+class SnapshotHTTPServer(ThreadingHTTPServer):
     """An HTTP server carrying only the read-only snapshot source."""
 
-    def __init__(self, address: tuple[str, int], reader: SnapshotReader) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        reader: SnapshotReader,
+        *,
+        connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT_SECONDS,
+    ) -> None:
+        if connection_timeout <= 0:
+            raise ValueError("connection_timeout must be positive")
         self.reader = reader
+        self.connection_timeout = connection_timeout
         super().__init__(address, SnapshotRequestHandler)
 
 
@@ -102,6 +114,11 @@ class SnapshotRequestHandler(BaseHTTPRequestHandler):
     """No endpoint exists here except the one design section 16 names."""
 
     protocol_version = "HTTP/1.1"
+
+    def setup(self) -> None:
+        super().setup()
+        server = cast(SnapshotHTTPServer, self.server)
+        self.connection.settimeout(server.connection_timeout)
 
     def _empty(self, status: HTTPStatus) -> None:
         self.send_response(status)
@@ -206,6 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
+    "DEFAULT_CONNECTION_TIMEOUT_SECONDS",
     "IPv6SnapshotHTTPServer",
     "SnapshotHTTPServer",
     "SnapshotReader",
