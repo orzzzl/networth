@@ -40,8 +40,10 @@ exchange landed, and what is on this Mac's disk afterwards, are independent —
 the second re-review found them collapsed into a single word, which made a
 post-exchange cleanup fault indistinguishable from a flow that may still be
 live, and those two want opposite things from the owner. Neither is ever
-inferred from the other, and the second one is looked at rather than deduced.
-See :func:`_record_outcome` and :func:`_observe_record`.
+inferred from the other, and the second one is looked at rather than deduced —
+through a lookup that keeps its errors, because a question that could not be
+answered is not an absence. See :func:`_record_outcome` and
+:func:`_observe_record`.
 """
 
 from __future__ import annotations
@@ -169,11 +171,49 @@ def _observe_record(directory: Path, flow_id: str) -> str:
     fact that `delete()` returned. That is a small thing that keeps a large
     promise: nothing in this report is ever inferred from an operation's outcome,
     including an operation that went well.
+
+    **A lookup that failed is not an absence, and `Path.exists()` cannot tell the
+    difference.** It answers a boolean, so it has to spend the error to do it. The
+    third re-review found the consequence and measuring it found something worse
+    than one wrong answer — the same source reported *opposite* facts on two
+    interpreters this project already accepts (``requires-python = ">=3.12"``),
+    for a record that was present and unreadable:
+
+    ==================  ============================  =======================
+    interpreter         ``Path.exists()``             this function said
+    ==================  ============================  =======================
+    3.12.3 — CI's       raises ``PermissionError``    ``unknown`` — right
+    3.14.7 — review's   returns ``False``             ``absent`` — a lie
+    ==================  ============================  =======================
+
+    So the `except OSError` that promised :data:`UNKNOWN` was live on some
+    machines and dead on others, for the same source on the same disk. **CI is on
+    the sound side of that table** — ``ubuntu-latest``'s ``uv sync`` resolves
+    ``/usr/bin/python3``, 3.12.3 — which is worse than it sounds: the defect was
+    invisible to the gate, and a regression written only around the reported
+    ``EACCES`` would be green there forever. `lstat` has no boolean to protect,
+    so every lookup failure arrives as itself on every interpreter.
+
+    :data:`ABSENT` is then reserved for the two errnos that *state* there is no
+    file at the pathname — ``ENOENT``, and ``ENOTDIR`` for a non-directory
+    component, which is the same statement reached one component earlier. Every
+    other error means the question was not answered: ``EACCES`` above, and
+    ``ELOOP``, which is the one the regression is built on because `exists()`
+    reports it as ``False`` on *both* rows. A symlink loop is the opposite of an
+    absence.
+
+    `lstat` rather than `stat` because the fact being reported is about the
+    directory entry `delete()` unlinks, and `unlink` does not follow the final
+    component either. A dangling symlink there is residue that is still on this
+    disk, and `stat` would call it :data:`ABSENT`.
     """
     try:
-        return PRESENT if link_recovery.record_path(directory, flow_id).exists() else ABSENT
+        link_recovery.record_path(directory, flow_id).lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return ABSENT
     except OSError:
         return UNKNOWN
+    return PRESENT
 
 
 def run(args: argparse.Namespace) -> int:

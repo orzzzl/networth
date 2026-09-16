@@ -17,6 +17,7 @@ import errno
 import io
 import os
 import stat
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -431,6 +432,137 @@ def test_a_fault_before_the_unlink_reports_the_record_still_here(
     assert "inert either way" in captured.err, (
         "an exchanged flow has nothing to recover; residue is not a recovery path"
     )
+
+
+# --- the record's state is read off this disk, never spent to make a boolean --
+#
+# `Path.exists()` has to consume the lookup error to return a bool. Measured for
+# a record that is present and unreadable, on two interpreters this project's
+# `requires-python = ">=3.12"` admits:
+#
+#     3.12.3   exists() raises PermissionError   ->  this verb said `unknown`
+#     3.14.7   exists() returns False            ->  this verb said `absent`
+#
+# The same source reported opposite facts about the same disk. CI is on the top
+# row (`ubuntu-latest` resolves `/usr/bin/python3`, 3.12.3), which is the part
+# that matters here: the defect was invisible to the gate, so a regression built
+# around the reported `EACCES` case alone would be green in CI forever. These
+# tests are therefore about the *lookup* rather than about a value, and the one
+# that pins the rule uses an error no interpreter above reports faithfully.
+
+
+def _loop_directory(tmp_path: Path) -> Path:
+    """A directory path whose lookup cannot complete: a symlink to itself.
+
+    `ELOOP` is the failure worth building a regression on, because `exists()`
+    answers `False` for it on **both** interpreters above (measured, not assumed).
+    A test resting on `EACCES` alone passes against the defect on 3.12 — which is
+    CI's interpreter, so reproducing the report faithfully and stopping there
+    would have left the suite green against the very bug it was written for.
+    """
+    directory = tmp_path / "loop"
+    directory.symlink_to(directory.name)
+    return directory
+
+
+def _directory_holding_a_record(tmp_path: Path) -> Path:
+    directory = link_recovery.ensure_directory(tmp_path / "records")
+    (directory / f"{FLOW_ID}.json").write_text("{}", encoding="utf-8")
+    return directory
+
+
+def _empty_directory(tmp_path: Path) -> Path:
+    return link_recovery.ensure_directory(tmp_path / "records")
+
+
+def _a_regular_file(tmp_path: Path) -> Path:
+    path = tmp_path / "not-a-directory"
+    path.write_text("", encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("arrange", "expected"),
+    [
+        (_directory_holding_a_record, retire_hosted_link.PRESENT),
+        (_empty_directory, retire_hosted_link.ABSENT),
+        (_a_regular_file, retire_hosted_link.ABSENT),
+        (_loop_directory, retire_hosted_link.UNKNOWN),
+    ],
+    ids=["on-disk", "no-such-file", "not-a-directory", "lookup-loops"],
+)
+def test_only_a_lookup_that_says_there_is_no_file_reports_the_record_absent(
+    tmp_path: Path, arrange: Callable[[Path], Path], expected: str
+) -> None:
+    """The mapping, stated as a table because its two halves are easy to blur.
+
+    `ENOENT` and `ENOTDIR` are statements that nothing is at the pathname — the
+    second one reaching that conclusion a component earlier. Every other error is
+    a lookup that did not finish, and the difference matters to the owner: after
+    an exchange, `absent` means the cleanup is done and this Mac holds nothing,
+    while `unknown` means go and look.
+    """
+    assert retire_hosted_link._observe_record(arrange(tmp_path), FLOW_ID) == expected
+
+
+def _search_is_denied(directory: Path) -> bool:
+    """Did `chmod 0o000` actually stop *this* process from looking inside?"""
+    try:
+        (directory / "probe").lstat()
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def test_a_record_that_cannot_be_read_is_not_a_record_that_is_gone(tmp_path: Path) -> None:
+    """The re-review's own case, on a real filesystem rather than a stub.
+
+    Skipped rather than failed when the mode bit does not stop this process (as
+    root it does not), because that is a fact about the sandbox and not a finding
+    about the code. The skip costs no coverage: the rule is pinned
+    root-independently, and interpreter-independently, by `lookup-loops` above.
+    """
+    directory = link_recovery.ensure_directory(tmp_path / "records")
+    record = directory / f"{FLOW_ID}.json"
+    record.write_text("{}", encoding="utf-8")
+
+    directory.chmod(0o000)
+    try:
+        if not _search_is_denied(directory):
+            pytest.skip("a 0o000 directory is searchable here, so there is no barrier to test")
+        assert retire_hosted_link._observe_record(directory, FLOW_ID) == retire_hosted_link.UNKNOWN
+    finally:
+        directory.chmod(0o700)
+
+    assert record.exists(), "it was there the whole time — which is what made `absent` a lie"
+
+
+def test_a_delete_that_could_not_look_reports_unknown_rather_than_gone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same rule at the level the owner reads, where it decides what he does.
+
+    Whatever stops the unlink usually also stops the lookup that follows it, so
+    this is the realistic shape of the fault rather than a contrived one. The
+    report it produces is acted on: after an exchange, `record=absent` says the
+    cleanup finished and there is nothing left on this Mac. Saying that because
+    the lookup failed is the previous round's defect one level further in — a
+    state inferred from an operation instead of measured.
+    """
+    args = _mac(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _exchanged()))
+    monkeypatch.setenv(link_recovery.RECOVERY_DIRECTORY_ENV, str(_loop_directory(tmp_path)))
+
+    assert retire_hosted_link.run(args) == 0, "a cleanup fault after an exchange is still a note"
+    captured = capsys.readouterr()
+
+    assert _outcome(args) == {
+        "exchange": retire_hosted_link.EXCHANGED,
+        "record": retire_hosted_link.UNKNOWN,
+    }
+    assert "not removed cleanly" in captured.err
+    assert "unknown afterwards" in captured.err
 
 
 def test_an_unwritable_outcome_file_never_fails_the_run(
