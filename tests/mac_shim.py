@@ -27,26 +27,56 @@ from pathlib import Path
 #: mistaken for configuration the product honours.
 HOLDS_ENV = "NETWORTH_TEST_MAC_HOLDS"
 
+#: Likewise. Arms a synthetic fault at the one instruction between "the record's
+#: name is gone" and "the caller is told the delete worked", so the shell driver
+#: can be driven through a post-exchange cleanup fault end to end.
+BREAK_DIRECTORY_FSYNC_ENV = "NETWORTH_TEST_BREAK_DIRECTORY_FSYNC"
 
-def mac_shim(tmp_path: Path, *, holds: bool = True) -> tuple[Path, dict[str, str]]:
+
+def mac_shim(
+    tmp_path: Path, *, holds: bool = True, break_directory_fsync: bool = False
+) -> tuple[Path, dict[str, str]]:
     """A ``sitecustomize`` directory and the environment that arms it.
 
     ``holds=False`` makes the child behave as though it is the wrong computer,
     which is how the refusal paths are exercised without depending on the address
     the runner happens to hold.
+
+    ``break_directory_fsync=True`` makes `os.fsync` fail for directory
+    descriptors only. `link_recovery.delete()` unlinks the record and *then*
+    fsyncs the directory, so this reaches the state the PR #75 re-review
+    reproduced: the pathname is already gone when the fault arrives. Aimed at
+    `os.fsync` rather than at the helper around it so the product's own ordering
+    is what runs; file writes are left working, since a shim that broke those
+    would be testing a different fault.
     """
 
     shim = tmp_path / "mac-shim"
     shim.mkdir(exist_ok=True)
     (shim / "sitecustomize.py").write_text(
+        "import errno\n"
         "import os\n"
+        "import stat\n"
         "\n"
         "import networth.mac_identity as _identity\n"
         "\n"
         "# `verify` resolves this attribute at call time rather than binding it as\n"
         "# a default, so replacing it here reaches every caller in the child.\n"
         f"_held = os.environ.get({HOLDS_ENV!r}) == '1'\n"
-        "_identity.holds_address = lambda _address: _held\n",
+        "_identity.holds_address = lambda _address: _held\n"
+        "\n"
+        f"if os.environ.get({BREAK_DIRECTORY_FSYNC_ENV!r}) == '1':\n"
+        "    _real_fsync = os.fsync\n"
+        "\n"
+        "    def _fsync(fd):\n"
+        "        if stat.S_ISDIR(os.fstat(fd).st_mode):\n"
+        "            raise OSError(errno.EIO, 'synthetic directory fsync failure')\n"
+        "        return _real_fsync(fd)\n"
+        "\n"
+        "    os.fsync = _fsync\n",
         encoding="utf-8",
     )
-    return shim, {HOLDS_ENV: "1" if holds else "0"}
+    env = {HOLDS_ENV: "1" if holds else "0"}
+    if break_directory_fsync:
+        env[BREAK_DIRECTORY_FSYNC_ENV] = "1"
+    return shim, env

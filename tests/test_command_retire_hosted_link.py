@@ -13,7 +13,10 @@ cleanup the real topology could not perform.
 from __future__ import annotations
 
 import argparse
+import errno
 import io
+import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -241,18 +244,20 @@ def test_a_finished_flow_with_no_record_here_is_not_a_fault(
     assert "had no record on this Mac" in capsys.readouterr().out
 
 
-def _outcome(args: argparse.Namespace) -> str:
-    return Path(args.outcome_file).read_text(encoding="utf-8").strip()
+def _outcome(args: argparse.Namespace) -> dict[str, str]:
+    """The report as the shell driver parses it: two named facts, never one word."""
+    text = Path(args.outcome_file).read_text(encoding="utf-8")
+    return dict(line.split("=", 1) for line in text.splitlines() if line)
 
 
-def test_the_outcome_file_says_retired_exactly_when_the_record_is_gone(
+def test_the_outcome_file_says_the_exchange_landed_and_the_record_is_gone(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The fact the driver reports afterwards, taken from the process that acted.
+    """The facts the driver reports afterwards, taken from the process that acted.
 
-    Its exit status cannot carry this: the verb exits 0 both when it deletes and
+    Its exit status cannot carry either: the verb exits 0 both when it deletes and
     when it deliberately keeps, and describing those two the same way is the
-    contradiction the re-review found.
+    contradiction the first re-review found.
     """
     args = _mac(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _exchanged()))
     record = _record()
@@ -261,30 +266,82 @@ def test_the_outcome_file_says_retired_exactly_when_the_record_is_gone(
     capsys.readouterr()
 
     assert not record.exists()
-    assert _outcome(args) == retire_hosted_link.RETIRED
+    assert _outcome(args) == {
+        "exchange": retire_hosted_link.EXCHANGED,
+        "record": retire_hosted_link.ABSENT,
+    }
+
+
+def test_the_two_facts_cannot_be_reported_one_at_a_time(tmp_path: Path) -> None:
+    """The structural half of the fix, which no behavioural test can reach.
+
+    Collapsing the two states back into one is not a bug that shows up as a wrong
+    value — it shows up as a *call site that compiles*, and the previous signature
+    took exactly one word. Mutation testing is blind to it: revert the signature
+    and every call site reverts with it, leaving the suite green. So the rule is
+    asserted directly instead.
+
+    The four `type: ignore[call-arg]` comments below are the more interesting half
+    of the evidence, and they are load-bearing rather than noise: `mypy --strict`
+    rejects every one of these calls *statically*, and the gate runs it over
+    `tests/` as well as `networth/`. So a future edit that drops one of the two
+    facts fails at type-check time, before this test runs at all. What is checked
+    here is the runtime behaviour behind that — the belt under the braces, for a
+    caller that reaches this function without being type-checked.
+    """
+    path = str(tmp_path / "outcome")
+
+    with pytest.raises(TypeError):
+        retire_hosted_link._record_outcome(path, exchange=retire_hosted_link.EXCHANGED)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        retire_hosted_link._record_outcome(path, record=retire_hosted_link.ABSENT)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        retire_hosted_link._record_outcome(path)  # type: ignore[call-arg]
+    # Positional is refused too: an order nobody can see at the call site is how
+    # two same-typed facts get silently swapped.
+    with pytest.raises(TypeError):
+        retire_hosted_link._record_outcome(path, "exchanged", "absent")  # type: ignore[call-arg]
+
+    assert not Path(path).exists(), "a refused call reports nothing at all"
 
 
 @pytest.mark.parametrize(
-    ("lines", "expect_completion", "here"),
+    ("lines", "expect_completion", "here", "exchange"),
     [
-        (TRANSPORT_NOISE, True, True),
-        (TRANSPORT_NOISE, False, True),
-        ((*TRANSPORT_NOISE, _exchanged(OTHER_FLOW_ID)), True, True),
-        ((*TRANSPORT_NOISE, _exchanged(), _exchanged(OTHER_FLOW_ID)), True, True),
-        ((*TRANSPORT_NOISE, _exchanged()), True, False),
+        (TRANSPORT_NOISE, True, True, retire_hosted_link.UNPROVEN),
+        (TRANSPORT_NOISE, False, True, retire_hosted_link.UNPROVEN),
+        ((*TRANSPORT_NOISE, _exchanged(OTHER_FLOW_ID)), True, True, retire_hosted_link.UNPROVEN),
+        (
+            (*TRANSPORT_NOISE, _exchanged(), _exchanged(OTHER_FLOW_ID)),
+            True,
+            True,
+            retire_hosted_link.UNPROVEN,
+        ),
+        ((*TRANSPORT_NOISE, _exchanged()), True, False, retire_hosted_link.EXCHANGED),
     ],
     ids=["no-marker-expected", "retrieve-only", "other-flow", "two-markers", "wrong-machine"],
 )
-def test_every_path_that_leaves_the_record_reports_kept(
+def test_every_path_that_leaves_the_record_says_why_without_guessing_at_it(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     lines: tuple[str, ...],
     expect_completion: bool,
     here: bool,
+    exchange: str,
 ) -> None:
     """Enumerated rather than sampled: the driver's message is only as honest as
-    the least-covered exit path, and an unreported one reads as "cannot tell"."""
+    the least-covered exit path, and an unreported one reads as "cannot tell".
+
+    Each case now carries its expected *exchange* fact, and `wrong-machine` is why
+    the column is worth having. It used to report the same `kept` as the four
+    above it, and it is the opposite situation: a valid marker proved the exchange
+    landed, and the only thing missing is the authority to look at the file. Every
+    one of these reports `record=unknown`, because all of them return before this
+    process has established it is the machine that holds the record — and reading
+    that directory from anywhere else resolves some other computer's
+    `~/agents/secrets`, which is the defect the previous round removed.
+    """
     args = _mac(monkeypatch, tmp_path, lines, expect_completion=expect_completion, here=here)
     if not here:
         monkeypatch.setattr(mac_identity, "holds_address", lambda _address: True)
@@ -296,7 +353,84 @@ def test_every_path_that_leaves_the_record_reports_kept(
     capsys.readouterr()
 
     assert record.exists()
-    assert _outcome(args) == retire_hosted_link.KEPT
+    assert _outcome(args) == {"exchange": exchange, "record": retire_hosted_link.UNKNOWN}
+
+
+def _break_directory_fsync(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail `os.fsync` for directory descriptors only, leaving file writes alone.
+
+    Aimed at `os.fsync` rather than at `_fsync_directory`, so the code under test
+    is the real one: `delete()` really unlinks, `_fsync_directory` really opens
+    the directory, and the fault arrives at the one instruction between "the name
+    is gone" and "the caller is told it worked".
+    """
+    real = os.fsync
+
+    def failing(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "synthetic directory fsync failure")
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", failing)
+
+
+def test_a_fault_after_the_unlink_reports_the_record_gone_not_kept(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The re-review's reproduction, at the boundary it actually happens on.
+
+    `delete()` unlinks first and fsyncs the directory second. A fault in that
+    fsync leaves the pathname already gone — and the old report said `kept`, which
+    the driver rendered as "the flow may still be live and that file is the way
+    back", about a file that no longer existed, for a flow whose exchange a marker
+    had already proved landed. Both halves of the sentence were false.
+    """
+    args = _mac(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _exchanged()))
+    record = _record()
+    _break_directory_fsync(monkeypatch)
+
+    assert retire_hosted_link.run(args) == 0, "a cleanup fault after an exchange is a note"
+    captured = capsys.readouterr()
+
+    assert not record.exists(), "the unlink really happened; that is the point of the case"
+    assert _outcome(args) == {
+        "exchange": retire_hosted_link.EXCHANGED,
+        "record": retire_hosted_link.ABSENT,
+    }
+    assert "not removed cleanly" in captured.err
+    assert "absent afterwards" in captured.err
+
+
+def test_a_fault_before_the_unlink_reports_the_record_still_here(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other side of the same boundary, and the reason the test above is not
+    enough on its own.
+
+    A helper that answered `absent` unconditionally would pass that one. What has
+    to be true is that the state is *looked at*: same exception class, same exit
+    path, opposite answer, decided by the filesystem rather than by the failure.
+    """
+    args = _mac(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _exchanged()))
+    record = _record()
+
+    def refuse(_self: Path, **_kwargs: object) -> None:
+        raise PermissionError(errno.EACCES, "synthetic unlink refusal")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    assert retire_hosted_link.run(args) == 0
+    captured = capsys.readouterr()
+
+    assert record.exists(), "nothing was removed, so the record is still on this disk"
+    assert _outcome(args) == {
+        "exchange": retire_hosted_link.EXCHANGED,
+        "record": retire_hosted_link.PRESENT,
+    }
+    assert "present afterwards" in captured.err
+    assert "inert either way" in captured.err, (
+        "an exchanged flow has nothing to recover; residue is not a recovery path"
+    )
 
 
 def test_an_unwritable_outcome_file_never_fails_the_run(

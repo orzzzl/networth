@@ -152,19 +152,51 @@ local_status="${statuses[1]}"
 # Read rather than assumed, and "the file is not there" is its own answer: the
 # retiring half writes this last, so its absence means that half never got to
 # speak and this driver must not claim to know what it did.
-record_outcome="$(cat "$outcome_file" 2>/dev/null)"
+exchange_state="$(sed -n 's/^exchange=//p' "$outcome_file" 2>/dev/null)"
+record_state="$(sed -n 's/^record=//p' "$outcome_file" 2>/dev/null)"
 
-if [ "$remote_status" -ne 0 ]; then
-	case "$record_outcome" in
-	retired)
-		printf '\nlink-complete: the remote half exited %s AFTER reporting the exchange.\n' "$remote_status" >&2
-		printf 'The exchange landed and this Mac retired its recovery record, which is correct — an exchanged flow cannot be stranded, so the record was residue from the moment the marker was printed. What failed is whatever the remote did next: with --link-mode exchange-twice that is the second exchange or the first-token probe. Nothing is stranded and nothing needs recovering; read the remote transcript above for the measurement that did not complete.\n' >&2
+# Two facts, read and reported separately, because the re-review found this
+# driver deriving one from the other in both directions.
+#
+# The first version inferred the record's fate from the remote's exit status. The
+# second asked the half that acted, but that half answered with one word: `kept`
+# covered "no marker arrived, the flow may still be live, this file is the way
+# back" AND "the marker proved the exchange landed and cleanup then faulted,
+# where the file is inert residue". Those are opposite instructions to the owner,
+# and the second one was being given the first one's advice. At the concrete
+# unlink-then-directory-fsync boundary it was worse than opposite: the record was
+# already gone and the report still said `kept`.
+#
+# So neither fact is now allowed to imply the other. Whether an exchange landed
+# is a property of the marker; whether a record is on this disk is a property of
+# this disk; and after a fault the second one is *looked at* rather than deduced.
+say_exchanged_advice() {
+	printf 'The exchange landed — the marker is printed only after any credential is stored — so nothing is stranded and nothing needs recovering. What failed is whatever came next: with --link-mode exchange-twice that is the second exchange or the first-token probe. Read the remote transcript above for the measurement that did not complete.\n' >&2
+	case "$record_state" in
+	absent)
+		printf 'This Mac has no recovery record for %s, which is the correct end state.\n' "$flow" >&2
 		;;
-	kept)
-		printf '\nlink-complete: the remote half exited %s. This Mac kept its recovery record, which is the only way back to the flow if it is still live\n' "$remote_status" >&2
+	present)
+		printf 'This Mac still holds %s.json in %s. It is inert residue, not a way back to anything — the cleanup faulted, and the unattended puller removes it once reap_after has passed.\n' "$flow" "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}" >&2
 		;;
 	*)
-		printf '\nlink-complete: the remote half exited %s, and the retiring half did not report what it did with the record.\n' "$remote_status" >&2
+		printf 'What became of this Mac'"'"'s copy of %s.json was not established. Either way it is inert: an exchanged flow has nothing left to recover, and the puller removes the file at reap_after if it is still in %s.\n' "$flow" "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}" >&2
+		;;
+	esac
+}
+
+if [ "$remote_status" -ne 0 ]; then
+	case "$exchange_state" in
+	exchanged)
+		printf '\nlink-complete: the remote half exited %s AFTER reporting the exchange.\n' "$remote_status" >&2
+		say_exchanged_advice
+		;;
+	unproven)
+		printf '\nlink-complete: the remote half exited %s and no transcript marker reported %s as exchanged, so the flow may still be live.\n' "$remote_status" "$flow" >&2
+		printf 'This Mac was told to keep its recovery record; look for %s.json in %s, which is the way back if the flow is live.\n' "$flow" "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}" >&2
+		;;
+	*)
+		printf '\nlink-complete: the remote half exited %s, and the retiring half did not report what happened.\n' "$remote_status" >&2
 		printf 'This driver will not guess. Look in %s for %s.json: if it is there the flow may still be live and that file is the way back; if it is gone the exchange had already been reported.\n' "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}" "$flow" >&2
 		;;
 	esac
@@ -172,6 +204,16 @@ if [ "$remote_status" -ne 0 ]; then
 fi
 if [ "$local_status" -ne 0 ]; then
 	printf '\nlink-complete: the remote half finished and this Mac did not retire its record (exit %s).\n' "$local_status" >&2
-	printf 'The reason is above. If the exchange landed, the record is inert — it holds no Plaid client credential — and the puller removes it once reap_after has passed.\n' >&2
+	printf 'The reason is above.\n' >&2
+	# This used to hedge — "*if* the exchange landed, the record is inert" —
+	# and the hedge is unnecessary, because the retiring half reported it. Both
+	# states are reachable here: a refusal this Mac raised before it could look
+	# (no marker, a marker for another flow, an unparseable transcript) and a
+	# host check that failed with a valid marker in hand.
+	if [ "$exchange_state" = exchanged ]; then
+		say_exchanged_advice
+	else
+		printf 'No marker reported %s as exchanged, so the flow may still be live and %s.json in %s is the way back.\n' "$flow" "$flow" "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}" >&2
+	fi
 	exit "$local_status"
 fi

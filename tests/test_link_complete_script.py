@@ -172,9 +172,10 @@ def _drive(
     *,
     mode: str = "exchange",
     flow: str = FLOW_ID,
+    break_directory_fsync: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run the driver against a Mac directory the remote half has no access to."""
-    shim, shim_env = mac_shim(tmp_path)
+    shim, shim_env = mac_shim(tmp_path, break_directory_fsync=break_directory_fsync)
     result = subprocess.run(
         [
             "bash",
@@ -306,10 +307,51 @@ def test_a_remote_that_fails_after_reporting_the_exchange_says_so(tmp_path: Path
     assert result.returncode == 3, "the remote's status still reaches the caller"
     assert not record.exists(), "the exchange landed, so retiring the record was right"
     assert "AFTER reporting the exchange" in result.stderr
-    assert "retired its recovery record" in result.stderr
-    # The exact sentence that was false. Asserted as an absence so the test fails
-    # if the old wording comes back by any route.
+    assert "has no recovery record" in result.stderr
+    # The claims that were false. Asserted as absences so the test fails if the
+    # old wording comes back by any route — and phrased as the *advice* rather
+    # than as one sentence, because the second re-review found the same false
+    # advice arriving through a different sentence.
     assert "kept its recovery record" not in result.stderr
+    assert "may still be live" not in result.stderr
+    assert "the way back" not in result.stderr
+
+
+def test_a_cleanup_fault_after_the_exchange_never_reads_as_a_live_flow(
+    tmp_path: Path,
+) -> None:
+    """The second re-review's blocker, end to end and at the real boundary.
+
+    Three things at once, which is the combination that produced the wrong
+    sentence: a marker proved the exchange landed, the cleanup then faulted, and
+    the remote exited nonzero afterwards. The old driver read a single `kept` and
+    told the owner "the flow may still be live and that file is the way back" —
+    for a flow whose exchange was already proven, about a record the fault had
+    already unlinked, since `delete()` fsyncs the directory only after the unlink.
+
+    Driven through the shim rather than asserted about: the child really unlinks
+    and the synthetic fault really lands between that and the return, so the
+    filesystem state under the report is the true one.
+    """
+    repo, sha = _throwaway_checkout(tmp_path, _remote(exchanges=FLOW_ID, exit_code=3))
+    mac_recovery = tmp_path / "mac-link-recovery"
+    record = _seed(mac_recovery)
+
+    result = _drive(tmp_path, repo, sha, mac_recovery, break_directory_fsync=True)
+
+    assert result.returncode == 3, "the remote's status still reaches the caller"
+    assert not record.exists(), "the unlink happened before the fault; that is the case"
+    assert "not removed cleanly" in result.stderr, "the fault itself is still reported"
+
+    # What the driver must now say, and the two things it must not.
+    assert "AFTER reporting the exchange" in result.stderr
+    assert "nothing is stranded and nothing needs recovering" in result.stderr.lower()
+    assert "may still be live" not in result.stderr, (
+        "a marker proved the exchange landed; the flow is not live"
+    )
+    assert "the way back" not in result.stderr, (
+        "there is nothing to go back to, and the record is gone in any case"
+    )
 
 
 def test_the_two_nonzero_endings_are_told_apart(tmp_path: Path) -> None:
@@ -331,8 +373,15 @@ def test_the_two_nonzero_endings_are_told_apart(tmp_path: Path) -> None:
         reports.append(_drive(workspace, repo, sha, mac_recovery).stderr)
 
     assert reports[0] != reports[1]
-    assert "kept its recovery record" in reports[1]
-    assert "kept its recovery record" not in reports[0]
+    # Asserted on the advice rather than on a phrase. The reader's question is
+    # "is there anything to recover", and the two runs must answer it opposite
+    # ways — which stays true if either message is reworded, and is what the
+    # previous phrase-matching version of this assertion did not pin.
+    marker, silent = reports
+    for claim in ("may still be live", "the way back"):
+        assert claim in silent, "no marker arrived, so the flow may genuinely be live"
+        assert claim not in marker, "a marker proved the exchange; there is nothing to recover"
+    assert "nothing is stranded and nothing needs recovering" in marker.lower()
 
 
 def test_retrieve_only_keeps_the_record_and_succeeds(tmp_path: Path) -> None:

@@ -34,6 +34,14 @@ would remove a live flow's copy while reporting success. That is a refusal.
 Mac's secrets directory, so it verifies it is the Mac (measured, not asserted)
 before it touches anything, for the same reason the absorber does before it
 writes.
+
+**And it reports two facts, never one.** Whether a marker proved this flow's
+exchange landed, and what is on this Mac's disk afterwards, are independent —
+the second re-review found them collapsed into a single word, which made a
+post-exchange cleanup fault indistinguishable from a flow that may still be
+live, and those two want opposite things from the owner. Neither is ever
+inferred from the other, and the second one is looked at rather than deduced.
+See :func:`_record_outcome` and :func:`_observe_record`.
 """
 
 from __future__ import annotations
@@ -74,10 +82,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--outcome-file",
         metavar="PATH",
         help=(
-            "write 'retired' or 'kept' here, for the driver that has to describe "
-            "afterwards what happened to the record. Its own exit status cannot "
-            "say: this verb exits 0 both when it deletes and when it deliberately "
-            "keeps, and the two need different words"
+            "write 'exchange=<exchanged|unproven>' and 'record=<present|absent|"
+            "unknown>' here, for the driver that has to describe afterwards what "
+            "happened. Two facts, never one: the exit status carries neither (this "
+            "verb exits 0 both when it deletes and when it deliberately keeps), and "
+            "collapsing them made a post-exchange cleanup fault indistinguishable "
+            "from a flow that may still be live"
         ),
     )
 
@@ -106,15 +116,34 @@ def _read(lines: list[str]) -> CompletionOutcome | None:
     return found[0]
 
 
-#: What the record's fate is called on the wire to the driver. `RETIRED` covers
-#: "deleted" and "was already gone" alike: the driver is describing the state of
-#: this Mac afterwards, and in both cases there is no record here.
-RETIRED: Final = "retired"
-KEPT: Final = "kept"
+#: Did a marker prove *this* flow's exchange landed? The first of the two facts
+#: the driver needs, and the one the exit status cannot carry.
+EXCHANGED: Final = "exchanged"
+UNPROVEN: Final = "unproven"
+
+#: And, separately, what is on this Mac's disk afterwards. `UNKNOWN` is not a
+#: hedge: it is the answer on every path that returns before this process has
+#: established it is even the machine that holds the record, where looking would
+#: mean resolving some other computer's `~/agents/secrets`.
+PRESENT: Final = "present"
+ABSENT: Final = "absent"
+UNKNOWN: Final = "unknown"
 
 
-def _record_outcome(path: str | None, outcome: str) -> None:
-    """Tell the driver what became of the record, if it asked.
+def _record_outcome(path: str | None, *, exchange: str, record: str) -> None:
+    """Tell the driver both facts, if it asked.
+
+    **Both, keyword-only, with no defaults, because the re-review's blocker was
+    exactly that they had been one word.** A single `kept` meant "no marker
+    arrived, so the flow may still be live and the record is the way back" *and*
+    "the marker proved the exchange landed, but cleanup faulted, so the record is
+    inert residue" — opposite instructions to the owner under one name. The old
+    vocabulary also could not express the state that produced the reproduction:
+    `delete()` unlinks first and fsyncs the directory second, so a fault in the
+    fsync leaves the pathname already gone while the report said `kept`.
+
+    A signature that cannot express one fact without the other is the part of
+    this fix that survives someone editing the call sites.
 
     Never raises. This runs at the end of paths that have already succeeded or
     already failed, and a report that could itself fail would turn a diagnostic
@@ -124,7 +153,27 @@ def _record_outcome(path: str | None, outcome: str) -> None:
     if path is None:
         return
     with contextlib.suppress(OSError):
-        Path(path).write_text(outcome + "\n", encoding="utf-8")
+        Path(path).write_text(f"exchange={exchange}\nrecord={record}\n", encoding="utf-8")
+
+
+def _observe_record(directory: Path, flow_id: str) -> str:
+    """Look at the record; report what is there.
+
+    Called only after :func:`mac_identity.verify` has passed, so it is this Mac's
+    own directory being read. Every earlier path reports :data:`UNKNOWN` instead
+    of calling this, which is the same rule the previous round established for
+    the delete itself: the machine that cannot see the file does not get to
+    describe it.
+
+    Used on the success path too, rather than writing :data:`ABSENT` from the
+    fact that `delete()` returned. That is a small thing that keeps a large
+    promise: nothing in this report is ever inferred from an operation's outcome,
+    including an operation that went well.
+    """
+    try:
+        return PRESENT if link_recovery.record_path(directory, flow_id).exists() else ABSENT
+    except OSError:
+        return UNKNOWN
 
 
 def run(args: argparse.Namespace) -> int:
@@ -133,7 +182,7 @@ def run(args: argparse.Namespace) -> int:
         outcome = _read(lines)
     except LinkRecoveryError as exc:
         print(f"\nretire-hosted-link failed: {exc}", file=sys.stderr)
-        _record_outcome(args.outcome_file, KEPT)
+        _record_outcome(args.outcome_file, exchange=UNPROVEN, record=UNKNOWN)
         return 2
 
     if outcome is None:
@@ -142,7 +191,7 @@ def run(args: argparse.Namespace) -> int:
             # live and the record is what measurement (i) comes back to in 30
             # minutes, so "nothing was retired" is the success case here.
             print(f"\nrecord        kept for {args.flow}; nothing reported an exchange")
-            _record_outcome(args.outcome_file, KEPT)
+            _record_outcome(args.outcome_file, exchange=UNPROVEN, record=UNKNOWN)
             return 0
         print(
             f"\nretire-hosted-link: the transcript never reported {args.flow} as "
@@ -151,7 +200,7 @@ def run(args: argparse.Namespace) -> int:
             "record is inert and the puller reaps it at reap_after",
             file=sys.stderr,
         )
-        _record_outcome(args.outcome_file, KEPT)
+        _record_outcome(args.outcome_file, exchange=UNPROVEN, record=UNKNOWN)
         return 1
 
     if outcome.flow_id != args.flow:
@@ -162,7 +211,7 @@ def run(args: argparse.Namespace) -> int:
             "about a different one",
             file=sys.stderr,
         )
-        _record_outcome(args.outcome_file, KEPT)
+        _record_outcome(args.outcome_file, exchange=UNPROVEN, record=UNKNOWN)
         return 2
 
     # Measured before anything is unlinked, like the absorber before anything is
@@ -177,7 +226,7 @@ def run(args: argparse.Namespace) -> int:
             "happened on the VPS, and its transcript is above",
             file=sys.stderr,
         )
-        _record_outcome(args.outcome_file, KEPT)
+        _record_outcome(args.outcome_file, exchange=EXCHANGED, record=UNKNOWN)
         return 2
 
     directory = link_recovery.mac_recovery_directory()
@@ -188,11 +237,21 @@ def run(args: argparse.Namespace) -> int:
         # the credential is stored and the flow is finished, so exiting non-zero
         # would send the owner to a recovery procedure for a flow that has none
         # left to do. The record is inert and `reap_after` bounds it.
+        #
+        # And what "the record" means here is *looked at*, not assumed from the
+        # exception. `delete()` unlinks first and fsyncs the directory second, so
+        # a fault raised by that fsync leaves the pathname already gone — the
+        # reproduction in the re-review, where the report said `kept` about a
+        # file that no longer existed. The state after a partial operation is not
+        # derivable from the fact that it raised.
+        state = _observe_record(directory, outcome.flow_id)
         print(
-            f"\nnote          this Mac's recovery record was not removed: {exc}",
+            f"\nnote          this Mac's recovery record was not removed cleanly: "
+            f"{exc}\nrecord        {state} afterwards; the exchange itself landed, so "
+            "it is inert either way",
             file=sys.stderr,
         )
-        _record_outcome(args.outcome_file, KEPT)
+        _record_outcome(args.outcome_file, exchange=EXCHANGED, record=state)
         return 0
 
     if removed:
@@ -201,5 +260,9 @@ def run(args: argparse.Namespace) -> int:
         # Not a fault either. `link-recover.sh` completes on this Mac and retires
         # in that process, and a re-run of a finished flow lands here.
         print(f"\nretired       nothing; {outcome.flow_id} had no record on this Mac")
-    _record_outcome(args.outcome_file, RETIRED)
+    _record_outcome(
+        args.outcome_file,
+        exchange=EXCHANGED,
+        record=_observe_record(directory, outcome.flow_id),
+    )
     return 0
