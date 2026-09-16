@@ -110,9 +110,9 @@ that row. He caught it, not us.)
 | 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | **DONE** (#74, 2026-09-15) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **READY** |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | BLOCKED (20) |
-| 21 | Flutter app skeleton | 19 | **claude** | codex | **WIP** (#77) |
-| 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED |
-| 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | BLOCKED (21) |
+| 21 | Flutter app skeleton | 19 | **claude** | codex | **DONE** (#77, 2026-09-16) |
+| 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED (19a) |
+| 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **READY** |
 | 24 | Release signing + APK delivery | 20, 21, 22 | **claude** | codex | BLOCKED |
 | 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 19, 22 | **claude** | codex | BLOCKED |
 
@@ -2205,9 +2205,13 @@ story. Read-only display; **holds no Plaid token and never calls Plaid**. Fetche
 
 **Acceptance:**
 
-- [ ] **I4: there is no intermediate state in which this app renders a bare headline.**
+- [x] **I4: there is no intermediate state in which this app renders a bare headline.**
       That would be shippable and would be the exact lie the project refuses.
-- [ ] **All three age states render:** `KNOWN` shows the date; `UNKNOWN` shows *"can't date
+      *(Kept structurally: `DatedTotal` is a sealed class whose every constructor
+      carries an age state, so the exhaustive `switch` is checked at compile time and
+      an unannotated total is not a code path that exists. The loading state renders no
+      headline at all — `app/test/app_test.dart`.)*
+- [x] **All three age states render:** `KNOWN` shows the date; `UNKNOWN` shows *"can't date
       this total — N of M accounts can't be dated"* and **no date anywhere near the
       headline**; `STATIC_ONLY` says so — which is the real state before the first Item is
       ever linked, not a theoretical one.
@@ -2221,8 +2225,10 @@ story. Read-only display; **holds no Plaid token and never calls Plaid**. Fetche
       for an unreconciled account, an item needing re-authentication, **and** a frozen
       clock, whose remedies are reconciliation, reconnection and neither, so the copy may
       not name one. Task `22` parses enough detail to tell them apart.
-- [ ] **Fixtures include the mixed known/unknown case**, because that is the one where a
+- [x] **Fixtures include the mixed known/unknown case**, because that is the one where a
       plausible implementation quietly prints the oldest known date.
+      *(`app/assets/fixtures/mixed_known_and_unknown.json`, alongside `known.json` and
+      `static_only.json`; all three are in `allFixtures`.)*
 
 **Dependencies — the explicit OK `AGENTS.md` requires, and it covers these two only.**
 `flutter_localizations` (Flutter SDK) and `intl` (pub.dev) are **approved for task 21**,
