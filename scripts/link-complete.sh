@@ -127,7 +127,13 @@ printf 'recovery dir  %s\n\n' "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secret
 # so the record is residue from that instant. Only the report was wrong. So the
 # report now comes from the process that acted instead of from a status that
 # cannot see it.
-outcome_file="$(mktemp -t networth-link-complete)"
+# An explicit template rather than `mktemp -t <prefix>`: BSD mktemp reads that
+# argument as a prefix and GNU coreutils reads it as a template that must end in
+# `XXX`, so the first spelling ran here and failed in CI with "too few X's". This
+# driver only ever runs on the Mac, but a script that works on one libc by
+# accident is a script nobody can test anywhere else — and the script-level tests
+# are exactly what caught it.
+outcome_file="$(mktemp "${TMPDIR:-/tmp}/networth-link-complete.XXXXXXXX")"
 cleanup() { rm -f "$outcome_file"; }
 trap cleanup EXIT
 
