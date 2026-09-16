@@ -43,11 +43,15 @@ class _HomePageState extends State<HomePage> {
           future: _payload,
           builder: (context, snapshot) {
             if (snapshot.hasError) {
-              return _Message(
-                icon: Icons.error_outline,
-                text: l10n.snapshotUnreadable,
-                detail: '${snapshot.error}',
-              );
+              // The error object does not reach the screen. It used to, as
+              // `'${snapshot.error}'` under the summary, which put raw internal
+              // text like `Bad state: no payload` in front of the owner — past
+              // the i18n layer, in a shape nobody chose, and with no bound on
+              // what an exception might have put in its message. It goes to the
+              // debug log instead, where a developer can read it and the owner
+              // is not asked to.
+              debugPrint('snapshot unreadable: ${snapshot.error}');
+              return _Message(icon: Icons.error_outline, text: l10n.snapshotUnreadable);
             }
             final payload = snapshot.data;
             if (payload == null) {
@@ -65,11 +69,10 @@ class _HomePageState extends State<HomePage> {
 }
 
 class _Message extends StatelessWidget {
-  const _Message({required this.icon, required this.text, required this.detail});
+  const _Message({required this.icon, required this.text});
 
   final IconData icon;
   final String text;
-  final String detail;
 
   @override
   Widget build(BuildContext context) {
@@ -83,14 +86,6 @@ class _Message extends StatelessWidget {
             Icon(icon, color: theme.colorScheme.error),
             const SizedBox(height: 12),
             Text(text, style: theme.textTheme.titleMedium, textAlign: TextAlign.center),
-            const SizedBox(height: 6),
-            Text(
-              detail,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              textAlign: TextAlign.center,
-            ),
           ],
         ),
       ),

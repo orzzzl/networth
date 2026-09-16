@@ -2211,11 +2211,42 @@ story. Read-only display; **holds no Plaid token and never calls Plaid**. Fetche
       this total — N of M accounts can't be dated"* and **no date anywhere near the
       headline**; `STATIC_ONLY` says so — which is the real state before the first Item is
       ever linked, not a theoretical one.
+      **But the copy states the empty age basis and never a cause**, because that is all
+      the state guarantees. "Before the first Item is linked" is *one* way to reach it and
+      the sentence above reads like the only one: `snapshotter.py` skips `NEW` accounts
+      before the clock accounting, so a portfolio whose linked accounts are all still
+      unreconciled is also `STATIC_ONLY`. *(PR #77's first head rendered "no linked
+      accounts yet" — the spec's own framing, taken one step further than it holds.)*
+      The same applies to `ACTION_NEEDED` on the connection row: `staleness.py` returns it
+      for an unreconciled account, an item needing re-authentication, **and** a frozen
+      clock, whose remedies are reconciliation, reconnection and neither, so the copy may
+      not name one. Task `22` parses enough detail to tell them apart.
 - [ ] **Fixtures include the mixed known/unknown case**, because that is the one where a
       plausible implementation quietly prints the oldest known date.
 
+**Dependencies — the explicit OK `AGENTS.md` requires, and it covers these two only.**
+`flutter_localizations` (Flutter SDK) and `intl` (pub.dev) are **approved for task 21**,
+to stand up the app's localization seam. `AGENTS.md` requires user-facing strings to go
+through the UI layer's own i18n, and this is the first screen, so the convention is either
+true here or inherited broken by every screen after it. Hand-rolling a string table and an
+ICU plural evaluator to avoid the dependency would be more code, less correct, and outside
+the Flutter conventions the rest of the app follows.
+
+This is a **separate gate from the cost rule and does not follow from it** — both are free
+(`flutter_localizations` ships inside the SDK; `intl` is a plain package with no service
+behind it), and being free is why they *could* be approved, not why they *are*. *(Added on
+review of PR #77: the first version of that PR added both and argued only the cost rule,
+which is the two gates being confused for one.)*
+
+**No other dependency is approved here.** A third one — including anything `intl` suggests
+adding later — needs its own line in this spec.
+
 **Must not:** render a total without its age, at any point, even temporarily. Task `22`
-deepens the treatment; it does not introduce it.
+deepens the treatment; it does not introduce it. **Must not** put internal text on the
+screen: an exception's message is not copy, it is unbounded, and it has not been through
+i18n. *(Also from PR #77's review: the load-failure branch rendered `${snapshot.error}`,
+which the literal-string guard did not catch because the literal was a hole rather than a
+sentence.)*
 
 ### 22 — Dual-staleness UI + alert surface + downgrade handling — **claude**
 

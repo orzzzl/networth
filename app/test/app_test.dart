@@ -58,6 +58,31 @@ void main() {
     expect(find.text("couldn't read the published snapshot"), findsOneWidget);
   });
 
+  testWidgets('and the failure never shows the owner the exception text', (tester) async {
+    // PR #77 re-review blocker 2. The screen rendered `'\${snapshot.error}'`
+    // under the summary, so `_FailingSource`'s `StateError` put "Bad state: no
+    // payload" in front of the owner — past the i18n layer, in a shape nobody
+    // chose, and with no bound on what an exception's message might contain.
+    //
+    // Asserted on the whole rendered surface rather than on the one widget that
+    // used to carry it: the defect is internal text reaching the screen, not one
+    // particular `Text`.
+    await tester.pumpWidget(localized(HomePage(source: _FailingSource()), scaffold: false));
+    await tester.pumpAndSettle();
+
+    final rendered = renderedText(tester, find.byType(HomePage));
+    expect(rendered, isNotEmpty);
+    for (final line in rendered) {
+      for (final leak in ['Bad state', 'no payload', 'Exception', 'Error']) {
+        expect(
+          line,
+          isNot(contains(leak)),
+          reason: 'internal error text reached the screen: "\$line"',
+        );
+      }
+    }
+  });
+
   testWidgets('the app boots', (tester) async {
     await tester.pumpWidget(
       NetWorthApp(
