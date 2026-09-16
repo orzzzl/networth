@@ -153,8 +153,8 @@ def _archive(tmp_path: Path, *, orphan: bool = False, broken_lineage: bool = Fal
     )
     connection.execute(
         """
-        INSERT INTO publication(snapshot_id, pairing_id, seq, schema_version, published_at, ok)
-        VALUES (1, 'pairing-old', 500, '1', ?, 1)
+        INSERT INTO publication(snapshot_id, pairing_id, seq, schema_version, published_at)
+        VALUES (1, 'pairing-old', 500, '1', ?)
         """,
         ("2026-09-07T09:00:00Z",),
     )
