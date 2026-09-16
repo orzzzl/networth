@@ -108,8 +108,8 @@ that row. He caught it, not us.)
 | 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **DONE** (#71, 2026-09-14) |
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | **READY** |
 | 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | **DONE** (#74, 2026-09-15) |
-| 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **READY** |
-| 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | BLOCKED (20) |
+| 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **DONE** (#79, 2026-09-16) |
+| 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | **READY** |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | **DONE** (#77, 2026-09-16) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED (19a) |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **READY** |
@@ -2132,12 +2132,13 @@ re-encrypting**.
 **Normative:** §16, §6.4, §6.3.1, §15.1.
 
 **Acceptance — carried from #74's review, explicitly non-blocking for task `19`:**
+*(both met in #79, merged `126e161`)*
 
-- [ ] A multi-account wire regression proves `Publisher` copies non-zero
+- [x] A multi-account wire regression proves `Publisher` copies non-zero
       `static_account_count`, `reauth_account_count`, and `unreconciled_account_count`, plus
       a non-`CONFIRMED` `reconciliation_state`, into the encrypted payload. Each field is
       mutation-pinned; a benign constant must make a named test fail.
-- [ ] The publication ledger is success-only. A failed attempt rolls back, inserts no
+- [x] The publication ledger is success-only. A failed attempt rolls back, inserts no
       `publication` row, and does not advance `seq`; §6.4 monitoring uses the age of the
       last committed success. Add a numbered `0005` migration that removes
       `publication.ok` and `publication.error` for fresh databases and databases already
@@ -2154,20 +2155,20 @@ this row, owns the one-time live post-install comparison against the approved pu
 surface and records the Funnel state.
 
 **Acceptance — the bind test, which is the one mistake here that silently publishes a
-private endpoint:**
+private endpoint:** *(all four met in #79, merged `126e161`)*
 
-- [ ] **Assert our listener's address**, not the absence of a string. "Not `0.0.0.0`" is
+- [x] **Assert our listener's address**, not the absence of a string. "Not `0.0.0.0`" is
       passed by the public IPv4, passed by `[::]` while still serving the world, and
       passed by loopback-only while making the phone unable to connect at all.
-- [ ] **The automated test is split: "our socket" + "a baseline".** Measured read-only on
+- [x] **The automated test is split: "our socket" + "a baseline".** Measured read-only on
       the live VPS before networth existed, `sshd` listens on `0.0.0.0:22` **and**
       `[::]:22`, so a whole-table criterion that expects no public listeners fails before
       networth exists. The invariant is instead that networth's socket is tailnet-only and
       the public-listener set does not grow beyond that approved baseline.
-- [ ] **The node has two tailnet addresses, not one** — `TailscaleIPs` is an array and
+- [x] **The node has two tailnet addresses, not one** — `TailscaleIPs` is an array and
       includes an IPv6 (`fd7a:115c:a1e0::1d37:f526`). "*The* node's Tailscale address" is
       ambiguous.
-- [ ] `systemd-resolve` binds `127.0.0.53%lo`, an **interface-scoped** loopback a naive
+- [x] `systemd-resolve` binds `127.0.0.53%lo`, an **interface-scoped** loopback a naive
       string match mishandles.
 
 **Must not:** open any second port. Since rev 15 there is no public inbound service of any
