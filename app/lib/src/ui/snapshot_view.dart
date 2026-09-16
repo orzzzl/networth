@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/generated/app_localizations.dart';
 import '../domain/copy_freshness.dart';
 import '../domain/phone_payload.dart';
 import 'headline.dart';
@@ -24,6 +25,7 @@ class SnapshotView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Padding(
       padding: const EdgeInsets.all(24),
       child: Column(
@@ -36,15 +38,15 @@ class SnapshotView extends StatelessWidget {
           const SizedBox(height: 16),
           _Dimension(
             icon: _connectionIcon(payload.connectionState),
-            label: 'Accounts',
-            detail: _connectionText(payload.connectionState),
+            label: l10n.accountsLabel,
+            detail: _connectionText(l10n, payload.connectionState),
             isWarning: payload.connectionState != ConnectionDisplayState.ok,
           ),
           const SizedBox(height: 12),
           _Dimension(
             icon: Icons.phone_iphone,
-            label: 'This copy',
-            detail: _copyText(payload, deviceNow),
+            label: l10n.thisCopyLabel,
+            detail: _copyText(l10n, payload, deviceNow),
             isWarning: payload.copyFreshness(deviceNow) != CopyFreshness.fresh,
           ),
         ],
@@ -96,17 +98,26 @@ IconData _connectionIcon(ConnectionDisplayState state) => switch (state) {
     };
 
 /// §9.2 splits the connection axis precisely so `WAITING` can never read as a
-/// demand to re-link — only `ACTION_NEEDED` invites one.
-String _connectionText(ConnectionDisplayState state) => switch (state) {
-      ConnectionDisplayState.ok => 'all reporting normally',
-      ConnectionDisplayState.waiting => 'some data is behind — nothing for you to do',
-      ConnectionDisplayState.actionNeeded => 'an account needs to be reconnected',
+/// demand to re-link — only `ACTION_NEEDED` invites action at all.
+///
+/// `ACTION_NEEDED` deliberately does not name the remedy. The producer returns it
+/// for three different causes — an unreconciled account, an institution needing
+/// re-authentication, and a frozen source clock (`networth/staleness.py`) —
+/// whose next actions are reconciliation, reconnection and neither. The earlier
+/// wording, "an account needs to be reconnected", named the second one for all
+/// three, so two thirds of the time it sent the owner to the wrong place. This
+/// payload carries one enum and no cause, so the copy stops where the wire does;
+/// task 22 parses enough detail to say more.
+String _connectionText(AppLocalizations l10n, ConnectionDisplayState state) =>
+    switch (state) {
+      ConnectionDisplayState.ok => l10n.connectionOk,
+      ConnectionDisplayState.waiting => l10n.connectionWaiting,
+      ConnectionDisplayState.actionNeeded => l10n.connectionActionNeeded,
     };
 
-String _copyText(PhonePayload payload, DateTime deviceNow) =>
+String _copyText(AppLocalizations l10n, PhonePayload payload, DateTime deviceNow) =>
     switch (payload.copyFreshness(deviceNow)) {
-      CopyFreshness.fresh => 'published ${formatInstantUtc(payload.publishedAt)}',
-      CopyFreshness.stale =>
-        'overdue — nothing new since ${formatInstantUtc(payload.publishedAt)}',
-      CopyFreshness.unknown => "this device's clock disagrees with the server's",
+      CopyFreshness.fresh => l10n.copyFresh(formatInstantUtc(l10n, payload.publishedAt)),
+      CopyFreshness.stale => l10n.copyStale(formatInstantUtc(l10n, payload.publishedAt)),
+      CopyFreshness.unknown => l10n.copyUnknown,
     };

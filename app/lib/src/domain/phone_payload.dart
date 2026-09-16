@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import 'copy_freshness.dart';
 import 'dated_total.dart';
+import 'instant.dart';
 import 'payload_format_exception.dart';
 
 /// The plaintext body of a task-19 publication, as far as this build reads it.
@@ -113,11 +114,6 @@ class PhonePayload {
     return value;
   }
 
-  static DateTime _timestamp(Map<String, Object?> body, String field) {
-    final parsed = DateTime.tryParse(_string(body, field));
-    if (parsed == null) {
-      throw PayloadFormatException('$field is not a timestamp');
-    }
-    return parsed.toUtc();
-  }
+  static DateTime _timestamp(Map<String, Object?> body, String field) =>
+      parseWireInstant(_string(body, field), field: field);
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/generated/app_localizations.dart';
 import '../data/snapshot_source.dart';
 import '../domain/phone_payload.dart';
 import 'snapshot_view.dart';
@@ -34,8 +35,9 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Net worth')),
+      appBar: AppBar(title: Text(l10n.appTitle)),
       body: SafeArea(
         child: FutureBuilder<PhonePayload>(
           future: _payload,
@@ -43,7 +45,7 @@ class _HomePageState extends State<HomePage> {
             if (snapshot.hasError) {
               return _Message(
                 icon: Icons.error_outline,
-                text: "couldn't read the published snapshot",
+                text: l10n.snapshotUnreadable,
                 detail: '${snapshot.error}',
               );
             }

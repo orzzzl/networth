@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'money.dart';
+import 'instant.dart';
 import 'payload_format_exception.dart';
 
 /// The headline total together with its age state — one value, never two.
@@ -116,11 +117,7 @@ sealed class DatedTotal {
     if (value is! String) {
       throw PayloadFormatException('total.$field is not a string');
     }
-    final parsed = DateTime.tryParse(value);
-    if (parsed == null) {
-      throw PayloadFormatException('total.$field is not a timestamp');
-    }
-    return parsed.toUtc();
+    return parseWireInstant(value, field: 'total.$field');
   }
 }
 
