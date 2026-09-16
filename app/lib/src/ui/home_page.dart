@@ -53,9 +53,14 @@ class _HomePageState extends State<HomePage> {
               // It goes to [debugLog], not to `debugPrint`: the second round of
               // this review found that `debugPrint` still logs in release, so
               // the first fix had moved the unbounded text off the screen and
-              // left it in the shipped APK's logcat. `debugLog` compiles away
-              // outside a debug build; see `src/debug_log.dart`.
-              debugLog('snapshot unreadable: ${snapshot.error}');
+              // left it in the shipped APK's logcat.
+              //
+              // And it is passed as a closure rather than a string, because the
+              // third round found the first version of that fix still shipping
+              // the literal: an argument is evaluated before the callee's gate
+              // is reached, so only work placed *inside* the gate can be dead
+              // code. See `src/debug_log.dart`.
+              debugLog(() => 'snapshot unreadable: ${snapshot.error}');
               return _Message(icon: Icons.error_outline, text: l10n.snapshotUnreadable);
             }
             final payload = snapshot.data;

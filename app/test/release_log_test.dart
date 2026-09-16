@@ -88,6 +88,73 @@ void main() {
     );
   });
 
+  /// `debugLog(` followed by anything that is not the start of a closure.
+  ///
+  /// This is the third round's defect expressed as a pattern. `debugLog('x: $e')`
+  /// interpolates at the call site, which happens before the callee's gate is
+  /// reached, so the gate cannot make it dead code and the literal ships.
+  final eagerCall = RegExp(r'(?<![\w.$])debugLog\s*\(\s*(?!\(\s*\)\s*(=>|\{))');
+
+  test('every debugLog call site passes work, not a finished string', () {
+    // The signature already makes this a compile error, and `flutter analyze`
+    // runs before these tests. That is the stronger guard of the two — but it is
+    // invisible to mutation: revert the parameter to `String` and every call
+    // site reverts with it, leaving the suite green and the analyzer happy. This
+    // is the check that stays red for exactly that edit.
+    final offenders = <String>[];
+    for (final source in libSources) {
+      // The boundary is skipped because the *declaration* reads as a call to a
+      // pattern this simple, and the exemption is safe for a reason worth
+      // stating: what it exempts is checked next door rather than trusted. The
+      // test below reads this same file and requires the parameter to be
+      // `String Function()`, which is also what makes an eager call inside it a
+      // compile error. Last round's lesson was an exemption whose name only
+      // sounded like a boundary; this one names the file the adjacent test pins.
+      if (source.path == boundary) {
+        continue;
+      }
+      final lines = source.readAsLinesSync();
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i];
+        if (line.trimLeft().startsWith('//')) {
+          continue;
+        }
+        if (eagerCall.hasMatch(line)) {
+          offenders.add('${source.path}:${i + 1}: ${line.trim()}');
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      isEmpty,
+      reason: 'an argument is evaluated before the callee is entered, so an\n'
+          'interpolated string reaches the release image whatever the gate\n'
+          'inside $boundary says. Pass `() => ...` instead:\n'
+          '${offenders.join('\n')}',
+    );
+  });
+
+  test('the boundary takes the message lazily', () {
+    // And the other half of that edit: the signature itself.
+    final code = File(boundary)
+        .readAsLinesSync()
+        .where((line) => !line.trimLeft().startsWith('//'))
+        .join('\n');
+
+    expect(
+      RegExp(r'void\s+debugLog\s*\(\s*String\s+Function\s*\(\s*\)').hasMatch(code),
+      isTrue,
+      reason: '$boundary must take `String Function()`; a `String` parameter is\n'
+          'built by the caller, outside the gate that is supposed to elide it',
+    );
+    expect(
+      RegExp(r'debugPrint\s*\(\s*message\s*\(\s*\)\s*\)').hasMatch(code),
+      isTrue,
+      reason: 'the callback must be invoked inside the gate, not before it',
+    );
+  });
+
   test('the guard can actually fail', () {
     // A regex over source passes loudest when it matches nothing at all, so
     // every pattern above is shown going red on the exact line it is meant to
@@ -102,6 +169,13 @@ void main() {
     expect(printCall.hasMatch('    debugLog(\'snapshot unreadable\');'), isFalse);
 
     expect(RegExp(r'if\s*\(\s*kDebugMode\s*\)').hasMatch('void debugLog(String m) { debugPrint(m); }'), isFalse);
+
+    // The exact line the third round rejected, and the exact line that replaced
+    // it — the pattern is worthless if it cannot tell those two apart.
+    expect(eagerCall.hasMatch(r"      debugLog('snapshot unreadable: ${snapshot.error}');"), isTrue);
+    expect(eagerCall.hasMatch(r'      debugLog(message);'), isTrue);
+    expect(eagerCall.hasMatch(r"      debugLog(() => 'snapshot unreadable: ${snapshot.error}');"), isFalse);
+    expect(eagerCall.hasMatch(r'      debugLog(() { return describe(e); });'), isFalse);
   });
 
   test('debugLog is a live channel in a debug build, not a silent no-op', () {
@@ -109,13 +183,22 @@ void main() {
     // in which case the developer diagnostic the screen gave up its error text
     // for does not exist either. That failure is invisible to every check above,
     // and it *is* observable here, because this process is a debug build.
+    //
+    // It also pins the half of laziness that runs: the callback must actually be
+    // invoked. A gate that elides the work in release and forgets to do it in
+    // debug is the same dead channel by a different route.
     final captured = <String?>[];
+    var built = 0;
     final previous = debugPrint;
     debugPrint = (String? message, {int? wrapWidth}) => captured.add(message);
     addTearDown(() => debugPrint = previous);
 
-    debugLog('snapshot unreadable: Bad state: no payload');
+    debugLog(() {
+      built++;
+      return 'snapshot unreadable: Bad state: no payload';
+    });
 
     expect(captured, ['snapshot unreadable: Bad state: no payload']);
+    expect(built, 1, reason: 'the message is built once, inside the gate');
   });
 }

@@ -9,8 +9,8 @@ import 'package:flutter/foundation.dart';
 /// > convention, calls to [debugPrint] should be within a debug mode check or
 /// > an assert.
 ///
-/// PR #77's previous head moved a raw `${snapshot.error}` off the screen and
-/// into `debugPrint`, which reads like a developer channel and is not one: the
+/// PR #77's second round moved a raw `${snapshot.error}` off the screen and into
+/// `debugPrint`, which reads like a developer channel and is not one: the
 /// unbounded exception text stopped reaching the owner's eyes and kept reaching
 /// the release APK's logcat. For a net-worth app, whose exception messages can
 /// quote balances, account names or a `link_token`, that is the same leak with
@@ -22,11 +22,33 @@ import 'package:flutter/foundation.dart';
 /// `lib/` prints at all, without having to decide by regex whether some call
 /// site's enclosing braces happen to be a `kDebugMode` block.
 ///
-/// [kDebugMode] is a compile-time constant, so in a release build the call below
-/// is dead code and the tree-shaker removes it along with the interpolated
-/// string — the text is not merely unprinted, it is not built.
-void debugLog(String message) {
+/// **The message is a callback, and that is the third round's blocker rather
+/// than a style choice.** This function took a `String`, so the caller built the
+/// string *before* control ever reached the gate. The gate then decided whether
+/// to print text that had already been interpolated — and the literal that
+/// interpolation is built from is a constant in the compiled image, so it
+/// shipped. Measured on the exact-head ARMv7 AOT library, not reasoned about:
+///
+/// ```
+/// $ strings -a build/.../armeabi-v7a/libapp.so | grep 'snapshot unreadable'
+/// snapshot unreadable:
+/// ```
+///
+/// A `kDebugMode` check cannot make its argument dead code. It can only make
+/// dead code of what it encloses, so the work has to be *inside* it — which is
+/// what a callback achieves: the interpolation is the body of a closure that
+/// nothing in a release build ever calls, so both the call and the literal are
+/// unreachable and the compiler drops them.
+///
+/// The signature is the durable half. `debugLog('...$secret')` is no longer a
+/// leak that review has to notice; it is a type error the analyzer rejects at
+/// every call site, before any test runs.
+///
+/// [kDebugMode] stays a compile-time constant here for the same reason — an
+/// injectable gate would be testable and would also be a runtime value, which is
+/// exactly what stops the compiler from eliminating the branch.
+void debugLog(String Function() message) {
   if (kDebugMode) {
-    debugPrint(message);
+    debugPrint(message());
   }
 }
