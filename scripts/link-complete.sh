@@ -112,21 +112,56 @@ printf 'flow          %s\n' "$flow"
 printf 'link mode     %s\n' "$link_mode"
 printf 'recovery dir  %s\n\n' "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}"
 
+# What the retiring half did with the record, reported by the half that did it.
+#
+# The first version of this driver inferred it from the remote's exit status, and
+# the inference was wrong in a reachable case: `complete-hosted-link` prints the
+# EXCHANGED marker *before* `--exchange-twice` runs its second exchange and its
+# first-token probe, so a nonzero remote status can arrive after the record has
+# already, correctly, been retired. The driver then said "this Mac kept its
+# recovery record" about a file it had just deleted. A post-marker ssh or runner
+# failure has the same shape.
+#
+# The deletion itself was right — the marker is printed only after the exchange
+# landed and any credential was stored, and an exchanged flow cannot be stranded,
+# so the record is residue from that instant. Only the report was wrong. So the
+# report now comes from the process that acted instead of from a status that
+# cannot see it.
+outcome_file="$(mktemp -t networth-link-complete)"
+cleanup() { rm -f "$outcome_file"; }
+trap cleanup EXIT
+
 # PIPESTATUS rather than `$?`, for the reason `link-start.sh` gives: the two halves
-# fail with different consequences. A remote failure means the flow may still be
-# live and the record must stay; a local failure after a successful exchange means
-# the flow is finished and one inert file is still here, which the puller reaps.
+# fail with different consequences, and neither status alone describes the record.
 set +e
 "$REMOTE" "$commit" --verb complete-hosted-link --flow "$flow" --link-mode "$link_mode" |
-	uv run --quiet networth retire-hosted-link --flow "$flow" ${expect[@]+"${expect[@]}"}
+	uv run --quiet networth retire-hosted-link --flow "$flow" \
+		--outcome-file "$outcome_file" ${expect[@]+"${expect[@]}"}
 statuses=("${PIPESTATUS[@]}")
 set -e
 
 remote_status="${statuses[0]}"
 local_status="${statuses[1]}"
 
+# Read rather than assumed, and "the file is not there" is its own answer: the
+# retiring half writes this last, so its absence means that half never got to
+# speak and this driver must not claim to know what it did.
+record_outcome="$(cat "$outcome_file" 2>/dev/null)"
+
 if [ "$remote_status" -ne 0 ]; then
-	printf '\nlink-complete: the remote half exited %s. This Mac kept its recovery record, which is the only way back to the flow if it is still live\n' "$remote_status" >&2
+	case "$record_outcome" in
+	retired)
+		printf '\nlink-complete: the remote half exited %s AFTER reporting the exchange.\n' "$remote_status" >&2
+		printf 'The exchange landed and this Mac retired its recovery record, which is correct — an exchanged flow cannot be stranded, so the record was residue from the moment the marker was printed. What failed is whatever the remote did next: with --link-mode exchange-twice that is the second exchange or the first-token probe. Nothing is stranded and nothing needs recovering; read the remote transcript above for the measurement that did not complete.\n' >&2
+		;;
+	kept)
+		printf '\nlink-complete: the remote half exited %s. This Mac kept its recovery record, which is the only way back to the flow if it is still live\n' "$remote_status" >&2
+		;;
+	*)
+		printf '\nlink-complete: the remote half exited %s, and the retiring half did not report what it did with the record.\n' "$remote_status" >&2
+		printf 'This driver will not guess. Look in %s for %s.json: if it is there the flow may still be live and that file is the way back; if it is gone the exchange had already been reported.\n' "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}" "$flow" >&2
+		;;
+	esac
 	exit "$remote_status"
 fi
 if [ "$local_status" -ne 0 ]; then

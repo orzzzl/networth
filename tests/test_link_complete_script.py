@@ -283,6 +283,58 @@ def test_a_failing_remote_keeps_the_record_and_reports_which_half_failed(
     assert "the remote half exited 3" in result.stderr
 
 
+def test_a_remote_that_fails_after_reporting_the_exchange_says_so(tmp_path: Path) -> None:
+    """The contradiction PR #75's re-review found, end to end.
+
+    `complete-hosted-link` prints the EXCHANGED marker *before* `--exchange-twice`
+    runs its second exchange and its first-token probe, so a nonzero remote status
+    can arrive after the record has already been retired — and a post-marker ssh or
+    runner failure has the same shape. The first driver inferred the record's fate
+    from the remote's exit status and therefore announced "this Mac kept its
+    recovery record" about a file it had just deleted.
+
+    The deletion is correct and stays: the marker is printed only after the
+    exchange landed, and an exchanged flow cannot be stranded. What is asserted
+    here is that the *report* matches the disk.
+    """
+    repo, sha = _throwaway_checkout(tmp_path, _remote(exchanges=FLOW_ID, exit_code=3))
+    mac_recovery = tmp_path / "mac-link-recovery"
+    record = _seed(mac_recovery)
+
+    result = _drive(tmp_path, repo, sha, mac_recovery)
+
+    assert result.returncode == 3, "the remote's status still reaches the caller"
+    assert not record.exists(), "the exchange landed, so retiring the record was right"
+    assert "AFTER reporting the exchange" in result.stderr
+    assert "retired its recovery record" in result.stderr
+    # The exact sentence that was false. Asserted as an absence so the test fails
+    # if the old wording comes back by any route.
+    assert "kept its recovery record" not in result.stderr
+
+
+def test_the_two_nonzero_endings_are_told_apart(tmp_path: Path) -> None:
+    """Same exit status, opposite facts about the record, so the words must differ.
+
+    A reader of the failure has one question — is the flow still recoverable — and
+    the answer is yes in one case and "there is nothing to recover" in the other.
+    """
+    reports = []
+    for label, exchanges in (("marker", FLOW_ID), ("silent", None)):
+        # A workspace each: `_throwaway_checkout` and `_drive` both build fixtures
+        # named relative to the path they are given, so sharing one would have the
+        # second run reading the first one's stub transport.
+        workspace = tmp_path / label
+        workspace.mkdir()
+        repo, sha = _throwaway_checkout(workspace, _remote(exchanges=exchanges, exit_code=3))
+        mac_recovery = workspace / "mac-link-recovery"
+        _seed(mac_recovery)
+        reports.append(_drive(workspace, repo, sha, mac_recovery).stderr)
+
+    assert reports[0] != reports[1]
+    assert "kept its recovery record" in reports[1]
+    assert "kept its recovery record" not in reports[0]
+
+
 def test_retrieve_only_keeps_the_record_and_succeeds(tmp_path: Path) -> None:
     """Measurement (i) comes back to this flow in 30 minutes. The mode is
     non-destructive by design, so the absence of a marker is the expected ending

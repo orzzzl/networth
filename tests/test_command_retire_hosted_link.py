@@ -50,11 +50,20 @@ def _mac(
     expect_completion: bool = True,
     here: bool = True,
 ) -> argparse.Namespace:
-    """Arm one run: the Mac's own directory, a transcript on stdin, a host answer."""
+    """Arm one run: the Mac's own directory, a transcript on stdin, a host answer.
+
+    The outcome file is always wired, so every test exercises the report the shell
+    driver reads — the half of this verb that PR #75's re-review found the driver
+    was getting wrong by inferring instead.
+    """
     monkeypatch.setenv(link_recovery.RECOVERY_DIRECTORY_ENV, str(tmp_path / "mac-link-recovery"))
     monkeypatch.setattr("sys.stdin", io.StringIO("\n".join(lines) + "\n"))
     monkeypatch.setattr(mac_identity, "holds_address", lambda _address: here)
-    return argparse.Namespace(flow=flow, expect_completion=expect_completion)
+    return argparse.Namespace(
+        flow=flow,
+        expect_completion=expect_completion,
+        outcome_file=str(tmp_path / "outcome"),
+    )
 
 
 def _record(flow_id: str = FLOW_ID) -> Path:
@@ -230,6 +239,80 @@ def test_a_finished_flow_with_no_record_here_is_not_a_fault(
     assert retire_hosted_link.run(args) == 0
 
     assert "had no record on this Mac" in capsys.readouterr().out
+
+
+def _outcome(args: argparse.Namespace) -> str:
+    return Path(args.outcome_file).read_text(encoding="utf-8").strip()
+
+
+def test_the_outcome_file_says_retired_exactly_when_the_record_is_gone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The fact the driver reports afterwards, taken from the process that acted.
+
+    Its exit status cannot carry this: the verb exits 0 both when it deletes and
+    when it deliberately keeps, and describing those two the same way is the
+    contradiction the re-review found.
+    """
+    args = _mac(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _exchanged()))
+    record = _record()
+
+    assert retire_hosted_link.run(args) == 0
+    capsys.readouterr()
+
+    assert not record.exists()
+    assert _outcome(args) == retire_hosted_link.RETIRED
+
+
+@pytest.mark.parametrize(
+    ("lines", "expect_completion", "here"),
+    [
+        (TRANSPORT_NOISE, True, True),
+        (TRANSPORT_NOISE, False, True),
+        ((*TRANSPORT_NOISE, _exchanged(OTHER_FLOW_ID)), True, True),
+        ((*TRANSPORT_NOISE, _exchanged(), _exchanged(OTHER_FLOW_ID)), True, True),
+        ((*TRANSPORT_NOISE, _exchanged()), True, False),
+    ],
+    ids=["no-marker-expected", "retrieve-only", "other-flow", "two-markers", "wrong-machine"],
+)
+def test_every_path_that_leaves_the_record_reports_kept(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    lines: tuple[str, ...],
+    expect_completion: bool,
+    here: bool,
+) -> None:
+    """Enumerated rather than sampled: the driver's message is only as honest as
+    the least-covered exit path, and an unreported one reads as "cannot tell"."""
+    args = _mac(monkeypatch, tmp_path, lines, expect_completion=expect_completion, here=here)
+    if not here:
+        monkeypatch.setattr(mac_identity, "holds_address", lambda _address: True)
+    record = _record()
+    if not here:
+        monkeypatch.setattr(mac_identity, "holds_address", lambda _address: False)
+
+    retire_hosted_link.run(args)
+    capsys.readouterr()
+
+    assert record.exists()
+    assert _outcome(args) == retire_hosted_link.KEPT
+
+
+def test_an_unwritable_outcome_file_never_fails_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A diagnostic that can fail turns a report into a second fault. The driver
+    reads an absent file as "I cannot tell", which is the honest reading."""
+    args = _mac(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _exchanged()))
+    args.outcome_file = str(tmp_path / "no-such-directory" / "outcome")
+    record = _record()
+
+    assert retire_hosted_link.run(args) == 0
+    capsys.readouterr()
+
+    assert not record.exists(), "the real work still happened"
+    assert not Path(args.outcome_file).exists()
 
 
 def test_only_exchanged_is_a_terminal_outcome() -> None:

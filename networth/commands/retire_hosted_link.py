@@ -39,7 +39,10 @@ writes.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
+from pathlib import Path
+from typing import Final
 
 from networth import link_recovery, mac_identity
 from networth.link_recovery import CompletionOutcome, LinkRecoveryError
@@ -65,6 +68,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
             "the remote ran a mode that exchanges, so a transcript with no "
             "EXCHANGED marker is a failure rather than a quiet no-op. Omitted for "
             "--link-mode retrieve-only, which is non-destructive by design"
+        ),
+    )
+    parser.add_argument(
+        "--outcome-file",
+        metavar="PATH",
+        help=(
+            "write 'retired' or 'kept' here, for the driver that has to describe "
+            "afterwards what happened to the record. Its own exit status cannot "
+            "say: this verb exits 0 both when it deletes and when it deliberately "
+            "keeps, and the two need different words"
         ),
     )
 
@@ -93,12 +106,34 @@ def _read(lines: list[str]) -> CompletionOutcome | None:
     return found[0]
 
 
+#: What the record's fate is called on the wire to the driver. `RETIRED` covers
+#: "deleted" and "was already gone" alike: the driver is describing the state of
+#: this Mac afterwards, and in both cases there is no record here.
+RETIRED: Final = "retired"
+KEPT: Final = "kept"
+
+
+def _record_outcome(path: str | None, outcome: str) -> None:
+    """Tell the driver what became of the record, if it asked.
+
+    Never raises. This runs at the end of paths that have already succeeded or
+    already failed, and a report that could itself fail would turn a diagnostic
+    into a second fault. A driver that finds no file says it cannot tell, which
+    is the honest reading of "the half that knew did not get to speak".
+    """
+    if path is None:
+        return
+    with contextlib.suppress(OSError):
+        Path(path).write_text(outcome + "\n", encoding="utf-8")
+
+
 def run(args: argparse.Namespace) -> int:
     lines = sys.stdin.read().splitlines()
     try:
         outcome = _read(lines)
     except LinkRecoveryError as exc:
         print(f"\nretire-hosted-link failed: {exc}", file=sys.stderr)
+        _record_outcome(args.outcome_file, KEPT)
         return 2
 
     if outcome is None:
@@ -107,6 +142,7 @@ def run(args: argparse.Namespace) -> int:
             # live and the record is what measurement (i) comes back to in 30
             # minutes, so "nothing was retired" is the success case here.
             print(f"\nrecord        kept for {args.flow}; nothing reported an exchange")
+            _record_outcome(args.outcome_file, KEPT)
             return 0
         print(
             f"\nretire-hosted-link: the transcript never reported {args.flow} as "
@@ -115,6 +151,7 @@ def run(args: argparse.Namespace) -> int:
             "record is inert and the puller reaps it at reap_after",
             file=sys.stderr,
         )
+        _record_outcome(args.outcome_file, KEPT)
         return 1
 
     if outcome.flow_id != args.flow:
@@ -125,6 +162,7 @@ def run(args: argparse.Namespace) -> int:
             "about a different one",
             file=sys.stderr,
         )
+        _record_outcome(args.outcome_file, KEPT)
         return 2
 
     # Measured before anything is unlinked, like the absorber before anything is
@@ -139,6 +177,7 @@ def run(args: argparse.Namespace) -> int:
             "happened on the VPS, and its transcript is above",
             file=sys.stderr,
         )
+        _record_outcome(args.outcome_file, KEPT)
         return 2
 
     directory = link_recovery.mac_recovery_directory()
@@ -153,6 +192,7 @@ def run(args: argparse.Namespace) -> int:
             f"\nnote          this Mac's recovery record was not removed: {exc}",
             file=sys.stderr,
         )
+        _record_outcome(args.outcome_file, KEPT)
         return 0
 
     if removed:
@@ -161,4 +201,5 @@ def run(args: argparse.Namespace) -> int:
         # Not a fault either. `link-recover.sh` completes on this Mac and retires
         # in that process, and a re-run of a finished flow lands here.
         print(f"\nretired       nothing; {outcome.flow_id} had no record on this Mac")
+    _record_outcome(args.outcome_file, RETIRED)
     return 0
