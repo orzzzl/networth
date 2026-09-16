@@ -1,0 +1,86 @@
+// ignore: unused_import
+import 'package:intl/intl.dart' as intl;
+import 'app_localizations.dart';
+
+// ignore_for_file: type=lint
+
+/// The translations for English (`en`).
+class AppLocalizationsEn extends AppLocalizations {
+  AppLocalizationsEn([String locale = 'en']) : super(locale);
+
+  @override
+  String get appTitle => 'Net worth';
+
+  @override
+  String get snapshotUnreadable => 'couldn\'t read the published snapshot';
+
+  @override
+  String instantUtc(DateTime date, DateTime time) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
+    final String dateString = dateDateFormat.format(date);
+    final intl.DateFormat timeDateFormat = intl.DateFormat.Hm(localeName);
+    final String timeString = timeDateFormat.format(time);
+
+    return '$dateString, $timeString UTC';
+  }
+
+  @override
+  String totalAsOf(String timestamp) {
+    return 'as of $timestamp';
+  }
+
+  @override
+  String totalUndatable(int undatableCount, int accountCount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      accountCount,
+      locale: localeName,
+      other:
+          'can\'t date this total — $undatableCount of $accountCount accounts can\'t be dated',
+      one:
+          'can\'t date this total — $undatableCount of $accountCount account can\'t be dated',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get totalNoDatedSource => 'no dated source for this total';
+
+  @override
+  String includesStaticValuations(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'includes $count fixed manual valuations',
+      one: 'includes $count fixed manual valuation',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get accountsLabel => 'Accounts';
+
+  @override
+  String get connectionOk => 'all reporting normally';
+
+  @override
+  String get connectionWaiting => 'some data is behind — nothing for you to do';
+
+  @override
+  String get connectionActionNeeded => 'an account needs your attention';
+
+  @override
+  String get thisCopyLabel => 'This copy';
+
+  @override
+  String copyFresh(String timestamp) {
+    return 'published $timestamp';
+  }
+
+  @override
+  String copyStale(String timestamp) {
+    return 'overdue — nothing new since $timestamp';
+  }
+
+  @override
+  String get copyUnknown => 'this device\'s clock disagrees with the server\'s';
+}

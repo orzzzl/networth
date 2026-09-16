@@ -1,0 +1,53 @@
+{
+  "accounts": [
+    {
+      "account_id": 1,
+      "currency": "USD",
+      "freshness": {
+        "as_of": "2023-06-30T00:00:00.000000Z",
+        "is_carried_forward": false,
+        "market_days_without_advance": 0,
+        "state": "STATIC"
+      },
+      "item_state": null,
+      "reconciliation_state": "CONFIRMED",
+      "sign": 1,
+      "value_minor": 68000000
+    }
+  ],
+  "alerts": [],
+  "connection_state": "OK",
+  "grace_seconds": 21600,
+  "item_budget": {
+    "capacity": 10,
+    "in_flight_count": 0,
+    "orphaned_count": 0,
+    "remaining": 10,
+    "replacement_count": 0,
+    "spent_count": 0,
+    "state": "AVAILABLE",
+    "stranded_count": 0,
+    "usable_count": 0
+  },
+  "pairing_id": "fixture-pairing",
+  "publish_interval_seconds": 86400,
+  "published_at": "2026-09-15T04:00:00.000000Z",
+  "schema_version": "1",
+  "seq": "1",
+  "total": {
+    "account_count": 1,
+    "age_state": "STATIC_ONLY",
+    "as_of": null,
+    "assets_minor": 68000000,
+    "currency": "USD",
+    "is_complete": true,
+    "liabilities_minor": 0,
+    "oldest_known_source_as_of": null,
+    "reauth_account_count": 0,
+    "stale_account_count": 0,
+    "static_account_count": 1,
+    "unknown_freshness_account_count": 0,
+    "unreconciled_account_count": 0,
+    "value_minor": 68000000
+  }
+}

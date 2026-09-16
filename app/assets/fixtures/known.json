@@ -1,0 +1,81 @@
+{
+  "accounts": [
+    {
+      "account_id": 1,
+      "currency": "USD",
+      "freshness": {
+        "as_of": "2026-09-14T20:15:00.000000Z",
+        "is_carried_forward": false,
+        "market_days_without_advance": 0,
+        "state": "FRESH"
+      },
+      "item_state": "HEALTHY",
+      "reconciliation_state": "CONFIRMED",
+      "sign": 1,
+      "value_minor": 3120000
+    },
+    {
+      "account_id": 2,
+      "currency": "USD",
+      "freshness": {
+        "as_of": "2026-09-15T02:40:00.000000Z",
+        "is_carried_forward": false,
+        "market_days_without_advance": 0,
+        "state": "FRESH"
+      },
+      "item_state": "HEALTHY",
+      "reconciliation_state": "CONFIRMED",
+      "sign": 1,
+      "value_minor": 1880000
+    },
+    {
+      "account_id": 3,
+      "currency": "USD",
+      "freshness": {
+        "as_of": "2026-09-15T02:40:00.000000Z",
+        "is_carried_forward": false,
+        "market_days_without_advance": 0,
+        "state": "FRESH"
+      },
+      "item_state": "HEALTHY",
+      "reconciliation_state": "CONFIRMED",
+      "sign": -1,
+      "value_minor": 750000
+    }
+  ],
+  "alerts": [],
+  "connection_state": "OK",
+  "grace_seconds": 21600,
+  "item_budget": {
+    "capacity": 10,
+    "in_flight_count": 0,
+    "orphaned_count": 0,
+    "remaining": 8,
+    "replacement_count": 0,
+    "spent_count": 2,
+    "state": "AVAILABLE",
+    "stranded_count": 0,
+    "usable_count": 2
+  },
+  "pairing_id": "fixture-pairing",
+  "publish_interval_seconds": 86400,
+  "published_at": "2026-09-15T04:00:00.000000Z",
+  "schema_version": "1",
+  "seq": "41",
+  "total": {
+    "account_count": 3,
+    "age_state": "KNOWN",
+    "as_of": "2026-09-14T20:15:00.000000Z",
+    "assets_minor": 5000000,
+    "currency": "USD",
+    "is_complete": true,
+    "liabilities_minor": 750000,
+    "oldest_known_source_as_of": "2026-09-14T20:15:00.000000Z",
+    "reauth_account_count": 0,
+    "stale_account_count": 0,
+    "static_account_count": 0,
+    "unknown_freshness_account_count": 0,
+    "unreconciled_account_count": 0,
+    "value_minor": 4250000
+  }
+}

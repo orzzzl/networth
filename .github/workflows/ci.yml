@@ -44,3 +44,32 @@ jobs:
       # list rather than buried in a combined "checks" log.
       - name: No secrets
         run: ./scripts/check-no-secrets.sh
+
+  # Its own job rather than more steps on `check`: the two halves need different
+  # toolchains and neither should be able to mask the other in the run list.
+  app:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          # Pinned rather than tracking `stable`, for the same reason the Python
+          # side runs `uv sync --locked`: a toolchain that moves on its own turns
+          # an unrelated PR red and teaches everyone to re-run the job.
+          flutter-version: 3.44.0
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Tests
+        run: flutter test

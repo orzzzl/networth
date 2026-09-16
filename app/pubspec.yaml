@@ -1,0 +1,32 @@
+name: networth_app
+description: "Read-only net-worth display: every total carries its age."
+publish_to: 'none'
+# DESIGN.md section 17: a feature batch bumps the minor version and the `+N`
+# build number always increments, before any APK is handed over.
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # The localization seam (AGENTS.md: user-facing strings go through the UI
+  # layer's own i18n, never hard-coded). Both are free and offline:
+  # `flutter_localizations` ships inside the SDK and `intl` is a pub.dev package
+  # with no service behind it, so this stays inside the zero-marginal-cost rule.
+  flutter_localizations:
+    sdk: flutter
+  intl: any
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  # Compile lib/l10n/*.arb on build. `l10n.yaml` holds the settings.
+  generate: true
+  assets:
+    - assets/fixtures/

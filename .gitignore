@@ -8,7 +8,13 @@ plaid-items.json
 access_token*
 
 # Local data — the net-worth database and any exports are private and local-only.
-data/
+# Anchored to the repo root: unanchored, `data/` matches at *every* depth, and it
+# silently swallowed `app/lib/src/data/` — a source directory — on the commit that
+# added the app. Nothing here is weakened, because no database is ever written
+# inside the repo: the daemon's lives in `/var/lib/networth` and the Mac's in
+# `~/networth-data/`. This rule is belt and braces for a root-level `data/`, so
+# root-level is what it should say.
+/data/
 *.db
 *.db-journal
 *.db-wal

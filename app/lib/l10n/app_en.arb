@@ -1,0 +1,86 @@
+{
+  "@@locale": "en",
+
+  "appTitle": "Net worth",
+  "@appTitle": {
+    "description": "The app's name, used as the window/task title and the app bar title."
+  },
+
+  "snapshotUnreadable": "couldn't read the published snapshot",
+  "@snapshotUnreadable": {
+    "description": "Shown when the payload cannot be loaded or parsed. Deliberately says nothing about a total: there is no total to speak of, and I2/I4 forbid a number without its age."
+  },
+
+  "instantUtc": "{date}, {time} UTC",
+  "@instantUtc": {
+    "description": "An instant, always displayed in UTC with the zone named. The zone is shown rather than silently converted so the displayed date and the stored one stay the same fact. The month name comes from the locale's own date symbols, which is why this is a placeholder rather than a Dart constant list.",
+    "placeholders": {
+      "date": { "type": "DateTime", "format": "yMMMd" },
+      "time": { "type": "DateTime", "format": "Hm" }
+    }
+  },
+
+  "totalAsOf": "as of {timestamp}",
+  "@totalAsOf": {
+    "description": "The age annotation for a total whose whole basis has a known source clock. The timestamp is the OLDEST clock in the basis.",
+    "placeholders": { "timestamp": { "type": "String" } }
+  },
+
+  "totalUndatable": "{accountCount, plural, one{can't date this total — {undatableCount} of {accountCount} account can't be dated} other{can't date this total — {undatableCount} of {accountCount} accounts can't be dated}}",
+  "@totalUndatable": {
+    "description": "DESIGN.md §8.1 R3: when any part of the basis has no clock, the date is withheld entirely rather than shown beside a caveat — the section's argument is that a count next to a confident date does not stop the date being read. So this says what is missing and how much of the money it covers, and shows no date at all.",
+    "placeholders": {
+      "undatableCount": { "type": "int" },
+      "accountCount": { "type": "int" }
+    }
+  },
+
+  "totalNoDatedSource": "no dated source for this total",
+  "@totalNoDatedSource": {
+    "description": "The STATIC_ONLY age state. Says only what that state guarantees — the age basis is empty — and asserts no cause. The producer reaches it whenever no account contributed an advancing clock, which includes a portfolio whose linked accounts are all still unreconciled, so the earlier wording 'no linked accounts yet' claimed more than the wire proves. Task 22 parses enough detail to distinguish the causes."
+  },
+
+  "includesStaticValuations": "{count, plural, one{includes {count} fixed manual valuation} other{includes {count} fixed manual valuations}}",
+  "@includesStaticValuations": {
+    "description": "DESIGN.md §8.1: fixed valuations sit outside the age basis, and saying so out loud is the condition on which leaving them out is honest rather than hiding them.",
+    "placeholders": { "count": { "type": "int" } }
+  },
+
+  "accountsLabel": "Accounts",
+  "@accountsLabel": {
+    "description": "Row label for the connection dimension of staleness — whether the institutions are reporting. Invariant I4 keeps this separate from the copy dimension below; they have different fixes and must never merge into one badge."
+  },
+
+  "connectionOk": "all reporting normally",
+  "@connectionOk": {},
+
+  "connectionWaiting": "some data is behind — nothing for you to do",
+  "@connectionWaiting": {
+    "description": "DESIGN.md §9.2 splits the connection axis precisely so WAITING can never read as a demand to re-link. The second clause is the whole point of the state existing."
+  },
+
+  "connectionActionNeeded": "an account needs your attention",
+  "@connectionActionNeeded": {
+    "description": "Deliberately does not name the remedy. The producer returns ACTION_NEEDED for three different causes — an unreconciled account, an institution needing re-authentication, and a frozen source clock — whose next actions are reconciliation, reconnection and neither. The earlier wording named reconnection for all three. Task 22 parses enough detail to distinguish them."
+  },
+
+  "thisCopyLabel": "This copy",
+  "@thisCopyLabel": {
+    "description": "Row label for the copy dimension: how old THIS PHONE's copy of the snapshot is, as opposed to how old the data behind it is."
+  },
+
+  "copyFresh": "published {timestamp}",
+  "@copyFresh": {
+    "placeholders": { "timestamp": { "type": "String" } }
+  },
+
+  "copyStale": "overdue — nothing new since {timestamp}",
+  "@copyStale": {
+    "placeholders": { "timestamp": { "type": "String" } }
+  },
+
+  "copyUnknown": "this device's clock disagrees with the server's",
+  "@copyUnknown": {
+    "description": "Neither clock is called wrong, because this side cannot tell which one is. DESIGN.md §9.1 rule 1: the two clocks are never merged."
+  }
+}
