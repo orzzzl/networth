@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import REPO_ROOT
+from tests.mac_shim import mac_shim
 
 SCRIPT = REPO_ROOT / "scripts" / "link-recover.sh"
 FLOW_ID = "0123456789abcdef0123456789abcdef"
@@ -49,24 +50,26 @@ def uv_stub(tmp_path: Path) -> tuple[Path, Path]:
     return stub_dir, argv_log
 
 
-#: Every machine holds `127.0.0.1` and none holds `192.0.2.1` (RFC 5737), so the
-#: pre-flight's bind stays a real measurement on any runner while the identity it
-#: requires becomes something a test can choose.
-ON_THIS_MACHINE = {
-    "NETWORTH_MAC_IDENTITY_ADDRESS": "127.0.0.1",
-    "NETWORTH_MAC_IDENTITY_HOLDER": "test-host",
-}
-
-
 def run(
-    *args: str, tmp_path: Path, env: dict[str, str] | None = None
+    *args: str,
+    tmp_path: Path,
+    env: dict[str, str] | None = None,
+    on_this_machine: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    """Run the driver with the Mac pre-flight substituted in the child.
+
+    `on_this_machine=False` makes it behave as the wrong computer. The
+    substitution is in the test tree (`tests/mac_shim.py`), not in the product:
+    the required identity is pinned and nothing on the command path can redefine
+    it. The bind itself is unit-tested for real in `test_mac_identity.py`.
+    """
     stub_dir, _ = uv_stub(tmp_path)
+    shim, shim_env = mac_shim(tmp_path, holds=on_this_machine)
     environment = {
         **os.environ,
         "PATH": f"{stub_dir}:{os.environ['PATH']}",
-        "PYTHONPATH": str(REPO_ROOT),
-        **ON_THIS_MACHINE,
+        "PYTHONPATH": f"{shim}:{REPO_ROOT}",
+        **shim_env,
     }
     environment.update(env or {})
     return subprocess.run(
@@ -121,6 +124,10 @@ def test_it_invokes_the_two_prompt_recovery_path_and_fixes_the_mode(tmp_path: Pa
     clock should not be choosing a mode.
     """
     stub_dir, argv_log = uv_stub(tmp_path)
+    # This test builds its own environment rather than using `run()`, so it arms
+    # the pre-flight shim itself; without it the check passes only on
+    # `zelengs-macbook-air-2` and this is the test that goes red everywhere else.
+    shim, shim_env = mac_shim(tmp_path)
     result = subprocess.run(
         ["bash", str(SCRIPT), FLOW_ID],
         capture_output=True,
@@ -129,12 +136,8 @@ def test_it_invokes_the_two_prompt_recovery_path_and_fixes_the_mode(tmp_path: Pa
         env={
             **os.environ,
             "PATH": f"{stub_dir}:{os.environ['PATH']}",
-            "PYTHONPATH": str(REPO_ROOT),
-            # This test builds its own environment rather than using `run()`, so it
-            # has to pin the identity itself — without it the pre-flight passed only
-            # on the developer's Mac and this was the single test that failed when
-            # the suite was re-run against an address no machine holds.
-            **ON_THIS_MACHINE,
+            "PYTHONPATH": f"{shim}:{REPO_ROOT}",
+            **shim_env,
         },
         timeout=120,
     )
@@ -175,14 +178,11 @@ def test_the_wrong_machine_is_refused_before_anything_is_read_or_prompted_for(
     it writes its argv on every call, so the absence of that file is the absence of
     the recovery verb.
     """
-    result = run(
-        FLOW_ID,
-        tmp_path=tmp_path,
-        env={"NETWORTH_MAC_IDENTITY_ADDRESS": "192.0.2.1"},
-    )
+    result = run(FLOW_ID, tmp_path=tmp_path, on_this_machine=False)
 
     assert result.returncode == 2
-    assert "192.0.2.1" in result.stderr
+    # The pinned address, because a caller can no longer nominate a different one.
+    assert "100.96.163.67" in result.stderr
     assert not (tmp_path / "uv.argv").exists(), "the recovery verb was reached anyway"
     assert "complete-hosted-link" not in result.stdout
 

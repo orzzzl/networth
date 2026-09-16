@@ -26,27 +26,34 @@ machine, nothing is resolved, and nothing reaches the network — which matters,
 because the whole point of the surrounding code is that it makes exactly one
 kind of outbound call and it is not this one.
 
-**The override, and why it cannot forge a stamp.** Both the address and the name
-come from the environment when set. That is what lets the test suite exercise a
-*real* bind on any machine — every machine holds `127.0.0.1` and none holds
-`192.0.2.1` — rather than stubbing out the measurement it is trying to prove. It
-is not a hole in the guarantee: the invariant is *"the holder stamp names an
-identity this machine provably held"*, and an override changes which identity is
-required, never whether the bind actually succeeded. A record written under an
-override names the identity that was checked, so it is still true.
+**There is no override, and the first version of this module was wrong to have
+one.** It read both the address and the name from the environment so the suite
+could bind for real on any machine, and defended that with the invariant *"the
+holder stamp names an identity this machine provably held"*. That is a weaker
+claim than the design makes. §4 does not need the record to name some machine
+that was checked; it needs the record to be **on `zelengs-macbook-air-2`**,
+because the copy's entire value is surviving the loss of the VPS. With the
+environment in the loop, `NETWORTH_MAC_IDENTITY_ADDRESS=127.0.0.1` passes
+everywhere — every machine holds loopback — and the holder string is whatever was
+supplied. Moving an override from a function argument to the environment does not
+remove it; it only moves it somewhere the owner-facing command still reads.
+
+So the required identity is pinned here and cannot be redefined at runtime. The
+seam for tests is :func:`verify`'s ``probe`` argument, which is dependency
+injection at the one place the measurement happens, reachable from unit tests and
+from nowhere on the command path. Shell integration tests stub the pre-flight
+subcommand itself rather than re-defining what it checks.
 """
 
 from __future__ import annotations
 
-import os
 import socket
 from collections.abc import Callable
 
-DEFAULT_ADDRESS = "100.96.163.67"
-DEFAULT_HOLDER = "zelengs-macbook-air-2"
-
-ADDRESS_ENV = "NETWORTH_MAC_IDENTITY_ADDRESS"
-HOLDER_ENV = "NETWORTH_MAC_IDENTITY_HOLDER"
+#: Pinned, not defaulted. `AGENTS.md` requires the owner's machines to be named
+#: in full, and there are four MacBook Airs on this tailnet.
+REQUIRED_ADDRESS = "100.96.163.67"
+REQUIRED_HOLDER = "zelengs-macbook-air-2"
 
 
 class WrongHost(Exception):
@@ -70,33 +77,31 @@ def holds_address(address: str) -> bool:
     return True
 
 
-def required_identity(env: dict[str, str] | None = None) -> tuple[str, str]:
-    """The ``(holder, address)`` this process requires itself to be."""
-
-    source = os.environ if env is None else env
-    return (
-        source.get(HOLDER_ENV) or DEFAULT_HOLDER,
-        source.get(ADDRESS_ENV) or DEFAULT_ADDRESS,
-    )
-
-
-def verify(
-    *,
-    env: dict[str, str] | None = None,
-    probe: Callable[[str], bool] = holds_address,
-) -> str:
+def verify(*, probe: Callable[[str], bool] | None = None) -> str:
     """Return the holder name this machine is entitled to, or raise.
 
     The returned name is the only value callers may stamp into a record: it is
     produced by the measurement rather than passed to it, so there is no path
-    that writes a holder nobody checked.
+    that writes a holder nobody checked — and it is
+    :data:`REQUIRED_HOLDER` or nothing, so there is no path that writes a holder
+    the design did not ask for either.
+
+    ``probe`` is the only seam, and it is deliberately not reachable from the
+    command line: a test may replace the measurement, but no environment can
+    change *which* identity is demanded.
+
+    Resolved here rather than as a default argument value so that the module
+    attribute stays the live one — a default binds :func:`holds_address` at
+    definition time, which would quietly ignore anything substituted for it
+    later and make a stubbed test pass against the real bind.
     """
 
-    holder, address = required_identity(env)
-    if not probe(address):
+    measure = holds_address if probe is None else probe
+    if not measure(REQUIRED_ADDRESS):
         raise WrongHost(
-            f"this machine does not hold {address}, so it is not {holder!r}. "
+            f"this machine does not hold {REQUIRED_ADDRESS}, so it is not "
+            f"{REQUIRED_HOLDER!r}. "
             "The second copy of a recovery record is only worth the machine it is "
             "on (DESIGN.md §4); writing one here would certify the wrong computer"
         )
-    return holder
+    return REQUIRED_HOLDER

@@ -31,12 +31,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    _, address = mac_identity.required_identity()
     try:
         verified = mac_identity.verify()
     except mac_identity.WrongHost as exc:
         print(f"verify-this-mac: {exc}", file=sys.stderr)
         return 2
     if not args.quiet:
-        print(f"host          {verified} (holds {address}; measured, not assumed)")
+        print(
+            f"host          {verified} "
+            f"(holds {mac_identity.REQUIRED_ADDRESS}; measured, not assumed)"
+        )
     return 0

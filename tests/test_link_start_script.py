@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import REPO_ROOT
+from tests.mac_shim import mac_shim
 
 SCRIPT = REPO_ROOT / "scripts" / "link-start.sh"
 
@@ -47,16 +48,12 @@ def run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedPr
 
 
 # The driver refuses to run anywhere but the Mac that holds the second copy, and a
-# CI runner is not that machine. Pointing the requirement at an address every
-# machine holds keeps the *measurement* real — the bind still has to succeed, and
-# the holder stamped in the record is still the one that was checked — while
-# letting the pipeline under test run anywhere. Without this the suite passed on
-# the developer's Mac and failed everywhere else, which was verified by pointing
-# it at an unheld address and watching three tests go red.
-ON_THIS_MACHINE = {
-    "NETWORTH_MAC_IDENTITY_ADDRESS": "127.0.0.1",
-    "NETWORTH_MAC_IDENTITY_HOLDER": "test-host",
-}
+# CI runner is not that machine. The pre-flight is therefore substituted in the
+# child through `sitecustomize` (see `tests/mac_shim.py`) rather than by making the
+# product read its required identity from the environment — that was the bypass
+# this PR was sent back for, because it left a way to redefine which machine is
+# accepted on the command the owner runs. The decision being substituted is
+# unit-tested for real, in both directions, in `test_mac_identity.py`.
 
 
 def test_the_script_parses() -> None:
@@ -179,6 +176,7 @@ def test_the_url_is_printed_by_the_absorbing_half_after_the_record_exists(
     repo, sha = _throwaway_checkout(tmp_path, MINT_TRANSCRIPT)
     recovery = tmp_path / "link-recovery"
 
+    shim, shim_env = mac_shim(tmp_path)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "link-start.sh"), sha],
         capture_output=True,
@@ -188,8 +186,8 @@ def test_the_url_is_printed_by_the_absorbing_half_after_the_record_exists(
             **os.environ,
             "NETWORTH_LINK_RECOVERY_DIR": str(recovery),
             "PATH": f"{_uv_stub(tmp_path)}:{os.environ['PATH']}",
-            "PYTHONPATH": str(REPO_ROOT),
-            **ON_THIS_MACHINE,
+            "PYTHONPATH": f"{shim}:{REPO_ROOT}",
+            **shim_env,
         },
         timeout=180,
     )
@@ -224,6 +222,7 @@ def test_a_mint_this_mac_cannot_record_prints_no_url(tmp_path: Path) -> None:
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("")
 
+    shim, shim_env = mac_shim(tmp_path)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "link-start.sh"), sha],
         capture_output=True,
@@ -233,8 +232,8 @@ def test_a_mint_this_mac_cannot_record_prints_no_url(tmp_path: Path) -> None:
             **os.environ,
             "NETWORTH_LINK_RECOVERY_DIR": str(blocker / "under-a-file"),
             "PATH": f"{_uv_stub(tmp_path)}:{os.environ['PATH']}",
-            "PYTHONPATH": str(REPO_ROOT),
-            **ON_THIS_MACHINE,
+            "PYTHONPATH": f"{shim}:{REPO_ROOT}",
+            **shim_env,
         },
         timeout=180,
     )
@@ -248,6 +247,7 @@ def test_a_mint_this_mac_cannot_record_prints_no_url(tmp_path: Path) -> None:
 def test_a_mint_half_that_fails_is_reported_as_the_mint_half(tmp_path: Path) -> None:
     repo, sha = _throwaway_checkout(tmp_path, 'echo "mint refused" >&2\nexit 2\n')
 
+    shim, shim_env = mac_shim(tmp_path)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "link-start.sh"), sha],
         capture_output=True,
@@ -257,8 +257,8 @@ def test_a_mint_half_that_fails_is_reported_as_the_mint_half(tmp_path: Path) -> 
             **os.environ,
             "NETWORTH_LINK_RECOVERY_DIR": str(tmp_path / "link-recovery"),
             "PATH": f"{_uv_stub(tmp_path)}:{os.environ['PATH']}",
-            "PYTHONPATH": str(REPO_ROOT),
-            **ON_THIS_MACHINE,
+            "PYTHONPATH": f"{shim}:{REPO_ROOT}",
+            **shim_env,
         },
         timeout=180,
     )
@@ -299,6 +299,7 @@ def test_the_wrong_machine_is_refused_before_anything_is_minted(tmp_path: Path) 
     repo, sha = _throwaway_checkout(tmp_path, MINT_TRANSCRIPT)
     recovery = tmp_path / "link-recovery"
 
+    shim, shim_env = mac_shim(tmp_path, holds=False)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "link-start.sh"), sha],
         capture_output=True,
@@ -308,16 +309,16 @@ def test_the_wrong_machine_is_refused_before_anything_is_minted(tmp_path: Path) 
             **os.environ,
             "NETWORTH_LINK_RECOVERY_DIR": str(recovery),
             "PATH": f"{_uv_stub(tmp_path)}:{os.environ['PATH']}",
-            "PYTHONPATH": str(REPO_ROOT),
-            **ON_THIS_MACHINE,
-            # An address no machine holds (RFC 5737), so the bind genuinely fails.
-            "NETWORTH_MAC_IDENTITY_ADDRESS": "192.0.2.1",
+            "PYTHONPATH": f"{shim}:{REPO_ROOT}",
+            **shim_env,
         },
         timeout=180,
     )
 
     assert result.returncode != 0
-    assert "192.0.2.1" in result.stderr
+    # The refusal names the address the design pinned, not one a test chose —
+    # there is no longer any way for a caller to choose one.
+    assert "100.96.163.67" in result.stderr
     assert not (tmp_path / "remote.argv").exists(), "the mint half ran anyway"
     assert not recovery.exists() or list(recovery.glob("*.json")) == []
     assert "hosted/synthetic" not in result.stdout

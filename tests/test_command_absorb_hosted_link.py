@@ -62,8 +62,10 @@ def _feed(
     # field, so the suite has to say which machine it expects to be. Pointing it
     # at an address every machine holds keeps the bind real — the check still has
     # to pass for the record to exist — while letting these run off the Mac.
-    monkeypatch.setenv(mac_identity.ADDRESS_ENV, "127.0.0.1")
-    monkeypatch.setenv(mac_identity.HOLDER_ENV, "test-host")
+    # The pinned address belongs to one computer, so the measurement is injected
+    # at its seam rather than redefined — there is no longer any way to redefine
+    # it, which is the point of the seam.
+    monkeypatch.setattr(mac_identity, "holds_address", lambda _address: True)
     return argparse.Namespace(commit=COMMIT)
 
 
@@ -81,11 +83,11 @@ def test_the_url_appears_only_after_the_second_copy_reads_back(
     out = capsys.readouterr().out
     record = link_recovery.load(link_recovery.mac_recovery_directory(), FLOW_ID)
     assert record.link_token.reveal() == LINK_TOKEN
-    # The holder is whatever the machine check verified, never a literal the
-    # absorber chose — which is the point of the field. Here that is the test
-    # identity; in production it is `zelengs-macbook-air-2`, and the refusal path
-    # below is what makes the difference observable.
-    assert record.second_copy_holder == "test-host"
+    # The holder is whatever the machine check returned, never a literal the
+    # absorber chose — which is the point of the field. It is now the pinned
+    # identity in tests too, because the required machine can no longer be
+    # redefined from outside; only the measurement is substituted.
+    assert record.second_copy_holder == mac_identity.REQUIRED_HOLDER
     assert record.second_copy_verified_at is not None
     assert HOSTED_URL in out
     # Ordering, asserted as ordering: the verification line is above the URL in the
@@ -234,8 +236,8 @@ def test_the_wrong_machine_writes_no_record_and_shows_no_url(
     is empty afterwards and no URL was printed.
     """
     args = _feed(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _wire()))
-    # An address no machine holds (RFC 5737), so the bind genuinely fails.
-    monkeypatch.setenv(mac_identity.ADDRESS_ENV, "192.0.2.1")
+    # This machine does not hold the pinned address.
+    monkeypatch.setattr(mac_identity, "holds_address", lambda _address: False)
 
     assert absorb_hosted_link.run(args) == 2
 
@@ -252,17 +254,33 @@ def test_the_wrong_machine_writes_no_record_and_shows_no_url(
 def test_the_holder_field_is_the_verified_identity_and_not_a_literal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Two different verified identities produce two different stamps.
+    """The stamp is whatever the check returned, not a string this module owns.
 
     A hardcoded holder passes any single-value assertion, which is how the original
-    defect survived a green suite. Varying the identity is what distinguishes a
-    measurement from a constant: the record has to follow it.
+    defect survived a green suite. The identity is pinned now, so it can no longer
+    be *varied* through configuration — and it must not be, since that was the
+    bypass. What still distinguishes a measurement from a constant is where the
+    value comes from: substituting the check changes the record, which a literal
+    in the absorber could not do.
     """
     args = _feed(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _wire()))
-    monkeypatch.setenv(mac_identity.HOLDER_ENV, "some-other-machine")
+    monkeypatch.setattr(mac_identity, "verify", lambda **_kwargs: "some-other-machine")
 
     assert absorb_hosted_link.run(args) == 0
     capsys.readouterr()
 
     record = link_recovery.load(link_recovery.mac_recovery_directory(), FLOW_ID)
     assert record.second_copy_holder == "some-other-machine"
+
+
+def test_the_stamp_is_the_pinned_holder_on_the_real_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """And with only the measurement injected, it is the design's machine."""
+    args = _feed(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _wire()))
+
+    assert absorb_hosted_link.run(args) == 0
+    capsys.readouterr()
+
+    record = link_recovery.load(link_recovery.mac_recovery_directory(), FLOW_ID)
+    assert record.second_copy_holder == mac_identity.REQUIRED_HOLDER
