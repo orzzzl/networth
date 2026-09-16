@@ -199,6 +199,12 @@ def test_the_next_command_carries_a_mode_and_therefore_parses(
 
     Asserted against the *parser*, not against the string: a test that matched text
     would keep passing if the parser's requirements changed underneath it.
+
+    The command printed is now `link-complete.sh` rather than the transport, which
+    is PR #75 blocker 2: the transport runs the completion on the VPS and leaves
+    the record this very verb just wrote sitting on the Mac. The driver's second
+    half runs here and retires it. The mode still has to reach the verb intact,
+    which is what the parser check below is for.
     """
     args = _feed(monkeypatch, tmp_path, (*TRANSPORT_NOISE, _wire()))
 
@@ -207,7 +213,7 @@ def test_the_next_command_carries_a_mode_and_therefore_parses(
     printed = [
         line.strip()
         for line in capsys.readouterr().out.splitlines()
-        if "--verb complete-hosted-link" in line
+        if "./scripts/link-complete.sh" in line
     ]
     assert len(printed) == 3, "all three modes are offered; choosing is the owner's"
 

@@ -163,21 +163,19 @@ def _print_next_command(flow_id: str, commit: str | None) -> None:
     that exits at argument parsing is worse than no command on a path the owner is
     reading against a 30-minute clock, so all three forms are printed with what
     each one costs. Choosing is his; guessing would be spending his slot for him.
+
+    The version after that printed ``sandbox-rehearsal-remote.sh`` directly, which
+    runs the completion on the VPS and leaves the record this verb just wrote
+    sitting on the Mac until the seven-hour sweep (`DESIGN.md` §4 wants the
+    interactive driver to retire it on ``EXCHANGED``). So the command printed here
+    is now ``link-complete.sh``, whose second half runs on this machine. The
+    transport is still underneath it and still prints its own transcript.
     """
     where = commit if commit else "<the reviewed commit>"
     print("then, on this Mac, one of — the mode is required and never defaulted:")
-    print(
-        f"  ./scripts/sandbox-rehearsal-remote.sh {where} "
-        f"--verb complete-hosted-link --flow {flow_id} --link-mode retrieve-only"
-    )
-    print("      poll and stop; nothing is exchanged        (session 2, measurement (i))")
-    print(
-        f"  ./scripts/sandbox-rehearsal-remote.sh {where} "
-        f"--verb complete-hosted-link --flow {flow_id} --link-mode exchange"
-    )
-    print("      poll, then exchange every public_token     (session 1's plain form)")
-    print(
-        f"  ./scripts/sandbox-rehearsal-remote.sh {where} "
-        f"--verb complete-hosted-link --flow {flow_id} --link-mode exchange-twice"
-    )
-    print("      exchange, exchange again, probe the first  (measurement (ii))")
+    print(f"  ./scripts/link-complete.sh {where} --flow {flow_id} --link-mode retrieve-only")
+    print("      poll and stop; nothing is exchanged, the record stays  (measurement (i))")
+    print(f"  ./scripts/link-complete.sh {where} --flow {flow_id} --link-mode exchange")
+    print("      exchange every public_token, then retire the record    (session 1's form)")
+    print(f"  ./scripts/link-complete.sh {where} --flow {flow_id} --link-mode exchange-twice")
+    print("      exchange, exchange again, probe the first, then retire (measurement (ii))")

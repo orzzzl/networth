@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 from plaid.exceptions import ApiException
 
-from networth import link_recovery
+from networth import link_recovery, mac_identity
 from networth.cli import discover
 from networth.commands import complete_hosted_link
 from networth.link_recovery import RecoveryRecord
@@ -456,15 +456,28 @@ def _mac_record(now: datetime) -> Path:
     return link_recovery.record_path(directory, FLOW_ID)
 
 
-def test_a_successful_exchange_removes_this_mac_s_recovery_record(
+def _on_the_mac(monkeypatch: pytest.MonkeyPatch, *, yes: bool) -> None:
+    """Decide which machine this verb believes it is running on.
+
+    The measurement is a real bind against the pinned tailnet address, so without
+    this the answer would be "whichever computer ran the suite" — green on
+    `zelengs-macbook-air-2` and red in CI, or the reverse, for tests whose subject
+    is precisely the difference between the two hosts. `verify` resolves
+    `holds_address` at call time, so replacing the module attribute reaches it.
+    """
+    monkeypatch.setattr(mac_identity, "holds_address", lambda _address: yes)
+
+
+def test_the_mac_side_completion_retires_the_record_in_this_process(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The record exists so a *stranded* flow can still be recovered (§4). An
-    exchanged flow cannot be stranded, so keeping its link token is residue — and
-    this is the only path that knows the exchange happened. Without it every
-    rehearsal left a file behind indefinitely, which is what the puller's sweep
-    then had to bound."""
+    """`scripts/link-recover.sh`'s path: `--from-tty`, on the Mac, so the process
+    that knows the exchange happened is also the one holding the record (§4).
+
+    The record exists so a *stranded* flow can still be recovered; an exchanged
+    flow cannot be stranded, so keeping its link token is residue."""
     _install(monkeypatch, tmp_path, env="sandbox")
+    _on_the_mac(monkeypatch, yes=True)
     _store_the_link_token()
     record = _mac_record(datetime(2026, 9, 15, 11, 0, tzinfo=UTC))
     _over_a_fake_sdk(monkeypatch, _Finished())
@@ -475,20 +488,78 @@ def test_a_successful_exchange_removes_this_mac_s_recovery_record(
     assert "cleaned" in capsys.readouterr().out
 
 
+def test_the_vps_half_reports_the_exchange_and_deletes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #75 review blocker 2, and the reason the previous test was not enough.
+
+    The normal path runs this verb over ssh (`sandbox-rehearsal-remote.sh`), so it
+    executes **on the VPS** while the record is a file on the Mac. The old test put
+    both in one process and one directory, which made a VPS-local deletion
+    indistinguishable from the Mac's — so the suite reported a cleanup that the
+    real topology could never perform, and every completed Sandbox flow in fact
+    left its record on the laptop until the seven-hour sweep.
+
+    The two hosts are separated here the way they are separated in life: the VPS
+    process resolves its own recovery directory, which is a different directory,
+    and the Mac's record is untouchable from it. The verb's obligation is to
+    *report*, and the marker it prints is what lets the Mac finish the job.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _store_the_link_token()
+
+    # Written while the process still believes it is the Mac, then the host
+    # changes underneath it -- which is the one way to get two genuinely
+    # different `mac_recovery_directory()` answers inside a single test.
+    _on_the_mac(monkeypatch, yes=True)
+    mac_record = _mac_record(datetime(2026, 9, 15, 11, 0, tzinfo=UTC))
+    vps_directory = tmp_path / "vps-link-recovery"
+    monkeypatch.setenv(link_recovery.RECOVERY_DIRECTORY_ENV, str(vps_directory))
+    _on_the_mac(monkeypatch, yes=False)
+    _over_a_fake_sdk(monkeypatch, _Finished())
+
+    assert complete_hosted_link.run(_args(exchange=True)) == 0
+
+    captured = capsys.readouterr()
+    assert mac_record.exists(), "the VPS cannot delete a file on the Mac, and must not seem to"
+    assert not vps_directory.exists(), "the VPS must not so much as resolve the Mac's directory"
+    assert "not this machine's to remove" in captured.out
+    assert "cleaned" not in captured.out
+
+    # The one line that authorises the Mac to delete: a positive report, naming
+    # this flow. An exit status could not have said it -- `--retrieve-only` exits
+    # zero too, and it is the mode whose record must survive.
+    markers = [
+        line
+        for line in captured.out.splitlines()
+        if line.startswith(link_recovery.COMPLETION_WIRE_MARKER)
+    ]
+    assert len(markers) == 1
+    outcome = link_recovery.CompletionOutcome.from_wire(markers[0])
+    assert outcome == link_recovery.CompletionOutcome(FLOW_ID, link_recovery.EXCHANGED)
+
+
 def test_retrieve_only_keeps_the_record_because_that_flow_is_still_live(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Measurement (i) comes back to this same flow after 30 minutes and needs the
-    record to do it. Cleaning up here would delete the input to the measurement."""
+    record to do it. Cleaning up here would delete the input to the measurement.
+
+    Checked on the Mac — the host that *can* delete — because "kept" is only
+    evidence when deletion was possible. And no marker is emitted: on the remote
+    path that line is the deletion authority, so printing one here would hand the
+    Mac permission to destroy the record this mode exists to preserve."""
     _install(monkeypatch, tmp_path, env="sandbox")
+    _on_the_mac(monkeypatch, yes=True)
     _store_the_link_token()
     record = _mac_record(datetime(2026, 9, 15, 11, 0, tzinfo=UTC))
     _over_a_fake_sdk(monkeypatch, _Finished())
 
     assert complete_hosted_link.run(_args(retrieve_only=True)) == 0
-    capsys.readouterr()
 
+    captured = capsys.readouterr()
     assert record.exists()
+    assert link_recovery.COMPLETION_WIRE_MARKER not in captured.out
 
 
 def test_a_cleanup_fault_is_a_note_and_never_fails_a_landed_exchange(
@@ -497,6 +568,7 @@ def test_a_cleanup_fault_is_a_note_and_never_fails_a_landed_exchange(
     """A non-zero exit here would tell the owner the exchange did not land, send him
     to a recovery procedure for a finished flow, and be false."""
     _install(monkeypatch, tmp_path, env="sandbox")
+    _on_the_mac(monkeypatch, yes=True)
     _store_the_link_token()
     _mac_record(datetime(2026, 9, 15, 11, 0, tzinfo=UTC))
     _over_a_fake_sdk(monkeypatch, _Finished())

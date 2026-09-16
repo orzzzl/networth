@@ -122,6 +122,22 @@ FORBIDDEN_FIELDS: Final = frozenset(
 #: payload by something the stream cannot produce by accident.
 MINT_WIRE_MARKER: Final = "networth-link-mint-v1:"
 
+#: The return leg of the same transcript, and the only thing that authorises a
+#: deletion. The mint travels VPS → Mac carrying material; this travels VPS → Mac
+#: carrying an *outcome*, so it is shown rather than withheld — there is nothing
+#: in it to protect. It exists because the two ends of a completion are on two
+#: machines: the exchange happens where the client secret is, and the record it
+#: retires is on the Mac, which therefore has to be *told* rather than to infer.
+#: An exit status cannot say it — a zero means "this process did not fail", and
+#: `--retrieve-only` also exits zero while leaving the flow deliberately live.
+COMPLETION_WIRE_MARKER: Final = "networth-link-complete-v1:"
+
+#: The only outcome that retires a record. Spelled as the design spells it
+#: (`DESIGN.md` §4: "deleted by `link.sh` on `EXCHANGED`") rather than as a bare
+#: boolean, so a future outcome that is *also* terminal has to be named here and
+#: considered rather than falling into `not failed`.
+EXCHANGED: Final = "EXCHANGED"
+
 
 class LinkRecoveryError(Exception):
     """A recovery record could not be written, read back, or trusted."""
@@ -411,6 +427,55 @@ class MintResult:
             url_lifetime_seconds=self.url_lifetime_seconds,
             reap_after=reap_after_from(now),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionOutcome:
+    """What the VPS reports back so the Mac may retire a record.
+
+    Deliberately tiny, and deliberately **not** a mirror of :class:`MintResult`.
+    The mint wire carries a credential and is withheld from the transcript; this
+    carries a flow id and a verb, both of which are already printed in plain text
+    all over the same run, so it is passed straight through to the owner.
+
+    **It names the flow.** A driver that deleted "the record" on seeing any
+    success marker would delete whichever record it was asked about while the
+    transcript described a different one — which is possible the moment two
+    rehearsals overlap, and the failure it produces is the destruction of the
+    disaster copy of a flow that is still live. So the reader compares this field
+    against the flow it was asked to retire and refuses on a mismatch.
+    """
+
+    flow_id: str
+    outcome: str
+
+    def to_wire(self) -> str:
+        payload = {"flow_id": self.flow_id, "outcome": self.outcome}
+        return COMPLETION_WIRE_MARKER + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_wire(cls, line: str) -> CompletionOutcome:
+        if not line.startswith(COMPLETION_WIRE_MARKER):
+            raise CorruptRecord("not a completion payload line")
+        try:
+            payload = json.loads(line[len(COMPLETION_WIRE_MARKER) :])
+        except json.JSONDecodeError as exc:
+            raise CorruptRecord("the completion payload is not JSON") from exc
+        if not isinstance(payload, dict):
+            raise CorruptRecord("the completion payload is not an object")
+        flow_id = payload.get("flow_id")
+        outcome = payload.get("outcome")
+        if not isinstance(flow_id, str) or not _FLOW_ID_RE.match(flow_id):
+            # Checked here rather than at the deletion site: this value is about to
+            # be turned into a filename, and the same rule `reap_expired` applies to
+            # a name it finds on disk applies to a name that arrives over a wire.
+            raise CorruptRecord("the completion payload does not name a flow id")
+        if outcome != EXCHANGED:
+            raise CorruptRecord(
+                f"the completion payload reports {outcome!r}, and only "
+                f"{EXCHANGED!r} retires a record"
+            )
+        return cls(flow_id=flow_id, outcome=outcome)
 
 
 def mac_recovery_directory() -> Path:

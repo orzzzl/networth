@@ -73,7 +73,7 @@ import os
 import sys
 import termios
 
-from networth import link_recovery
+from networth import link_recovery, mac_identity
 from networth.config import ConfigError
 from networth.link_recovery import LinkRecoveryError
 from networth.plaid.client import (
@@ -316,18 +316,19 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
     else:
         print("stored        nothing — --from-tty persists no credential (§15)")
 
-    # The normal end of a flow's life on this Mac, and the only path that *knows*
-    # the exchange happened. The record exists so a stranded flow can still be
-    # recovered (§4); an exchanged one cannot be stranded, so keeping its
-    # `link_token` is residue. The unattended reaper in the puller is the crash
-    # backstop and bounds the worst case at `reap_after` — this is the normal
-    # path, and without it every rehearsal left a file behind indefinitely.
+    # The end of a flow's life, announced before it is acted on — because the
+    # process that knows the exchange happened is usually not the process that
+    # holds the record. Both readers are downstream of this one line:
+    # `_retire_recovery_record` below, when this is already running on the Mac,
+    # and `networth retire-hosted-link` on the Mac when this is running on the VPS.
     #
     # Deliberately not on the `--retrieve-only` path above, which returns earlier:
     # that flow is still live on purpose, and measurement (i) comes back to it
-    # after 30 minutes with the record it needs.
+    # after 30 minutes with the record it needs. A marker there would authorise
+    # deleting the copy that path exists to preserve.
     if args.flow:
-        _discard_recovery_record(args.flow)
+        print(link_recovery.CompletionOutcome(args.flow, link_recovery.EXCHANGED).to_wire())
+        _retire_recovery_record(args.flow)
 
     if not args.exchange_twice:
         return 0
@@ -400,8 +401,8 @@ def _measure_duplicate_exchange(
     return 0
 
 
-def _discard_recovery_record(flow_id: str) -> None:
-    """Remove this Mac's second copy, and never fail a completed exchange over it.
+def _retire_recovery_record(flow_id: str) -> None:
+    """Remove the second copy **if this process is on the machine that holds it**.
 
     Ordering matters here in a way it does not elsewhere in this file: the
     exchange has already happened and any credential is already stored, so a
@@ -409,9 +410,33 @@ def _discard_recovery_record(flow_id: str) -> None:
     point would tell the owner the exchange did not land, which would be false
     and would send him to a recovery procedure for a flow that is finished.
 
-    On the VPS this finds nothing and says nothing: the second copy is the Mac's
-    file, and `delete` reports an absent record rather than raising.
+    **Which machine this runs on is now measured, and the previous version's
+    account of it was wrong.** It said "on the VPS this finds nothing and says
+    nothing", and treated that as the VPS case being handled. It is not handled;
+    it is silent. `mac_recovery_directory()` resolves `~/agents/secrets/...` on
+    whatever host is running — on the VPS that is the *VPS's* `~`, which
+    `AGENTS.md` forbids this code from reading at all, and finding it empty was
+    being read as "nothing to clean" when the truth is "the file is on another
+    computer". The normal rehearsal path runs this verb over ssh
+    (`sandbox-rehearsal-remote.sh`), so the *normal* path was the silent one, and
+    every completed Sandbox flow left its record on the Mac until the seven-hour
+    sweep — with `DESIGN.md` §4 requiring the interactive driver to delete on
+    `EXCHANGED` and expiry to cover only the crash gap.
+
+    So the host is established by the same measurement everything else on this
+    path uses, and the two cases are now distinguishable to a reader of the
+    transcript: on the Mac (`--from-tty`, through `scripts/link-recover.sh`) the
+    record is retired in this process; anywhere else the verb says so, and the
+    marker printed by the caller is what lets the Mac-side driver finish the job.
     """
+    try:
+        mac_identity.verify()
+    except mac_identity.WrongHost:
+        print(
+            f"record        not this machine's to remove; "
+            f"{mac_identity.REQUIRED_HOLDER} retires {flow_id} on the marker above"
+        )
+        return
     directory = link_recovery.mac_recovery_directory()
     try:
         removed = link_recovery.delete(directory, flow_id)
