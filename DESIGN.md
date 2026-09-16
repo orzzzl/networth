@@ -3124,10 +3124,40 @@ and what resolves it is the condition it names ending — never a cycle merely
 running.** For the two Item-scoped kinds that is the Item returning to `HEALTHY`
 (or moving to a *different* owner-actionable state, which supersedes: the
 owner's next action changed). For the three account-scoped ones it is the
-account's own condition: reconciliation completing, `source_as_of` actually
-advancing rather than a call merely succeeding, and either half of the
+account's own condition: reconciliation completing, `source_as_of` advancing **out
+of** frozen rather than a call merely succeeding, and either half of the
 share-count rule above — including the one case in this section where a cycle
 *looking* resolves something, because what it finds is that the subject is gone.
+
+**A slowly advancing clock is one freeze, not a new one every time it moves**
+*(owner decision 2026-09-11, escalation `15df493e`)*. A feed can advance
+`source_as_of` by a day and still sit five closes behind: the clock moved, the
+freeze did not end. The sentence above read *"`source_as_of` actually advancing"*
+until this revision, and taken literally each creep ended one state entry and
+began another — so the 24-hour window restarted every time, and a source that
+creeps several times a day could prompt several times a day. That is the
+anti-fatigue rule defeated by the one condition it most needs to survive.
+
+So the event is **the freeze**, and ending it takes *both* halves — the clock
+advancing **and** the account no longer assessing as frozen. Neither alone will
+do, and this section already had a rule for each:
+
+- The clock creeping while the account is **still frozen** is this same freeze.
+  The open row stays open and the clock it records is updated in place; its claim
+  is "this account is stuck, currently at *X*", and *X* moving does not make that
+  a different claim. Crucially the row keeps its prompt history, which is the
+  whole of what the owner chose.
+- An account that stops being *classified* frozen **without** its clock moving
+  has lost its evidence, not its problem — `FROZEN` requires a `HEALTHY` Item, so
+  a connection failure re-labels the very same stuck data as merely stale. That
+  row stands, exactly as before, and this revision does not touch it.
+
+A freeze that clears and later recurs is a genuinely new event and may prompt
+immediately. *(The alternative — keep replacing the row and back-date the
+replacement's prompt window — was put to the owner alongside this one and
+declined. It would have written history rows that are older than the rows they
+replace, leaving a reader of the alert ledger to explain an ordering that means
+nothing.)*
 The anti-fatigue rule matters more, not less, on a single-channel design: the
 app's unhealthy state has to stay credible, because there is no second channel
 to fall back on when the owner learns to swipe past it.
