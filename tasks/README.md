@@ -109,7 +109,7 @@ that row. He caught it, not us.)
 | 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | **READY** |
 | 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | **DONE** (#74, 2026-09-15) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **DONE** (#79, 2026-09-16) |
-| 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | **READY** |
+| 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | **WIP** (codex, 2026-09-16) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | **DONE** (#77, 2026-09-16) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED (19a) |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **READY** |
