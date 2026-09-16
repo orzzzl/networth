@@ -293,8 +293,8 @@ class Publisher:
         cursor = self._connection.execute(
             """
             INSERT INTO publication(
-                snapshot_id, pairing_id, seq, schema_version, published_at, ok, error
-            ) VALUES (?, ?, ?, ?, ?, 1, NULL)
+                snapshot_id, pairing_id, seq, schema_version, published_at
+            ) VALUES (?, ?, ?, ?, ?)
             """,
             (read.snapshot.id, pairing_id, seq, SCHEMA_VERSION, published_at),
         )

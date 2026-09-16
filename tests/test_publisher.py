@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 
 from networth.model import (
+    MANUAL_VALUED_AS_OF,
     AlertDraft,
     AlertKind,
     FreshnessPolicy,
@@ -251,10 +252,10 @@ def test_publication_carries_the_complete_first_schema_and_stamps_prompted_alert
 
     assert db.execute(
         """
-        SELECT snapshot_id, pairing_id, seq, schema_version, published_at, ok, error
+        SELECT snapshot_id, pairing_id, seq, schema_version, published_at
         FROM publication
         """
-    ).fetchone() == (snapshot_id, PAIRING_ID, 1, "1", _timestamp(NOW), 1, None)
+    ).fetchone() == (snapshot_id, PAIRING_ID, 1, "1", _timestamp(NOW))
 
     stored = _stored_envelope(db)
     assert stored == (
@@ -270,6 +271,148 @@ def test_publication_carries_the_complete_first_schema_and_stamps_prompted_alert
     plaintext = open_payload(publication.envelope, KEY)
     assert KEY_REF.encode() not in plaintext
     assert b"synthetic-item" not in plaintext
+
+
+def test_multi_account_wire_preserves_static_reauth_unreconciled_and_new_state(
+    db: sqlite3.Connection,
+) -> None:
+    """Task 20's four carried fields each fail here if replaced by a benign constant."""
+
+    revision_at = NOW - timedelta(hours=2)
+    db.executemany(
+        """
+        INSERT INTO institution(id, plaid_institution_id, name, is_oauth)
+        VALUES (?, ?, ?, 0)
+        """,
+        [
+            (1, "synthetic-healthy-provider", "Synthetic healthy provider"),
+            (2, "synthetic-reauth-provider", "Synthetic reauth provider"),
+        ],
+    )
+    db.executemany(
+        """
+        INSERT INTO item(
+            id, institution_id, plaid_item_id, secret_ref, status, status_since, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                1,
+                1,
+                "synthetic-healthy-item",
+                "SYNTHETIC_HEALTHY_REF",
+                "HEALTHY",
+                _timestamp(revision_at),
+                _timestamp(revision_at),
+            ),
+            (
+                2,
+                2,
+                "synthetic-reauth-item",
+                "SYNTHETIC_REAUTH_REF",
+                "NEEDS_REAUTH",
+                _timestamp(revision_at),
+                _timestamp(revision_at),
+            ),
+        ],
+    )
+    db.executemany(
+        """
+        INSERT INTO account(
+            id, item_id, plaid_account_id, name, type, currency, sign,
+            freshness_policy, include_in_net_worth, reconciliation_state, created_at
+        ) VALUES (?, ?, ?, ?, 'synthetic', 'USD', 1, ?, 1, ?, ?)
+        """,
+        [
+            (
+                1,
+                1,
+                "synthetic-confirmed-account",
+                "Synthetic confirmed account",
+                FreshnessPolicy.SYNCED_BALANCE.value,
+                "CONFIRMED",
+                _timestamp(revision_at),
+            ),
+            (
+                2,
+                2,
+                "synthetic-new-account",
+                "Synthetic new account",
+                FreshnessPolicy.SYNCED_BALANCE.value,
+                "NEW",
+                _timestamp(revision_at),
+            ),
+            (
+                3,
+                None,
+                None,
+                "Synthetic fixed valuation",
+                FreshnessPolicy.MANUAL_STATIC.value,
+                "CONFIRMED",
+                _timestamp(revision_at),
+            ),
+        ],
+    )
+    db.executemany(
+        """
+        INSERT INTO sync_run(id, started_at, finished_at, "trigger", ok, error_summary)
+        VALUES (?, ?, ?, 'TEST', 1, NULL)
+        """,
+        [
+            ("run-manual-revision", _timestamp(revision_at), _timestamp(revision_at)),
+            ("run-multi-account", _timestamp(NOW - timedelta(minutes=1)), _timestamp(NOW)),
+        ],
+    )
+    store = Store(db)
+    store.observations.append(
+        ObservationDraft(
+            sync_run_id="run-manual-revision",
+            account_id=3,
+            observed_at=revision_at,
+            figure=SourcedFigure(
+                value_minor=40_000,
+                currency="USD",
+                as_of=revision_at,
+                source_clock=MANUAL_VALUED_AS_OF,
+            ),
+            source=ObservationSource.MANUAL,
+            fetched_at=revision_at,
+            is_carried_forward=False,
+        )
+    )
+    store.observations.append(
+        ObservationDraft(
+            sync_run_id="run-multi-account",
+            account_id=1,
+            observed_at=NOW,
+            figure=SourcedFigure(
+                value_minor=20_000,
+                currency="USD",
+                as_of=SOURCE_AS_OF,
+                source_clock="SYNTHETIC_BALANCE_CLOCK",
+            ),
+            source=ObservationSource.PLAID_BALANCE,
+            fetched_at=NOW,
+            is_carried_forward=False,
+        )
+    )
+    Snapshotter(store).run("run-multi-account", at=NOW)
+    db.execute(
+        "INSERT INTO pairing(id, created_at, key_ref, state) VALUES (?, ?, ?, 'ACTIVE')",
+        (PAIRING_ID, _timestamp(NOW), KEY_REF),
+    )
+    db.commit()
+
+    document = _document(_publisher(db).publish(at=NOW).envelope)
+
+    assert document["total"]["static_account_count"] == 1
+    assert document["total"]["reauth_account_count"] == 1
+    assert document["total"]["unreconciled_account_count"] == 1
+    pending = next(account for account in document["accounts"] if account["account_id"] == 2)
+    assert pending["reconciliation_state"] == "NEW"
+    assert pending["item_state"] == "NEEDS_REAUTH"
+    assert pending["value_minor"] is None
+    assert pending["freshness"] is None
 
 
 def test_unknown_total_age_keeps_its_tag_and_never_invents_a_date(

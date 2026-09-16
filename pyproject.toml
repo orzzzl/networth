@@ -10,6 +10,7 @@ dependencies = [
 
 [project.scripts]
 networth = "networth.cli:main"
+networth-serve = "networth.serve:main"
 
 [dependency-groups]
 dev = [

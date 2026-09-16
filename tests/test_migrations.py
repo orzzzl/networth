@@ -49,6 +49,19 @@ def _migration_sql() -> str:
     )
 
 
+def _apply_migrations_through(connection: sqlite3.Connection, version: int) -> None:
+    entries = sorted(
+        resources.files("networth.storage.sql").iterdir(), key=lambda entry: entry.name
+    )
+    for entry in entries:
+        match = re.match(r"([0-9]{4})_", entry.name)
+        if match is None or int(match.group(1)) > version:
+            continue
+        connection.executescript(entry.read_text(encoding="utf-8"))
+        connection.execute(f"PRAGMA user_version = {int(match.group(1))}")
+    connection.commit()
+
+
 def _insert_sync_run(connection: sqlite3.Connection, run_id: str) -> None:
     connection.execute(
         'INSERT INTO sync_run(id, started_at, finished_at, "trigger", ok) '
@@ -122,8 +135,8 @@ def _insert_link_flow(
 def test_migrations_run_from_empty_and_are_idempotent() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        assert migrate(connection) == (1, 2, 3, 4)
-        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
+        assert migrate(connection) == (1, 2, 3, 4, 5)
+        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
         assert connection.execute("PRAGMA busy_timeout").fetchone() == (5000,)
         before = connection.execute(
@@ -160,8 +173,8 @@ def test_item_health_migration_upgrades_v1_without_rewriting_items() -> None:
         )
         connection.commit()
 
-        assert migrate(connection) == (2, 3, 4)
-        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
+        assert migrate(connection) == (2, 3, 4, 5)
+        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
         assert connection.execute(
             """
             SELECT plaid_item_id, status, last_health_poll_at,
@@ -173,11 +186,135 @@ def test_item_health_migration_upgrades_v1_without_rewriting_items() -> None:
         connection.close()
 
 
+def test_success_only_migration_preserves_every_envelope_and_sequence_trigger() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        _apply_migrations_through(connection, 4)
+        _insert_sync_run(connection, "run-publication-v4")
+        snapshot_id = _insert_snapshot(connection, "run-publication-v4")
+        connection.execute(
+            "INSERT INTO pairing(id, created_at, key_ref, state) "
+            "VALUES ('pair-publication-v4', ?, 'payload-key/publication-v4', 'ACTIVE')",
+            (NOW,),
+        )
+        connection.executemany(
+            """
+            INSERT INTO publication(
+                id, snapshot_id, pairing_id, seq, schema_version, published_at, ok, error
+            ) VALUES (?, ?, 'pair-publication-v4', ?, '1', ?, ?, ?)
+            """,
+            [
+                (1, snapshot_id, 1, NOW, 1, None),
+                (2, snapshot_id, 2, NOW, 0, "synthetic failed attempt"),
+                (3, snapshot_id, 3, NOW, 1, None),
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO published_envelope(
+                publication_id, pairing_id, schema_version, seq, published_at,
+                nonce, ciphertext, is_active
+            ) VALUES (?, 'pair-publication-v4', '1', ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "1", NOW, b"a" * 12, b"b" * 16, None),
+                (3, "3", NOW, b"c" * 12, b"d" * 16, 1),
+            ],
+        )
+        connection.commit()
+
+        assert migrate(connection) == (5,)
+
+        assert _columns(connection, "publication") == (
+            "id",
+            "snapshot_id",
+            "pairing_id",
+            "seq",
+            "schema_version",
+            "published_at",
+        )
+        assert connection.execute("SELECT id, seq FROM publication ORDER BY id").fetchall() == [
+            (1, 1),
+            (3, 3),
+        ]
+        assert connection.execute(
+            """
+            SELECT publication_id, seq, nonce, ciphertext, is_active
+            FROM published_envelope
+            ORDER BY publication_id
+            """
+        ).fetchall() == [
+            (1, "1", b"a" * 12, b"b" * 16, None),
+            (3, "3", b"c" * 12, b"d" * 16, 1),
+        ]
+
+        with pytest.raises(sqlite3.IntegrityError, match="must increase monotonically"):
+            connection.execute(
+                """
+                INSERT INTO publication(
+                    snapshot_id, pairing_id, seq, schema_version, published_at
+                ) VALUES (?, 'pair-publication-v4', 2, '1', ?)
+                """,
+                (snapshot_id, NOW),
+            )
+    finally:
+        connection.close()
+
+
+def test_success_only_migration_refuses_to_orphan_a_failed_publication_envelope() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        _apply_migrations_through(connection, 4)
+        _insert_sync_run(connection, "run-failed-publication-v4")
+        snapshot_id = _insert_snapshot(connection, "run-failed-publication-v4")
+        connection.execute(
+            "INSERT INTO pairing(id, created_at, key_ref, state) "
+            "VALUES ('pair-failed-publication-v4', ?, "
+            "'payload-key/failed-publication-v4', 'ACTIVE')",
+            (NOW,),
+        )
+        connection.execute(
+            """
+            INSERT INTO publication(
+                id, snapshot_id, pairing_id, seq, schema_version, published_at, ok, error
+            ) VALUES (1, ?, 'pair-failed-publication-v4', 1, '1', ?, 0,
+                      'synthetic failed attempt')
+            """,
+            (snapshot_id, NOW),
+        )
+        connection.execute(
+            """
+            INSERT INTO published_envelope(
+                publication_id, pairing_id, schema_version, seq, published_at,
+                nonce, ciphertext, is_active
+            ) VALUES (1, 'pair-failed-publication-v4', '1', '1', ?, ?, ?, 1)
+            """,
+            (NOW, b"n" * 12, b"ciphertext" + b"t" * 16),
+        )
+        connection.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
+            migrate(connection)
+
+        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
+        assert connection.execute("SELECT ok, error FROM publication WHERE id = 1").fetchone() == (
+            0,
+            "synthetic failed attempt",
+        )
+        assert connection.execute(
+            "SELECT nonce, ciphertext, is_active FROM published_envelope WHERE publication_id = 1"
+        ).fetchone() == (b"n" * 12, b"ciphertext" + b"t" * 16, 1)
+    finally:
+        connection.close()
+
+
 def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
     database_path = tmp_path / "networth.db"
     connection = sqlite3.connect(database_path)
     try:
-        assert migrate(connection) == (1, 2, 3, 4)
+        assert migrate(connection) == (1, 2, 3, 4, 5)
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
     finally:
         connection.close()
@@ -192,10 +329,10 @@ def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
 def test_migration_refuses_a_database_from_the_future() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        connection.execute("PRAGMA user_version = 5")
+        connection.execute("PRAGMA user_version = 6")
         with pytest.raises(SchemaTooNewError, match="newer than supported"):
             migrate(connection)
-        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
     finally:
         connection.close()
 
@@ -318,8 +455,6 @@ def test_schema_has_exactly_the_required_tables_and_columns(db: sqlite3.Connecti
             "seq",
             "schema_version",
             "published_at",
-            "ok",
-            "error",
         ),
         "published_envelope": (
             "publication_id",
@@ -467,8 +602,8 @@ def test_only_one_published_envelope_can_be_active(db: sqlite3.Connection) -> No
         db.execute(
             """
             INSERT INTO publication(
-                id, snapshot_id, pairing_id, seq, schema_version, published_at, ok
-            ) VALUES (?, ?, 'pair-envelope', ?, '1', ?, 1)
+                id, snapshot_id, pairing_id, seq, schema_version, published_at
+            ) VALUES (?, ?, 'pair-envelope', ?, '1', ?)
             """,
             (seq, snapshot_id, seq, NOW),
         )
@@ -548,8 +683,8 @@ def test_publication_sequence_cannot_move_backwards(db: sqlite3.Connection) -> N
     db.execute(
         """
         INSERT INTO publication(
-            snapshot_id, pairing_id, seq, schema_version, published_at, ok
-        ) VALUES (?, 'pair-sequence', 2, '1', ?, 1)
+            snapshot_id, pairing_id, seq, schema_version, published_at
+        ) VALUES (?, 'pair-sequence', 2, '1', ?)
         """,
         (snapshot_id, NOW),
     )
@@ -557,8 +692,8 @@ def test_publication_sequence_cannot_move_backwards(db: sqlite3.Connection) -> N
         db.execute(
             """
             INSERT INTO publication(
-                snapshot_id, pairing_id, seq, schema_version, published_at, ok
-            ) VALUES (?, 'pair-sequence', 1, '1', ?, 1)
+                snapshot_id, pairing_id, seq, schema_version, published_at
+            ) VALUES (?, 'pair-sequence', 1, '1', ?)
             """,
             (snapshot_id, NOW),
         )

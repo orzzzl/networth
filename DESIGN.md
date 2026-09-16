@@ -1635,11 +1635,17 @@ A publish path that dies silently would freeze the phone's number — this
 product's cardinal sin arriving through the back door — so it is monitored
 rather than assumed.
 
-The mechanism is **evidence, not arithmetic**: the `publication` table (§7)
-records every attempt, and `doctor` plus the alert path fire on *"the last
-successful publication is older than expected"*. One check catches a crashed
-daemon, a full disk, a database that will not open and a serving process that is
-not listening — instead of enumerating the failures in advance.
+The mechanism is **evidence, not arithmetic**: every `publication` row (§7) is a
+committed success, and `doctor` plus the alert path fire on *"the last committed
+publication is older than expected"*. Failed attempts roll back without a row;
+an outcome flag here would describe a state the table must never contain. This
+check catches a crashed publisher, a full disk and a database that will not open
+instead of enumerating those failures in advance.
+
+Publication age is not evidence that a reader is responsive. The independent
+forever-after listener check in §19 step 3.4 proves the process and bind address,
+while the HTTP server isolates clients and reaps idle connections so one reader
+cannot wedge the route without killing the process.
 
 *(Rev 10: this section used to be about a **transport credential** expiring, and
 that reading is gone with the credential. What remains is the check, which was
@@ -1766,17 +1772,16 @@ pairing(id, created_at, key_ref,                   -- a ref, never the material
                                                    --   party mid-rotation
         revoked_at)
 
-publication(                                       -- §6.4 evidence: did the phone's copy get built?
+publication(                                       -- §6.4 evidence: the phone's copy was committed
   id, snapshot_id, pairing_id, seq UNIQUE,         -- monotonic, NEVER reset across pairings;
                                                    --   replay defence (I6, §9.3)
-  schema_version, published_at,
-  ok, error)                                       -- a local transaction either committed or
-                                                   --   raised. Rev 9 carried an outcome state
-                                                   --   machine, a payload fingerprint, and
-                                                   --   pre-write/read-back columns; all four
-                                                   --   existed to detect a third party serving
-                                                   --   something other than what was uploaded.
-                                                   --   The daemon now serves its own rows (§6.4)
+  schema_version, published_at)                    -- committed successes only. A failed local
+                                                   --   transaction rolls back without a row.
+                                                   --   Rev 9 carried outcome, fingerprint and
+                                                   --   pre-write/read-back state to detect a
+                                                   --   third party serving something other than
+                                                   --   what was uploaded; the daemon now serves
+                                                   --   its own rows (§6.4)
 
 published_envelope(                                -- §6.3.1: the object GET /snapshot hands out.
                                                    --   Rev 14 adds it: §6.3.1 said the envelope
