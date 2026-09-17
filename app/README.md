@@ -3,6 +3,11 @@
 The Android app. Read-only: it holds no Plaid token, never calls Plaid, and
 renders one published snapshot.
 
+The runtime pairing bundle is parsed as a closed three-value contract (payload
+key, pairing id, and the VPS's full tailnet name) and stored as one
+`flutter_secure_storage` value backed by the Android Keystore. The APK contains
+no key and no read token.
+
 ## The one rule this app exists to keep
 
 **No total is ever rendered without its age.** That is invariant I2/I4 in
