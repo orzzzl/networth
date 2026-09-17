@@ -113,7 +113,8 @@ that row. He caught it, not us.)
 | 21 | Flutter app skeleton | 19 | **claude** | codex | **DONE** (#77, 2026-09-16) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | BLOCKED (19a) |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **READY** |
-| 24 | Release signing + APK delivery | 20, 21, 22 | **claude** | codex | BLOCKED |
+| 23a | Record the history the curve draws: app-private, durable, across pairing rotation | 20, 23 | **claude** | codex | BLOCKED (23) |
+| 24 | Release signing + APK delivery | 20, 21, 22, 23a | **claude** | codex | BLOCKED |
 | 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 19, 22 | **claude** | codex | BLOCKED |
 
 ### Phase 5 — operations
@@ -2299,6 +2300,51 @@ different questions and a single badge answers neither.
 
 **Must not:** recompute the curve. It is the obvious implementation and it is wrong.
 
+### 23a — Record the history the curve draws — **claude**
+
+**Normative:** §6.2, §6.3, §7, §12, `AGENTS.md`.
+
+**Why this row exists.** `23` builds the curve; nothing yet *fills* it. The payload carries
+one total, not a series (`publisher.py::_plaintext`), and §6.2 says where the series lives —
+*"the phone's local cache … does contain the history window the curve renders, because the
+curve has to come from somewhere."* Accumulating needs the app's real transport and keeping
+needs durable storage, so neither belonged in `23`.
+
+**The hazard this row is named after, and why `24` depends on it.** `23`'s review found the
+app shipping a bundled synthetic series — an invented thirty-day curve that would have sat
+under a headline that becomes real. A made-up *today* announces itself, because the screen
+it draws is covered in `UNKNOWN` and stale annotations; a made-up *past* announces nothing,
+carries no figures that could be recognised as wrong, and is this project's own failure mode
+rendered as a picture. `23` closed it by wiring an empty source in `main.dart` and refusing
+the fixture under `kReleaseMode`, which is honest but leaves the feature unfilled. **The
+release row depends on this one so the gap cannot reach the owner as silence** — an APK
+whose curve is permanently empty is a feature that shipped without shipping.
+
+**Acceptance:**
+
+- [ ] An accepted payload is **recorded** — one reading per fetched payload, as the host
+      stored it. Nothing is derived from another reading.
+- [ ] The store is **app-private and durable across launches**, and **outside the key
+      vault**: history is not a capability. The pairing key is the revocable thing; the
+      owner's own curve is not, so re-pairing or recovering secure storage must not erase
+      it. Points are identified by `published_at`/`seq`, never by `pairing_id`.
+- [ ] **A later payload never mutates an earlier point.** The phone-side analogue of `13`'s
+      criterion, and the same test: revaluing in 2026 leaves the 2024 points unchanged.
+- [ ] `main.dart` renders the recorded series, and **`assets/fixtures/history.json` is
+      removed from the app's assets**. The demo entry point goes with it.
+- [ ] The store is **bounded** — §6.2 calls it a history *window*, and an unbounded local
+      cache of the owner's net worth is a growing blast radius on a stolen phone. Name the
+      bound and say what it costs.
+
+**Dependency approval — the one thing this row grants that `23` could not.** Durable
+storage needs a package, and `AGENTS.md` admits no dependency without an OK written in the
+task spec. **This row is that OK**, for a storage package only (`path_provider` +
+`dart:io`, or `shared_preferences`) — free, offline, no service behind it, per rule 2. It
+authorises nothing else, and a second package needs its own row.
+
+**Must not:** put history in `flutter_secure_storage`; reconstruct a point from any other
+reading; or leave a synthetic series reachable from a release build.
+
 ### 24 — Release signing + APK delivery — **claude**
 
 **Normative:** §17, §6.3, `AGENTS.md`.
@@ -2313,9 +2359,12 @@ different questions and a single badge answers neither.
 
 **Depends on `22`** so a build that can collapse the two staleness dimensions — or bury an
 alert on a design with no second channel — cannot be delivered, and on `20` so the
-delivered app has a real transport.
+delivered app has a real transport. **And on `23a`**, so the delivered app's curve is the
+owner's own record rather than an empty panel or an invented one; `23` deliberately ships
+the empty state rather than a fixture, and this dependency is what stops that honest
+placeholder from becoming the shipped feature by default.
 
-**Must not:** deliver a debug-signed build.
+**Must not:** deliver a debug-signed build, or one whose history is synthetic.
 
 ### 26 — Remaining-slot surfacing: `doctor` and the app agree — **claude**
 
