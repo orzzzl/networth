@@ -112,7 +112,7 @@ class CurveGeometry {
 
 /// The net-worth curve.
 ///
-/// **It renders no figures, and that is invariant I4 rather than an omission.**
+/// **It renders no figures, and that is invariant I2 rather than an omission.**
 /// There is no widget in this app that takes a bare amount; an axis label would
 /// be exactly that — a number with no age beside it — and a series of them would
 /// be many. The number lives in `Headline` directly above, with its age state
@@ -120,7 +120,7 @@ class CurveGeometry {
 /// asks it to make visible: which readings were incomplete, and which days have
 /// no reading at all.
 class HistoryCurve extends StatelessWidget {
-  const HistoryCurve({super.key, required this.history});
+  const HistoryCurve({super.key, required this.history, required this.headlineCurrency});
 
   /// The series, or **null when it could not be read**.
   ///
@@ -130,6 +130,13 @@ class HistoryCurve extends StatelessWidget {
   /// about the owner's own history, and the same shape as the failure this
   /// project exists to refuse, one layer down.
   final NetWorthHistory? history;
+
+  /// The currency of the total shown above this curve.
+  ///
+  /// Required rather than optional on purpose: a caller that does not have the
+  /// headline in scope has no business drawing the curve under it, and a
+  /// defaulted parameter is how this check would quietly stop being made.
+  final String headlineCurrency;
 
   static const double _height = 120;
 
@@ -143,6 +150,13 @@ class HistoryCurve extends StatelessWidget {
     }
     if (history.isEmpty) {
       return _Note(text: l10n.historyEmpty);
+    }
+    // §10 item 6: one currency, and mixed units fail *loudly*. Drawing the shape
+    // anyway would be the loudest thing on the screen and would say nothing —
+    // the curve has no figures, so a euro series under a dollar total renders as
+    // a perfectly ordinary picture of the wrong quantity.
+    if (history.currency != headlineCurrency) {
+      return _Note(text: l10n.historyCurrencyMismatch);
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

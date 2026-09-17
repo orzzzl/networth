@@ -9,14 +9,19 @@ import 'package:networth_app/src/domain/payload_format_exception.dart';
 
 import 'fixtures.dart';
 
-HistoryPoint point(String publishedAt, int valueMinor, {bool isComplete = true}) {
+HistoryPoint point(
+  String publishedAt,
+  int valueMinor, {
+  bool isComplete = true,
+  String currency = 'USD',
+}) {
   final at = DateTime.parse(publishedAt);
   return HistoryPoint(
     publishedAt: at,
     total: KnownAgeTotal(
-      amount: Money(minorUnits: valueMinor, currency: 'USD'),
-      assets: Money(minorUnits: valueMinor, currency: 'USD'),
-      liabilities: const Money(minorUnits: 0, currency: 'USD'),
+      amount: Money(minorUnits: valueMinor, currency: currency),
+      assets: Money(minorUnits: valueMinor, currency: currency),
+      liabilities: Money(minorUnits: 0, currency: currency),
       staticAccountCount: 0,
       isComplete: isComplete,
       asOf: at,
@@ -236,6 +241,70 @@ void main() {
         () => DatedTotal.fromJson(total),
         throwsA(isA<PayloadFormatException>()),
       );
+    });
+  });
+
+  group('mixed currencies fail loudly (§10 item 6)', () {
+    // The series that differs from the accepted one by exactly one field. Any
+    // larger difference would leave it open which difference caused the refusal.
+    List<HistoryPoint> series({required String secondCurrency}) => [
+          point('2026-09-10T04:00:00Z', 100),
+          point('2026-09-11T04:00:00Z', 200, currency: secondCurrency),
+          point('2026-09-12T04:00:00Z', 300),
+        ];
+
+    test('one point in another currency is refused', () {
+      expect(
+        () => NetWorthHistory.reduce(series(secondCurrency: 'EUR')),
+        throwsA(isA<PayloadFormatException>()),
+      );
+    });
+
+    test('the same series in one currency is accepted', () {
+      // The control. Without it the test above passes just as well against a
+      // `reduce` that refuses everything.
+      expect(NetWorthHistory.reduce(series(secondCurrency: 'USD')).points, hasLength(3));
+    });
+
+    test('a series arriving as JSON is refused at the same place', () {
+      // Through `parseHistory`, since that is the path a payload takes. The
+      // refusal lives in `reduce` so that a series the app *accumulates* is
+      // checked too, but the JSON door must still be shut.
+      final source = jsonEncode([
+        {
+          'published_at': '2026-09-10T04:00:00Z',
+          'total': {
+            'value_minor': 100,
+            'assets_minor': 100,
+            'liabilities_minor': 0,
+            'currency': 'USD',
+            'static_account_count': 0,
+            'is_complete': true,
+            'age_state': 'KNOWN',
+            'as_of': '2026-09-10T04:00:00Z',
+          },
+        },
+        {
+          'published_at': '2026-09-11T04:00:00Z',
+          'total': {
+            'value_minor': 200,
+            'assets_minor': 200,
+            'liabilities_minor': 0,
+            'currency': 'EUR',
+            'static_account_count': 0,
+            'is_complete': true,
+            'age_state': 'KNOWN',
+            'as_of': '2026-09-11T04:00:00Z',
+          },
+        },
+      ]);
+
+      expect(() => parseHistory(source), throwsA(isA<PayloadFormatException>()));
+    });
+
+    test('the currency getter reports the one currency, and null when empty', () {
+      expect(NetWorthHistory.reduce(series(secondCurrency: 'USD')).currency, 'USD');
+      expect(NetWorthHistory.empty.currency, isNull);
     });
   });
 }

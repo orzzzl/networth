@@ -196,6 +196,12 @@ abstract class AppLocalizations {
   /// **'no readings recorded yet'**
   String get historyEmpty;
 
+  /// Shown instead of the curve when the recorded series and the headline total are in different currencies. States the fact and the consequence; it does not name either currency, because the owner cannot act on that and the pair would read as a figure.
+  ///
+  /// In en, this message translates to:
+  /// **'history is in a different currency from the total, so it isn\'t shown'**
+  String get historyCurrencyMismatch;
+
   /// Explains the dashed/hollow treatment for snapshots with is_complete = FALSE (DESIGN.md §10.5). Rendered only when the series actually contains one, so the note never describes something absent from the screen. Deliberately does not name a cause: is_complete is FALSE when anything was carried forward, stale, or unreconciled, and those have different remedies.
   ///
   /// In en, this message translates to:

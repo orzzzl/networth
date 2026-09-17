@@ -17,17 +17,20 @@ const SnapshotSource _source = FixtureSnapshotSource(
   'assets/fixtures/mixed_known_and_unknown.json',
 );
 
-/// The curve's series, from a bundled fixture for the same reason the payload is.
+/// The curve's series — **empty, and deliberately not a fixture.**
 ///
-/// The series is *synthetic*, like every other fixture here — and note what it
-/// is not: it is not derived from the payload above. Manufacturing past points
-/// out of today's total would invent a history the owner never had, which is the
-/// exact deformation §12 forbids, arriving from the demo rather than from a
-/// query. The fixture carries a gap and an incomplete reading on purpose, so the
-/// two treatments §10.5 asks for are visible rather than only asserted in tests.
-const HistorySource _historySource = FixtureHistorySource(
-  'assets/fixtures/history.json',
-);
+/// The payload above is synthetic and that is fine; a synthetic *past* is not
+/// the same object. A made-up today announces itself, because the screen it
+/// draws is covered in `UNKNOWN` and stale annotations. A made-up thirty-day
+/// curve announces nothing: it carries no figures to recognise as wrong, and it
+/// would sit directly under a headline that becomes real before this file is
+/// next edited. So this entry point does not name the fixture at all — the
+/// synthetic series is reachable only from `main_demo.dart`, and
+/// `FixtureHistorySource` refuses to load in a release build besides.
+///
+/// What the owner sees here is therefore the truth: a new install has recorded
+/// nothing, and the curve says so. Task `23a` is what fills it.
+const HistorySource _historySource = EmptyHistorySource();
 
 void main() {
   runApp(const NetWorthApp());

@@ -148,10 +148,18 @@ void main() {
   });
 
   group('the widget', () {
-    Future<void> pump(WidgetTester tester, NetWorthHistory? history) =>
-        tester.pumpWidget(localized(HistoryCurve(history: history)));
+    Future<void> pump(
+      WidgetTester tester,
+      NetWorthHistory? history, {
+      String headlineCurrency = 'USD',
+    }) =>
+        tester.pumpWidget(
+          localized(
+            HistoryCurve(history: history, headlineCurrency: headlineCurrency),
+          ),
+        );
 
-    testWidgets('renders no figures at all — I4 has no exception for a chart', (
+    testWidgets('renders no figures at all — I2 has no exception for a chart', (
       tester,
     ) async {
       // There is no widget in this app that takes a bare amount, and an axis
@@ -202,6 +210,39 @@ void main() {
       await pump(tester, NetWorthHistory.empty);
       expect(find.text('no readings recorded yet'), findsOneWidget);
       expect(find.text("couldn't read the history"), findsNothing);
+    });
+
+    testWidgets('a series in another currency than the headline is not drawn', (
+      tester,
+    ) async {
+      // `reduce` refuses a series that mixes currencies internally, which leaves
+      // exactly this case: a series that agrees with itself and not with the
+      // total above it. The curve carries no figures, so a euro series under a
+      // dollar headline draws a completely ordinary picture of the wrong
+      // quantity — nothing on screen could give it away.
+      final history = NetWorthHistory.reduce([
+        point('2026-09-10T04:00:00Z', 100, currency: 'EUR'),
+        point('2026-09-11T04:00:00Z', 200, currency: 'EUR'),
+      ]);
+
+      await pump(tester, history, headlineCurrency: 'USD');
+
+      expect(
+        find.text("history is in a different currency from the total, so it isn't shown"),
+        findsOneWidget,
+      );
+      // Not just "the note appeared" — the curve itself must be gone. Its label
+      // is the cheapest thing that is present exactly when the chart is drawn.
+      expect(find.text('History'), findsNothing);
+
+      // The control: the same series against its own currency does draw. Without
+      // it this test passes against a widget that refuses every series.
+      await pump(tester, history, headlineCurrency: 'EUR');
+      expect(find.text('History'), findsOneWidget);
+      expect(
+        find.text("history is in a different currency from the total, so it isn't shown"),
+        findsNothing,
+      );
     });
   });
 }

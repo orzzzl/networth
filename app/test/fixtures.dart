@@ -48,17 +48,11 @@ PhonePayload loadFixture(String assetPath) =>
 
 NetWorthHistory loadHistoryFixture() => parseHistory(readFixture(historyFixture));
 
-/// A series source for tests whose subject is the payload half of the screen.
-///
-/// Empty rather than absent: [HomePage] must still be handed one, and an empty
-/// series renders a sentence rather than nothing, so a test using this is not
-/// silently asserting over a blank region.
-class EmptyHistorySource implements HistorySource {
-  const EmptyHistorySource();
-
-  @override
-  Future<NetWorthHistory> load() async => NetWorthHistory.empty;
-}
+// Tests whose subject is the payload half of the screen hand `HomePage` the
+// production `EmptyHistorySource` from `src/data/history_source.dart`. There
+// used to be a private copy here; it was deleted when that class became the
+// app's own production wiring, because a test-local twin of a shipped class is
+// how a test comes to pass against code nobody ships.
 
 /// An [AssetBundle] backed by strings, so the seam can be exercised without the
 /// asset machinery a widget test would otherwise need.

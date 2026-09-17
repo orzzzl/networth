@@ -93,6 +93,10 @@
   "@historyEmpty": {
     "description": "Shown instead of the curve when the series is empty. Says only that nothing has been recorded — it does not promise when something will be, because the app cannot know when the next payload arrives."
   },
+  "historyCurrencyMismatch": "history is in a different currency from the total, so it isn't shown",
+  "@historyCurrencyMismatch": {
+    "description": "Shown instead of the curve when the recorded series and the headline total are in different currencies. States the fact and the consequence; it does not name either currency, because the owner cannot act on that and the pair would read as a figure."
+  },
 
   "historyIncompleteNote": "dashed where a reading was incomplete",
   "@historyIncompleteNote": {

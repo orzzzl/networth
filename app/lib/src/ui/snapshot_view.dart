@@ -36,7 +36,14 @@ class SnapshotView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    return Padding(
+    // **Scrollable, because this screen's height is not ours to choose.** The
+    // curve made the content taller than a 640x360 landscape viewport and the
+    // `Column` rendered overflow stripes — and the same arithmetic fails in
+    // portrait as soon as the owner raises the system text size, which is a
+    // setting people who care about reading numbers actually use. A fixed
+    // layout that happens to fit the test device is not a layout; the content
+    // is what it is, and the screen must be able to show all of it.
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -63,7 +70,13 @@ class SnapshotView extends StatelessWidget {
           // claims: the number, its age, the two reasons it could be old, and
           // only then its shape over time.
           const SizedBox(height: 24),
-          HistoryCurve(history: history),
+          // The headline's currency travels with the series, because this is the
+          // only place both are in scope. `NetWorthHistory.reduce` refuses a
+          // series that mixes currencies internally; it cannot see a series that
+          // agrees with itself and disagrees with the total above it, and a
+          // figure-less curve of the wrong quantity looks exactly like a right
+          // one.
+          HistoryCurve(history: history, headlineCurrency: payload.total.amount.currency),
         ],
       ),
     );

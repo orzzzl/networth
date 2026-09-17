@@ -91,6 +91,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get historyEmpty => 'no readings recorded yet';
 
   @override
+  String get historyCurrencyMismatch =>
+      'history is in a different currency from the total, so it isn\'t shown';
+
+  @override
   String get historyIncompleteNote => 'dashed where a reading was incomplete';
 
   @override

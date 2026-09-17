@@ -20,11 +20,11 @@ DateTime utcDayOf(DateTime instant) {
 /// One point on the curve: a total the host computed and stored, on the UTC day
 /// it was published.
 ///
-/// **The point holds the whole [DatedTotal], not its amount.** Invariant **I4**
-/// has no exception for a chart — a series of bare numbers is still numbers with
-/// no age — so there is no constructor here that takes a bare `Money`, and the
-/// curve cannot acquire one to plot. That is also why it draws no value labels
-/// (`ui/history_curve.dart`).
+/// **The point holds the whole [DatedTotal], not its amount.** Invariant **I2**
+/// — no total rendered without its age state — has no exception for a chart, and
+/// a series of bare numbers is still numbers with no age. So there is no
+/// constructor here that takes a bare `Money`, and the curve cannot acquire one
+/// to plot. That is also why it draws no value labels (`ui/history_curve.dart`).
 @immutable
 class HistoryPoint {
   const HistoryPoint({required this.publishedAt, required this.total});
@@ -106,7 +106,27 @@ class NetWorthHistory {
   /// stored, and the only decision made is which stored reading a day shows.
   factory NetWorthHistory.reduce(Iterable<HistoryPoint> readings) {
     final latestPerDay = <DateTime, HistoryPoint>{};
+    String? currency;
     for (final reading in readings) {
+      // `DESIGN.md` §10 item 6: *"Single currency (USD). The schema carries
+      // currency so mixed units fail loudly."* Loudly is the operative word —
+      // this curve draws no figures, so two currencies would render as one
+      // plausible shape with nothing on screen able to give it away. Comparing
+      // integer minor units across currencies is not a rendering bug that looks
+      // wrong; it is arithmetic on quantities that are not the same quantity.
+      //
+      // **Here rather than in `parseHistory`**, because this is the one funnel:
+      // every series in the app is built by this factory, including any a later
+      // task accumulates from live payloads rather than parses from JSON. A
+      // check on the parser would cover today's only caller and leave the one
+      // that does not exist yet uncovered.
+      final readingCurrency = reading.total.amount.currency;
+      currency ??= readingCurrency;
+      if (readingCurrency != currency) {
+        throw PayloadFormatException(
+          'history mixes currencies: $currency and $readingCurrency',
+        );
+      }
       final held = latestPerDay[reading.day];
       // `isBefore`, so an out-of-order arrival cannot displace a later reading
       // of the same day. I6 (§9.3) is the real defence — the phone refuses a
@@ -121,6 +141,15 @@ class NetWorthHistory {
   }
 
   bool get isEmpty => points.isEmpty;
+
+  /// The one currency every point is in, or null when there are no points.
+  ///
+  /// Safe to read off the first point because [reduce] refuses a series that
+  /// mixes them; this getter exists so the *screen* can check the other half —
+  /// that the series and the headline above it are the same quantity. A series
+  /// that agrees with itself and disagrees with the total is exactly the state
+  /// the refusal in [reduce] cannot see.
+  String? get currency => isEmpty ? null : points.first.total.amount.currency;
 
   /// Runs of consecutive days. A day with no reading ends a run.
   List<List<HistoryPoint>> get segments {
