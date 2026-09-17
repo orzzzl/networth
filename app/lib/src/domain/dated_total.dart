@@ -22,6 +22,7 @@ sealed class DatedTotal {
     required this.assets,
     required this.liabilities,
     required this.staticAccountCount,
+    required this.isComplete,
   });
 
   /// Net worth: the number the headline shows.
@@ -36,6 +37,19 @@ sealed class DatedTotal {
   /// along with all three variants rather than only the static one.
   final int staticAccountCount;
 
+  /// Whether everything in this reading was actually fetched.
+  ///
+  /// `DESIGN.md` §7: FALSE if anything was carried forward, stale, or
+  /// unreconciled. It lives on the total rather than beside it because §10.3
+  /// lists it among the fields **every** total ships with — the same
+  /// presentation contract (**I2**) that puts the age state here, and for the
+  /// same reason: a consumer that can hold a total without it is a consumer that
+  /// can render one as whole when it was not.
+  ///
+  /// §10.5 is what reads it: history renders incomplete snapshots visually
+  /// distinct, because a gap in the record must look like a gap.
+  final bool isComplete;
+
   /// Parse the `total` object of a task-19 payload body.
   ///
   /// Refuses rather than guesses. In particular each state's date field is
@@ -48,6 +62,7 @@ sealed class DatedTotal {
     final assets = _money(total, 'assets_minor');
     final liabilities = _money(total, 'liabilities_minor');
     final staticAccountCount = _int(total, 'static_account_count');
+    final isComplete = _bool(total, 'is_complete');
     final asOf = _optionalTimestamp(total, 'as_of');
     final state = _string(total, 'age_state');
 
@@ -61,6 +76,7 @@ sealed class DatedTotal {
           assets: assets,
           liabilities: liabilities,
           staticAccountCount: staticAccountCount,
+          isComplete: isComplete,
           asOf: asOf,
         );
       case 'UNKNOWN':
@@ -72,6 +88,7 @@ sealed class DatedTotal {
           assets: assets,
           liabilities: liabilities,
           staticAccountCount: staticAccountCount,
+          isComplete: isComplete,
           undatableAccountCount: _int(total, 'unknown_freshness_account_count'),
           accountCount: _int(total, 'account_count'),
         );
@@ -84,6 +101,7 @@ sealed class DatedTotal {
           assets: assets,
           liabilities: liabilities,
           staticAccountCount: staticAccountCount,
+          isComplete: isComplete,
         );
       default:
         throw PayloadFormatException('unknown age_state "$state"');
@@ -97,6 +115,14 @@ sealed class DatedTotal {
     final value = total[field];
     if (value is! int) {
       throw PayloadFormatException('total.$field is not an integer');
+    }
+    return value;
+  }
+
+  static bool _bool(Map<String, Object?> total, String field) {
+    final value = total[field];
+    if (value is! bool) {
+      throw PayloadFormatException('total.$field is not a boolean');
     }
     return value;
   }
@@ -128,6 +154,7 @@ final class KnownAgeTotal extends DatedTotal {
     required super.assets,
     required super.liabilities,
     required super.staticAccountCount,
+    required super.isComplete,
     required this.asOf,
   });
 
@@ -148,6 +175,7 @@ final class UndatableTotal extends DatedTotal {
     required super.assets,
     required super.liabilities,
     required super.staticAccountCount,
+    required super.isComplete,
     required this.undatableAccountCount,
     required this.accountCount,
   });
@@ -170,5 +198,6 @@ final class StaticOnlyTotal extends DatedTotal {
     required super.assets,
     required super.liabilities,
     required super.staticAccountCount,
+    required super.isComplete,
   });
 }

@@ -183,6 +183,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'this device\'s clock disagrees with the server\'s'**
   String get copyUnknown;
+
+  /// Section label above the net-worth curve. The curve shows shape over time and no figures: I4 forbids a widget that renders an amount without its age, and an axis label would be exactly that. The number is in the headline above.
+  ///
+  /// In en, this message translates to:
+  /// **'History'**
+  String get historyLabel;
+
+  /// Shown instead of the curve when the series is empty. Says only that nothing has been recorded — it does not promise when something will be, because the app cannot know when the next payload arrives.
+  ///
+  /// In en, this message translates to:
+  /// **'no readings recorded yet'**
+  String get historyEmpty;
+
+  /// Shown instead of the curve when the recorded series and the headline total are in different currencies. States the fact and the consequence; it does not name either currency, because the owner cannot act on that and the pair would read as a figure.
+  ///
+  /// In en, this message translates to:
+  /// **'history is in a different currency from the total, so it isn\'t shown'**
+  String get historyCurrencyMismatch;
+
+  /// Explains the dashed/hollow treatment for snapshots with is_complete = FALSE (DESIGN.md §10.5). Rendered only when the series actually contains one, so the note never describes something absent from the screen. Deliberately does not name a cause: is_complete is FALSE when anything was carried forward, stale, or unreconciled, and those have different remedies.
+  ///
+  /// In en, this message translates to:
+  /// **'dashed where a reading was incomplete'**
+  String get historyIncompleteNote;
+
+  /// The series exists but could not be loaded or parsed. Distinct from historyEmpty on purpose: saying 'no readings recorded yet' over a record that failed to load would be a false claim about the owner's own history.
+  ///
+  /// In en, this message translates to:
+  /// **'couldn\'t read the history'**
+  String get historyUnreadable;
+
+  /// Explains the horizontal holes in the line. Needed because a break is otherwise ambiguous — it could read as a value falling away. Rendered only when the series actually has a gap. Joining across one would assert a value that was never stored, which §12 rules out.
+  ///
+  /// In en, this message translates to:
+  /// **'breaks are days with no reading'**
+  String get historyGapNote;
 }
 
 class _AppLocalizationsDelegate

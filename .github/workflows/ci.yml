@@ -71,5 +71,14 @@ jobs:
       - name: Analyze
         run: flutter analyze
 
+      # Deliberately NOT the runner's default. GitHub's `ubuntu-latest` runs in
+      # UTC, and a suite that only ever runs in UTC cannot tell a correct
+      # `.toUtc()` from a missing one — every zone-handling test passes
+      # vacuously, against the bug as happily as against the fix. `AGENTS.md`
+      # cites a shipped "no notification" defect on a sibling project that came
+      # down to exactly that. A non-zero, non-whole-hour offset is chosen so a
+      # half-hour rounding error has somewhere to show up too.
       - name: Tests
         run: flutter test
+        env:
+          TZ: Asia/Kolkata
