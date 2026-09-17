@@ -109,6 +109,7 @@ void main() {
     await _pump(
       tester,
       KnownAgeTotal(
+        isComplete: true,
         amount: base.amount,
         assets: base.assets,
         liabilities: base.liabilities,
@@ -147,6 +148,7 @@ void main() {
     await _pump(
       tester,
       UndatableTotal(
+        isComplete: true,
         amount: base.amount,
         assets: base.assets,
         liabilities: base.liabilities,

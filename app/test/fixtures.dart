@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/l10n/generated/app_localizations.dart';
+import 'package:networth_app/src/data/history_source.dart';
+import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
 
 /// The fixtures the app ships, read from disk rather than through the bundle.
@@ -17,6 +19,9 @@ import 'package:networth_app/src/domain/phone_payload.dart';
 const String knownFixture = 'assets/fixtures/known.json';
 const String mixedFixture = 'assets/fixtures/mixed_known_and_unknown.json';
 const String staticOnlyFixture = 'assets/fixtures/static_only.json';
+
+/// The curve's series. Not a payload, so it is not in [allFixtures].
+const String historyFixture = 'assets/fixtures/history.json';
 
 const List<String> allFixtures = [knownFixture, mixedFixture, staticOnlyFixture];
 
@@ -41,6 +46,20 @@ Widget localized(Widget child, {bool scaffold = true}) => MaterialApp(
 PhonePayload loadFixture(String assetPath) =>
     PhonePayload.fromJsonString(readFixture(assetPath));
 
+NetWorthHistory loadHistoryFixture() => parseHistory(readFixture(historyFixture));
+
+/// A series source for tests whose subject is the payload half of the screen.
+///
+/// Empty rather than absent: [HomePage] must still be handed one, and an empty
+/// series renders a sentence rather than nothing, so a test using this is not
+/// silently asserting over a blank region.
+class EmptyHistorySource implements HistorySource {
+  const EmptyHistorySource();
+
+  @override
+  Future<NetWorthHistory> load() async => NetWorthHistory.empty;
+}
+
 /// An [AssetBundle] backed by strings, so the seam can be exercised without the
 /// asset machinery a widget test would otherwise need.
 class StringAssetBundle extends CachingAssetBundle {
@@ -48,7 +67,7 @@ class StringAssetBundle extends CachingAssetBundle {
 
   /// Every shipped fixture, keyed by the asset path the app uses.
   factory StringAssetBundle.ofFixtures() => StringAssetBundle({
-        for (final path in allFixtures) path: readFixture(path),
+        for (final path in [...allFixtures, historyFixture]) path: readFixture(path),
       });
 
   final Map<String, String> contents;

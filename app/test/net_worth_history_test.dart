@@ -1,0 +1,241 @@
+import 'dart:convert';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:networth_app/src/data/history_source.dart';
+import 'package:networth_app/src/domain/dated_total.dart';
+import 'package:networth_app/src/domain/money.dart';
+import 'package:networth_app/src/domain/net_worth_history.dart';
+import 'package:networth_app/src/domain/payload_format_exception.dart';
+
+import 'fixtures.dart';
+
+HistoryPoint point(String publishedAt, int valueMinor, {bool isComplete = true}) {
+  final at = DateTime.parse(publishedAt);
+  return HistoryPoint(
+    publishedAt: at,
+    total: KnownAgeTotal(
+      amount: Money(minorUnits: valueMinor, currency: 'USD'),
+      assets: Money(minorUnits: valueMinor, currency: 'USD'),
+      liabilities: const Money(minorUnits: 0, currency: 'USD'),
+      staticAccountCount: 0,
+      isComplete: isComplete,
+      asOf: at,
+    ),
+  );
+}
+
+void main() {
+  group('days are UTC days', () {
+    test('a reading late in the UTC day stays on that day', () {
+      expect(point('2026-09-10T23:30:00Z', 1).day, DateTime.utc(2026, 9, 10));
+    });
+
+    test('a device-local instant is converted before it is bucketed', () {
+      // The components of a local DateTime are its local ones, so bucketing
+      // without `.toUtc()` would file this under the 9th for a device west of
+      // UTC and the 10th for one east of it — the same bytes, two different
+      // curves. `instant.dart` refuses zone-less wire strings for this reason;
+      // this is the same hazard arriving from a constructor instead.
+      //
+      // **Every hour of one UTC day, not one chosen hour.** Whichever zone the
+      // runner is in, at least one of these instants has a local date differing
+      // from its UTC date, and those are the only ones that can tell a correct
+      // `.toUtc()` from a missing one. A single hour cannot: the first version
+      // of this test used 23:30Z, which straddles local midnight east of UTC and
+      // not west of it, so on this machine at -07:00 it passed against the
+      // mutation that deletes the conversion. The bug was in the test.
+      for (var hour = 0; hour < 24; hour++) {
+        final local = DateTime.utc(2026, 9, 10, hour, 30).toLocal();
+        expect(utcDayOf(local), DateTime.utc(2026, 9, 10), reason: 'hour $hour');
+        expect(utcDayOf(local).isUtc, isTrue, reason: 'hour $hour');
+      }
+
+      // **This test can only go red off UTC**, where the two implementations are
+      // genuinely different functions; in UTC they are the same one and no
+      // assertion can separate them. So it is skipped rather than passed there,
+      // because a pass that cannot fail is not evidence — and CI sets `TZ`
+      // precisely so this runs rather than skips.
+    }, skip: DateTime.now().timeZoneOffset == Duration.zero
+        ? 'runner is on UTC: this test cannot distinguish the fix from the bug'
+        : false);
+  });
+
+  group('one point per day: the latest reading of that day', () {
+    test('a later reading on the same day supersedes the earlier one', () {
+      final history = NetWorthHistory.reduce([
+        point('2026-09-12T04:00:00Z', 4790000),
+        point('2026-09-12T19:30:00Z', 4844100),
+      ]);
+
+      expect(history.points, hasLength(1));
+      expect(history.points.single.total.amount.minorUnits, 4844100);
+    });
+
+    test('an out-of-order arrival does not displace the later reading', () {
+      // I6 (§9.3) is the real defence — the phone refuses a payload whose `seq`
+      // regressed — but "latest per day" must be a property of this reduction,
+      // not of the caller having sorted first.
+      final history = NetWorthHistory.reduce([
+        point('2026-09-12T19:30:00Z', 4844100),
+        point('2026-09-12T04:00:00Z', 4790000),
+      ]);
+
+      expect(history.points.single.total.amount.minorUnits, 4844100);
+    });
+
+    test('points come out ascending however they went in', () {
+      final history = NetWorthHistory.reduce([
+        point('2026-09-13T04:00:00Z', 3),
+        point('2026-09-11T04:00:00Z', 1),
+        point('2026-09-12T04:00:00Z', 2),
+      ]);
+
+      expect(
+        [for (final p in history.points) p.total.amount.minorUnits],
+        [1, 2, 3],
+      );
+    });
+  });
+
+  group('a gap in the record is a gap in the series', () {
+    test('consecutive days are one segment', () {
+      final history = NetWorthHistory.reduce([
+        point('2026-09-10T04:00:00Z', 1),
+        point('2026-09-11T04:00:00Z', 2),
+        point('2026-09-12T04:00:00Z', 3),
+      ]);
+
+      expect(history.segments, hasLength(1));
+      expect(history.hasGap, isFalse);
+    });
+
+    test('a missing day splits the run', () {
+      final history = NetWorthHistory.reduce([
+        point('2026-09-10T04:00:00Z', 1),
+        point('2026-09-11T04:00:00Z', 2),
+        // 09-12 never recorded.
+        point('2026-09-13T04:00:00Z', 3),
+      ]);
+
+      expect(history.segments, hasLength(2));
+      expect(history.segments.first, hasLength(2));
+      expect(history.segments.last, hasLength(1));
+      expect(history.hasGap, isTrue);
+    });
+
+    test('the span counts days, not points, so the hole has a width', () {
+      final history = NetWorthHistory.reduce([
+        point('2026-09-10T04:00:00Z', 1),
+        point('2026-09-20T04:00:00Z', 2),
+      ]);
+
+      expect(history.points, hasLength(2));
+      expect(history.spanInDays, 10);
+      expect(history.dayOffsetOf(history.points.last), 10);
+    });
+  });
+
+  group('a point is a stored total, and nothing later moves it', () {
+    test('a later reading leaves every earlier point exactly where it was', () {
+      // The phone-side form of task 13's criterion — "revaluing the property in
+      // 2026 leaves the 2024 points on the curve unchanged". On this side the
+      // deformation cannot arrive from a query, so the way it would arrive is a
+      // reduction that lets a new reading touch an older day's point.
+      final early = point('2026-09-10T04:00:00Z', 4000000);
+      final before = NetWorthHistory.reduce([early]);
+      final after = NetWorthHistory.reduce([
+        early,
+        point('2026-09-11T04:00:00Z', 9999999),
+      ]);
+
+      expect(after.points.first.total.amount, before.points.first.total.amount);
+      expect(after.points.first.day, before.points.first.day);
+    });
+
+    test('no point carries a number that was never stored', () {
+      // The sharp end of "never recomputes a past point". Interpolating across
+      // the fixture's gap, averaging the two readings of 09-12, or smoothing the
+      // series would each put an amount on the curve that appears nowhere in the
+      // source — so the assertion is membership, not equality to a guess.
+      final source = jsonDecode(readFixture(historyFixture)) as List<Object?>;
+      final stored = {
+        for (final reading in source)
+          ((reading as Map<String, Object?>)['total'] as Map<String, Object?>)['value_minor']
+              as int,
+      };
+
+      final history = loadHistoryFixture();
+      expect(history.points, isNotEmpty);
+      for (final p in history.points) {
+        expect(
+          stored,
+          contains(p.total.amount.minorUnits),
+          reason: 'the curve invented ${p.total.amount.minorUnits} on ${p.day}',
+        );
+      }
+    });
+  });
+
+  group('the shipped series', () {
+    test('parses, and carries both treatments so the demo shows them', () {
+      final history = loadHistoryFixture();
+
+      expect(history.hasGap, isTrue, reason: 'no gap to render');
+      expect(history.hasIncompletePoint, isTrue, reason: 'no incomplete reading to render');
+    });
+
+    test('its two readings on one day reduce to the later one', () {
+      final day = loadHistoryFixture()
+          .points
+          .singleWhere((p) => p.day == DateTime.utc(2026, 9, 12));
+
+      expect(day.total.amount.minorUnits, 4844100);
+      expect(day.publishedAt, DateTime.utc(2026, 9, 12, 19, 30));
+    });
+
+    test('is refused rather than guessed at when it is not a series', () {
+      expect(() => parseHistory('{}'), throwsA(isA<PayloadFormatException>()));
+      expect(() => parseHistory('not json'), throwsA(isA<PayloadFormatException>()));
+      expect(() => parseHistory('[3]'), throwsA(isA<PayloadFormatException>()));
+      expect(
+        () => parseHistory('[{"total": {}}]'),
+        throwsA(isA<PayloadFormatException>()),
+      );
+    });
+  });
+
+  group('is_complete comes off the wire and is required', () {
+    test('a false flag survives the parse onto the point', () {
+      final incomplete = loadHistoryFixture()
+          .points
+          .singleWhere((p) => p.day == DateTime.utc(2026, 9, 11));
+
+      expect(incomplete.isComplete, isFalse);
+      expect(incomplete.total.isComplete, isFalse);
+    });
+
+    test('a total with no is_complete is refused, not assumed complete', () {
+      // Assuming `true` is the dangerous default: it would render a partial
+      // reading as a whole one, which is precisely §10.5's concern.
+      final body = jsonDecode(readFixture(knownFixture)) as Map<String, Object?>;
+      final total = Map<String, Object?>.from(body['total']! as Map<String, Object?>)
+        ..remove('is_complete');
+
+      expect(
+        () => DatedTotal.fromJson(total),
+        throwsA(isA<PayloadFormatException>()),
+      );
+    });
+
+    test('a non-boolean is_complete is refused too', () {
+      final body = jsonDecode(readFixture(knownFixture)) as Map<String, Object?>;
+      final total = Map<String, Object?>.from(body['total']! as Map<String, Object?>)
+        ..['is_complete'] = 'true';
+
+      expect(
+        () => DatedTotal.fromJson(total),
+        throwsA(isA<PayloadFormatException>()),
+      );
+    });
+  });
+}

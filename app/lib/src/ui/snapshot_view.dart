@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../l10n/generated/app_localizations.dart';
 import '../domain/copy_freshness.dart';
+import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
 import 'headline.dart';
+import 'history_curve.dart';
 import 'instant.dart';
 
 /// One published snapshot, with both staleness dimensions kept apart.
@@ -14,9 +16,17 @@ import 'instant.dart';
 /// combined badge. Task 22 deepens this treatment; it does not introduce it,
 /// which is why the distinction is built in here rather than deferred.
 class SnapshotView extends StatelessWidget {
-  const SnapshotView({super.key, required this.payload, required this.deviceNow});
+  const SnapshotView({
+    super.key,
+    required this.payload,
+    required this.history,
+    required this.deviceNow,
+  });
 
   final PhonePayload payload;
+
+  /// The curve's series, or null when it could not be read.
+  final NetWorthHistory? history;
 
   /// Injected rather than read from the clock inside `build`, so the copy
   /// dimension is testable at a chosen instant and a widget test never depends
@@ -49,6 +59,11 @@ class SnapshotView extends StatelessWidget {
             detail: _copyText(l10n, payload, deviceNow),
             isWarning: payload.copyFreshness(deviceNow) != CopyFreshness.fresh,
           ),
+          // Last, deliberately. The order on this screen is the order of the
+          // claims: the number, its age, the two reasons it could be old, and
+          // only then its shape over time.
+          const SizedBox(height: 24),
+          HistoryCurve(history: history),
         ],
       ),
     );

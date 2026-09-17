@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../../l10n/generated/app_localizations.dart';
+import '../data/history_source.dart';
 import '../data/snapshot_source.dart';
 import '../debug_log.dart';
+import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
 import 'snapshot_view.dart';
 
@@ -14,9 +16,15 @@ import 'snapshot_view.dart';
 /// annotation catches up" is not a state this screen can reach — which is what
 /// the acceptance criterion about intermediate states is asking for.
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.source, this.clock});
+  const HomePage({
+    super.key,
+    required this.source,
+    required this.historySource,
+    this.clock,
+  });
 
   final SnapshotSource source;
+  final HistorySource historySource;
 
   /// Overridable so a test can choose the instant the copy age is measured from.
   final DateTime Function()? clock;
@@ -25,13 +33,36 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
+/// What one screenful needs: the payload, and the series if it could be read.
+typedef _Loaded = (PhonePayload payload, NetWorthHistory? history);
+
 class _HomePageState extends State<HomePage> {
-  late Future<PhonePayload> _payload;
+  late Future<_Loaded> _payload;
 
   @override
   void initState() {
     super.initState();
-    _payload = widget.source.load();
+    _payload = _load();
+  }
+
+  /// **A broken series must not take the total off the screen.**
+  ///
+  /// The number with its age is what this product is for; the curve is what it
+  /// adds. So the history's failure is caught here and travels as a `null`,
+  /// which the curve renders as "couldn't read the history" — a smaller, truer
+  /// statement than the error screen, and one that leaves the headline standing.
+  /// The payload's failure is not caught: there is nothing to show without it.
+  Future<_Loaded> _load() async {
+    final payload = await widget.source.load();
+    NetWorthHistory? history;
+    try {
+      history = await widget.historySource.load();
+    } on Object catch (error) {
+      // To [debugLog], not the screen and not `debugPrint` — same reasoning as
+      // the payload branch below.
+      debugLog(() => 'history unreadable: $error');
+    }
+    return (payload, history);
   }
 
   @override
@@ -40,7 +71,7 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       appBar: AppBar(title: Text(l10n.appTitle)),
       body: SafeArea(
-        child: FutureBuilder<PhonePayload>(
+        child: FutureBuilder<_Loaded>(
           future: _payload,
           builder: (context, snapshot) {
             if (snapshot.hasError) {
@@ -63,12 +94,14 @@ class _HomePageState extends State<HomePage> {
               debugLog(() => 'snapshot unreadable: ${snapshot.error}');
               return _Message(icon: Icons.error_outline, text: l10n.snapshotUnreadable);
             }
-            final payload = snapshot.data;
-            if (payload == null) {
+            final loaded = snapshot.data;
+            if (loaded == null) {
               return const Center(child: CircularProgressIndicator());
             }
+            final (payload, history) = loaded;
             return SnapshotView(
               payload: payload,
+              history: history,
               deviceNow: (widget.clock ?? DateTime.now)(),
             );
           },

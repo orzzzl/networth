@@ -83,4 +83,19 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get copyUnknown => 'this device\'s clock disagrees with the server\'s';
+
+  @override
+  String get historyLabel => 'History';
+
+  @override
+  String get historyEmpty => 'no readings recorded yet';
+
+  @override
+  String get historyIncompleteNote => 'dashed where a reading was incomplete';
+
+  @override
+  String get historyUnreadable => 'couldn\'t read the history';
+
+  @override
+  String get historyGapNote => 'breaks are days with no reading';
 }

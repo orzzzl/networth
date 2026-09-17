@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'l10n/generated/app_localizations.dart';
+import 'src/data/history_source.dart';
 import 'src/data/snapshot_source.dart';
 import 'src/ui/home_page.dart';
 
@@ -16,14 +17,31 @@ const SnapshotSource _source = FixtureSnapshotSource(
   'assets/fixtures/mixed_known_and_unknown.json',
 );
 
+/// The curve's series, from a bundled fixture for the same reason the payload is.
+///
+/// The series is *synthetic*, like every other fixture here — and note what it
+/// is not: it is not derived from the payload above. Manufacturing past points
+/// out of today's total would invent a history the owner never had, which is the
+/// exact deformation §12 forbids, arriving from the demo rather than from a
+/// query. The fixture carries a gap and an incomplete reading on purpose, so the
+/// two treatments §10.5 asks for are visible rather than only asserted in tests.
+const HistorySource _historySource = FixtureHistorySource(
+  'assets/fixtures/history.json',
+);
+
 void main() {
   runApp(const NetWorthApp());
 }
 
 class NetWorthApp extends StatelessWidget {
-  const NetWorthApp({super.key, this.source = _source});
+  const NetWorthApp({
+    super.key,
+    this.source = _source,
+    this.historySource = _historySource,
+  });
 
   final SnapshotSource source;
+  final HistorySource historySource;
 
   @override
   Widget build(BuildContext context) {
@@ -39,7 +57,7 @@ class NetWorthApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2F6F4E)),
         useMaterial3: true,
       ),
-      home: HomePage(source: source),
+      home: HomePage(source: source, historySource: historySource),
     );
   }
 }

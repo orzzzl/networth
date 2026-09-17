@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/main.dart';
+import 'package:networth_app/src/data/history_source.dart';
 import 'package:networth_app/src/data/snapshot_source.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
 import 'package:networth_app/src/ui/headline.dart';
@@ -27,6 +28,10 @@ void main() {
       localized(
         HomePage(
           source: FixtureSnapshotSource(knownFixture, bundle: StringAssetBundle.ofFixtures()),
+          historySource: FixtureHistorySource(
+            historyFixture,
+            bundle: StringAssetBundle.ofFixtures(),
+          ),
           clock: () => DateTime.utc(2026, 9, 15, 12),
         ),
         scaffold: false,
@@ -42,7 +47,7 @@ void main() {
     // "No intermediate state renders a bare headline" is the criterion. The
     // strongest form of it is that the amount and its age arrive together or not
     // at all — there is no frame in which one is on screen without the other.
-    await tester.pumpWidget(localized(HomePage(source: _PendingSource()), scaffold: false));
+    await tester.pumpWidget(localized(HomePage(source: _PendingSource(), historySource: const EmptyHistorySource()), scaffold: false));
     await tester.pump();
 
     expect(find.byType(Headline), findsNothing);
@@ -51,7 +56,7 @@ void main() {
   });
 
   testWidgets('an unreadable payload is a refusal, not a number', (tester) async {
-    await tester.pumpWidget(localized(HomePage(source: _FailingSource()), scaffold: false));
+    await tester.pumpWidget(localized(HomePage(source: _FailingSource(), historySource: const EmptyHistorySource()), scaffold: false));
     await tester.pumpAndSettle();
 
     expect(find.byType(Headline), findsNothing);
@@ -67,7 +72,7 @@ void main() {
     // Asserted on the whole rendered surface rather than on the one widget that
     // used to carry it: the defect is internal text reaching the screen, not one
     // particular `Text`.
-    await tester.pumpWidget(localized(HomePage(source: _FailingSource()), scaffold: false));
+    await tester.pumpWidget(localized(HomePage(source: _FailingSource(), historySource: const EmptyHistorySource()), scaffold: false));
     await tester.pumpAndSettle();
 
     final rendered = renderedText(tester, find.byType(HomePage));
@@ -87,6 +92,10 @@ void main() {
     await tester.pumpWidget(
       NetWorthApp(
         source: FixtureSnapshotSource(mixedFixture, bundle: StringAssetBundle.ofFixtures()),
+        historySource: FixtureHistorySource(
+          historyFixture,
+          bundle: StringAssetBundle.ofFixtures(),
+        ),
       ),
     );
     await tester.pumpAndSettle();

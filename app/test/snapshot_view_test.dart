@@ -1,14 +1,22 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/domain/copy_freshness.dart';
+import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
 import 'package:networth_app/src/ui/headline.dart';
 import 'package:networth_app/src/ui/snapshot_view.dart';
 
 import 'fixtures.dart';
 
-Future<void> _pump(WidgetTester tester, PhonePayload payload, DateTime deviceNow) async {
+Future<void> _pump(
+  WidgetTester tester,
+  PhonePayload payload,
+  DateTime deviceNow, {
+  NetWorthHistory? history = NetWorthHistory.empty,
+}) async {
   await tester.pumpWidget(
-    localized(SnapshotView(payload: payload, deviceNow: deviceNow)),
+    localized(
+      SnapshotView(payload: payload, history: history, deviceNow: deviceNow),
+    ),
   );
 }
 
