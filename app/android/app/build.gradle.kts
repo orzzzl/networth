@@ -19,6 +19,8 @@ android {
         applicationId = "com.orzzzl.networth_app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
+        // flutter_secure_storage v11's Android-Keystore-backed AES-GCM path is
+        // API 23+; pinned Flutter 3.44 sets this default to API 24.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

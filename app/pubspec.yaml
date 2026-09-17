@@ -17,6 +17,9 @@ dependencies:
   # with no service behind it, so this stays inside the zero-marginal-cost rule.
   flutter_localizations:
     sdk: flutter
+  # DESIGN.md section 6.3 names this storage boundary explicitly: the runtime
+  # payload key is protected by Android Keystore and never compiled into the APK.
+  flutter_secure_storage: ^11.2.0
   intl: any
 
 dev_dependencies:
