@@ -162,27 +162,36 @@ def _read_from_tty(prompt: str) -> str:
             "than read, because a Plaid secret read off a pipe has already been "
             "written down somewhere"
         ) from exc
+    # Buffered text update mode ("r+") requires a seekable stream; a real TTY
+    # cannot seek. Separate readers/writers support it without a stdin fallback.
+    # Keep descriptor ownership here: wrapper construction can fail, and an
+    # implicit close followed by another close would mask that failure with EBADF.
     try:
-        terminal = os.fdopen(descriptor, "r+", buffering=1, encoding="utf-8", errors="replace")
-    except OSError:
+        with (
+            os.fdopen(
+                descriptor, "r", encoding="utf-8", errors="replace", closefd=False
+            ) as terminal_input,
+            os.fdopen(
+                descriptor, "w", buffering=1, encoding="utf-8", errors="replace", closefd=False
+            ) as terminal_output,
+        ):
+            try:
+                original = termios.tcgetattr(descriptor)
+            except termios.error as exc:
+                raise ConfigError("/dev/tty opened but is not a terminal we can silence") from exc
+            silenced = list(original)
+            silenced[3] = int(silenced[3]) & ~termios.ECHO
+            try:
+                termios.tcsetattr(descriptor, termios.TCSAFLUSH, silenced)
+                terminal_output.write(prompt)
+                terminal_output.flush()
+                line = terminal_input.readline()
+            finally:
+                termios.tcsetattr(descriptor, termios.TCSAFLUSH, original)
+                terminal_output.write("\n")
+                terminal_output.flush()
+    finally:
         os.close(descriptor)
-        raise
-    with terminal:
-        try:
-            original = termios.tcgetattr(descriptor)
-        except termios.error as exc:
-            raise ConfigError("/dev/tty opened but is not a terminal we can silence") from exc
-        silenced = list(original)
-        silenced[3] = int(silenced[3]) & ~termios.ECHO
-        try:
-            termios.tcsetattr(descriptor, termios.TCSAFLUSH, silenced)
-            terminal.write(prompt)
-            terminal.flush()
-            line = terminal.readline()
-        finally:
-            termios.tcsetattr(descriptor, termios.TCSAFLUSH, original)
-            terminal.write("\n")
-            terminal.flush()
     if not line:
         raise ConfigError("the terminal closed before the prompt was answered")
     return line.rstrip("\r\n")
