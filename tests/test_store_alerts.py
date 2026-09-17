@@ -233,11 +233,99 @@ def test_a_stamp_older_than_the_alert_is_refused(
         alerts.mark_notified(stored.id, at=NOW - timedelta(minutes=1))
 
 
+def test_the_source_clock_advances_in_place_and_keeps_the_prompt_history(
+    db: sqlite3.Connection,
+    alerts: AlertRepository,
+) -> None:
+    """One freeze is one row (section 11, owner decision ``15df493e``).
+
+    The point of updating rather than replacing is the column this test asserts
+    is *unchanged*: a replacement row would carry no ``notified_at``, and the
+    24-hour window would restart on every creep.
+    """
+
+    account_id = add_account(db, "Creeping account")
+    stored = alerts.raise_alert(frozen_draft(account_id))
+    alerts.mark_notified(stored.id, at=NOW)
+    crept_to = SOURCE_AS_OF + timedelta(days=1)
+
+    advanced = alerts.advance_source_clock(stored.id, to=crept_to)
+
+    assert advanced.id == stored.id
+    assert advanced.raised_source_as_of == crept_to
+    assert advanced.notified_at == NOW
+    assert advanced.is_open
+    assert alerts.get(stored.id) == advanced
+    assert [alert.id for alert in alerts.open()] == [stored.id]
+
+
+def test_a_source_clock_that_precedes_the_alert_is_allowed(
+    db: sqlite3.Connection,
+    alerts: AlertRepository,
+) -> None:
+    """The opposite guard to ``mark_notified``'s, and deliberately so.
+
+    ``notified_at`` may never precede ``created_at`` — it records something this
+    system did.  ``raised_source_as_of`` records where the *source* is, and a
+    source behind the row that reports it is the entire subject of the alert.
+    """
+
+    account_id = add_account(db, "Very late account")
+    stored = alerts.raise_alert(
+        frozen_draft(account_id, at=NOW, raised_for=NOW - timedelta(days=30))
+    )
+
+    advanced = alerts.advance_source_clock(stored.id, to=NOW - timedelta(days=20))
+
+    assert advanced.raised_source_as_of == NOW - timedelta(days=20)
+
+
+def test_a_source_clock_cannot_move_backwards_or_stand_still(
+    db: sqlite3.Connection,
+    alerts: AlertRepository,
+) -> None:
+    """This column is what decides whether a clock advanced, so a backwards write
+    would make the next real advance read as no advance at all."""
+
+    account_id = add_account(db, "Backwards account")
+    stored = alerts.raise_alert(frozen_draft(account_id))
+
+    with pytest.raises(ValueError, match="must move forward"):
+        alerts.advance_source_clock(stored.id, to=SOURCE_AS_OF - timedelta(days=1))
+    with pytest.raises(ValueError, match="must move forward"):
+        alerts.advance_source_clock(stored.id, to=SOURCE_AS_OF)
+
+
+def test_a_kind_without_a_source_clock_has_none_to_advance(
+    db: sqlite3.Connection,
+    alerts: AlertRepository,
+) -> None:
+    item_id = add_item(db, "no-clock")
+    stored = alerts.raise_alert(reauth_draft(item_id))
+
+    with pytest.raises(ValueError, match="does not carry a source clock"):
+        alerts.advance_source_clock(stored.id, to=SOURCE_AS_OF + timedelta(days=1))
+
+
+def test_a_resolved_alerts_clock_is_history_and_cannot_be_advanced(
+    db: sqlite3.Connection,
+    alerts: AlertRepository,
+) -> None:
+    account_id = add_account(db, "Closed account")
+    stored = alerts.raise_alert(frozen_draft(account_id))
+    alerts.resolve(stored.id, at=NOW + timedelta(hours=1))
+
+    with pytest.raises(AlertNotFoundError, match="history"):
+        alerts.advance_source_clock(stored.id, to=SOURCE_AS_OF + timedelta(days=1))
+
+
 def test_lifecycle_writes_name_the_alert_that_does_not_exist(
     alerts: AlertRepository,
 ) -> None:
     with pytest.raises(AlertNotFoundError):
         alerts.resolve(404, at=NOW)
+    with pytest.raises(AlertNotFoundError):
+        alerts.advance_source_clock(404, to=NOW)
     assert alerts.get(404) is None
 
 

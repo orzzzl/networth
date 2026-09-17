@@ -507,18 +507,18 @@ def test_a_frozen_alert_resolves_when_the_source_clock_finally_advances(
 def test_an_advancing_clock_that_is_still_frozen_never_empties_the_bulletin(
     evaluator: AlertEvaluator,
 ) -> None:
-    """The condition outlives the row that reports it.
+    """The condition outlives any single advance of the clock.
 
-    Section 11 resolves a frozen-data alert when ``source_as_of`` advances — and
-    that is exactly what a feed running a week late does when it catches up by a
-    day.  The clock moved, so the old row's claim is over; the account is still
-    five market closes behind, so the condition is not.  Task 11 counts the
-    closes *after* ``source_as_of`` rather than the time since the clock last
-    changed, which is why this state is reachable at all.
+    A feed running a week late that catches up by a day has moved its clock and
+    is still five market closes behind — task 11 counts the closes *after*
+    ``source_as_of`` rather than the time since the clock last changed, which is
+    why this state is reachable at all.
 
-    Resolving without raising the replacement publishes an empty bulletin for an
-    account that is still frozen: the failure this product exists to catch, lost
-    in the reporting layer instead of in the data.
+    Section 11 keeps **one row for one freeze** (owner decision ``15df493e``), so
+    the row stays open and records where the feed is stuck now.  What must never
+    happen either way is an empty bulletin for an account that is still frozen:
+    the failure this product exists to catch, lost in the reporting layer instead
+    of in the data.
     """
 
     first = only(
@@ -537,36 +537,36 @@ def test_an_advancing_clock_that_is_still_frozen_never_empties_the_bulletin(
         ],
     )
 
-    assert only(still_frozen.resolved).id == first.id
-    replacement = only(still_frozen.raised)
-    assert replacement.id != first.id
-    assert replacement.raised_source_as_of == advanced_clock
-    assert [carried.alert.id for carried in evaluator.bulletin(at=later)] == [replacement.id]
+    assert still_frozen.resolved == ()
+    assert still_frozen.raised == ()
+    carried = only_deliverable(evaluator.bulletin(at=later))
+    assert carried.alert.id == first.id
+    assert carried.alert.raised_source_as_of == advanced_clock
 
 
-def test_the_replacement_is_anchored_on_the_clock_it_was_raised_for(
+def test_the_open_row_is_re_anchored_on_the_clock_it_is_now_stuck_at(
     evaluator: AlertEvaluator,
 ) -> None:
     """The anchor moves with the row, so the next cycle is not a second advance.
 
-    A replacement that kept the *original* clock would see the same advance
-    again on every following evaluation and churn a resolve/raise pair each
-    time, filling the owner's alert history with rows for one unchanging
-    condition.
+    A row that kept the *original* clock would see the same advance again on
+    every following evaluation and churn on one unchanging condition — under the
+    old shape a resolve/raise pair each time, and under this one a redundant
+    write per cycle.
     """
 
     advanced_clock = FROZEN_SINCE + timedelta(days=1)
-    evaluator.evaluate(
-        at=NOW,
-        accounts=[AccountSignal(1, is_pending_reconciliation=False, freshness=frozen())],
-    )
-    replacement = only(
+    first = only(
         evaluator.evaluate(
-            at=NOW + timedelta(days=1),
-            accounts=[
-                AccountSignal(1, is_pending_reconciliation=False, freshness=frozen(advanced_clock))
-            ],
+            at=NOW,
+            accounts=[AccountSignal(1, is_pending_reconciliation=False, freshness=frozen())],
         ).raised
+    )
+    evaluator.evaluate(
+        at=NOW + timedelta(days=1),
+        accounts=[
+            AccountSignal(1, is_pending_reconciliation=False, freshness=frozen(advanced_clock))
+        ],
     )
 
     unchanged = evaluator.evaluate(
@@ -578,26 +578,27 @@ def test_the_replacement_is_anchored_on_the_clock_it_was_raised_for(
 
     assert unchanged.raised == ()
     assert unchanged.resolved == ()
-    assert [carried.alert.id for carried in evaluator.bulletin(at=NOW + timedelta(days=2))] == [
-        replacement.id
-    ]
+    carried = only_deliverable(evaluator.bulletin(at=NOW + timedelta(days=2)))
+    assert carried.alert.id == first.id
+    assert carried.alert.raised_source_as_of == advanced_clock
 
 
-def test_a_replacement_may_prompt_again_because_the_state_entry_ended(
+def test_a_creeping_but_still_frozen_account_prompts_once_per_24h(
     evaluator: AlertEvaluator,
 ) -> None:
-    """Asserted deliberately, and raised as a question on task 15's PR.
+    """The owner's answer to escalation ``15df493e``, in one test.
 
-    Section 11 scopes anti-fatigue to "one alert per item per state entry", and
-    the advancing clock is what ends the entry — so the replacement is a new
-    entry and may prompt even though the row it replaces was prompted for
-    minutes earlier.  A feed that advances partway more than once a day
-    therefore prompts more than once a day, which reads against the spirit of
-    the same paragraph.
+    This file used to assert the opposite, under the name
+    ``test_a_replacement_may_prompt_again_because_the_state_entry_ended``: the
+    advancing clock ended the state entry, so the replacement row carried no
+    ``notified_at`` and prompted again immediately.  Task 15's review raised that
+    as a §11 design question rather than settling it in this module, it went to
+    the owner, and he chose "still frozen is the same event, at most once per
+    24h".
 
-    Whether "state entry" survives an advance that leaves the account frozen is
-    a design question about §11 and not one this module may settle quietly, so
-    the consequence is pinned here where a reviewer can see it and disagree.
+    So: creep the clock three times inside one day — each advance a real one,
+    each account still frozen — and the phone is offered the prompt exactly
+    once.
     """
 
     evaluator.evaluate(
@@ -605,20 +606,77 @@ def test_a_replacement_may_prompt_again_because_the_state_entry_ended(
         accounts=[AccountSignal(1, is_pending_reconciliation=False, freshness=frozen())],
     )
     evaluator.record_prompted(evaluator.bulletin(at=NOW), at=NOW)
-    assert only_deliverable(evaluator.bulletin(at=NOW + timedelta(hours=1))).prompt is False
+
+    for hours, days in ((1, 1), (5, 2), (23, 3)):
+        evaluator.evaluate(
+            at=NOW + timedelta(hours=hours),
+            accounts=[
+                AccountSignal(
+                    1,
+                    is_pending_reconciliation=False,
+                    freshness=frozen(FROZEN_SINCE + timedelta(days=days)),
+                )
+            ],
+        )
+        carried = only_deliverable(evaluator.bulletin(at=NOW + timedelta(hours=hours)))
+        assert carried.prompt is False, f"prompted again {hours}h into the same freeze"
+        assert carried.alert.raised_source_as_of == FROZEN_SINCE + timedelta(days=days)
+
+    # …and the window still expires on its own: the account is no better off a
+    # day later, and the owner is told again.
+    assert only_deliverable(evaluator.bulletin(at=NOW + REPROMPT_AFTER)).prompt is True
+
+
+def test_a_freeze_that_clears_and_recurs_is_a_new_event_and_may_prompt(
+    evaluator: AlertEvaluator,
+) -> None:
+    """The other half of the owner's answer, and the reason it is not just a clamp.
+
+    Suppressing on "same subject, prompted recently" alone would swallow this:
+    the freeze genuinely ended and a genuinely new one began, so the 24-hour
+    window from the *previous* freeze must not silence it.
+    """
 
     evaluator.evaluate(
-        at=NOW + timedelta(hours=1),
+        at=NOW,
+        accounts=[AccountSignal(1, is_pending_reconciliation=False, freshness=frozen())],
+    )
+    evaluator.record_prompted(evaluator.bulletin(at=NOW), at=NOW)
+
+    caught_up = NOW + timedelta(hours=2)
+    evaluator.evaluate(
+        at=caught_up,
         accounts=[
             AccountSignal(
                 1,
                 is_pending_reconciliation=False,
-                freshness=frozen(FROZEN_SINCE + timedelta(days=1)),
+                freshness=not_frozen(
+                    FROZEN_SINCE + timedelta(days=1),
+                    state=FreshnessState.FRESH,
+                    item_state=ItemState.HEALTHY,
+                ),
             )
         ],
     )
+    assert evaluator.bulletin(at=caught_up) == ()
 
-    assert only_deliverable(evaluator.bulletin(at=NOW + timedelta(hours=1))).prompt is True
+    froze_again = NOW + timedelta(hours=3)
+    recurrence = only(
+        evaluator.evaluate(
+            at=froze_again,
+            accounts=[
+                AccountSignal(
+                    1,
+                    is_pending_reconciliation=False,
+                    freshness=frozen(FROZEN_SINCE + timedelta(days=1)),
+                )
+            ],
+        ).raised
+    )
+
+    carried = only_deliverable(evaluator.bulletin(at=froze_again))
+    assert carried.alert.id == recurrence.id
+    assert carried.prompt is True
 
 
 # --------------------------------------------------------------------------

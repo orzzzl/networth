@@ -931,6 +931,52 @@ class AlertRepository:
 
         return self._stamp(alert_id, column="notified_at", at=at)
 
+    def advance_source_clock(self, alert_id: int, *, to: datetime) -> Alert:
+        """Move an open alert's ``raised_source_as_of`` forward in place.
+
+        Section 11's frozen-data event is **the freeze**, not the instant the
+        feed happens to be stuck at, so a clock that creeps while the account is
+        still frozen updates this row instead of replacing it.  Replacing it
+        would hand the condition a fresh row with no ``notified_at``, restarting
+        the 24-hour anti-fatigue window on every creep — the behaviour the owner
+        decided against in escalation ``15df493e``.
+
+        Forward only, and only for a kind that carries a source clock.  This
+        column is what decides whether a clock advanced, so a backwards write
+        would make the *next* advance read as no advance at all.
+
+        Unlike :meth:`mark_notified` this value may precede ``created_at``, and
+        must be allowed to: it is the *source's* clock, and a source that is
+        behind is the entire subject of the alert.
+        """
+
+        if not isinstance(alert_id, int) or isinstance(alert_id, bool):
+            raise TypeError("alert_id must be an integer")
+        require_utc(to, field="to")
+        existing = self.get(alert_id)
+        if existing is None:
+            raise AlertNotFoundError(f"alert {alert_id} does not exist")
+        if not existing.is_open:
+            raise AlertNotFoundError(
+                f"alert {alert_id} is resolved; the clock it was raised for is now history"
+            )
+        if not existing.kind.carries_source_clock:
+            raise ValueError(f"{existing.kind.value} does not carry a source clock")
+        current = existing.raised_source_as_of
+        if current is None:  # pragma: no cover - the writer requires it for these kinds
+            raise ValueError("this alert carries no source clock to advance")
+        if to <= current:
+            raise ValueError("raised_source_as_of must move forward")
+        row = _row(
+            self._connection.execute(
+                f"UPDATE alert SET raised_source_as_of = ? WHERE id = ? RETURNING {_ALERT_COLUMNS}",
+                (_timestamp_to_db(to), alert_id),
+            )
+        )
+        if row is None:  # pragma: no cover - the row was read one statement earlier
+            raise AlertNotFoundError(f"alert {alert_id} does not exist")
+        return _alert_from_row(row)
+
     def resolve(self, alert_id: int, *, at: datetime) -> Alert:
         """Close an alert whose condition the evaluator observed to be over.
 
