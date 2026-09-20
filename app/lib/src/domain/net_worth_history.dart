@@ -86,16 +86,28 @@ class HistoryPoint {
 /// lie §12 rules out — just arriving from the renderer instead of the query.
 @immutable
 class NetWorthHistory {
-  /// Points must already be one-per-day and ascending; [reduce] is how you get
-  /// there from raw readings.
-  const NetWorthHistory(this.points);
+  /// **Private, and that is the whole enforcement.**
+  ///
+  /// The currency refusal below lived in [reduce] while this constructor stood
+  /// open beside it, public and `const` — so `NetWorthHistory([usd, eur])`
+  /// walked straight past the check and the screen drew the chart. A guard on
+  /// the funnel is worth nothing while there is a second door into the same
+  /// room, and review found this one by trying it rather than by reading.
+  ///
+  /// So there is now exactly one way to build a non-empty series, and it is the
+  /// one that validates. Points arrive already one-per-day and ascending
+  /// because [reduce] is what puts them that way.
+  const NetWorthHistory._(this.points);
 
-  static const NetWorthHistory empty = NetWorthHistory(<HistoryPoint>[]);
+  /// The only [const] instance, and the only one that needs no checking: an
+  /// empty series cannot mix anything.
+  static const NetWorthHistory empty = NetWorthHistory._(<HistoryPoint>[]);
 
   /// Ascending by day, at most one per day.
   final List<HistoryPoint> points;
 
-  /// Collapse readings to the curve's points: **the latest reading of each day**.
+  /// Collapse readings to the curve's points: **the latest reading of each day**,
+  /// and the only public way to build a non-empty series.
   ///
   /// `DESIGN.md` §7 states the rule rather than leaving it to the renderer —
   /// *"'Today's number' is a view (latest row, or latest per day for the
@@ -137,7 +149,7 @@ class NetWorthHistory {
       }
     }
     final days = latestPerDay.keys.toList()..sort();
-    return NetWorthHistory([for (final day in days) latestPerDay[day]!]);
+    return NetWorthHistory._([for (final day in days) latestPerDay[day]!]);
   }
 
   bool get isEmpty => points.isEmpty;

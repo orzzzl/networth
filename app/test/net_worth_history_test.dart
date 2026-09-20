@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/data/history_source.dart';
@@ -305,6 +306,49 @@ void main() {
     test('the currency getter reports the one currency, and null when empty', () {
       expect(NetWorthHistory.reduce(series(secondCurrency: 'USD')).currency, 'USD');
       expect(NetWorthHistory.empty.currency, isNull);
+    });
+
+    group('and there is no second door into the room', () {
+      // PR #83 review, round 2. The refusal above lived in `reduce` while the
+      // generative constructor stood open beside it, public and `const`:
+      // `NetWorthHistory([usd, eur])` walked past the check and the screen drew
+      // the chart. Codex found it by *trying* it, which is the only way that
+      // shape of defect is ever found.
+      //
+      // **This is a source scan, and that is a deliberate second-best.** A
+      // private constructor cannot be called from a test at all — the failure
+      // is a compile error in the test file, not a red test — so "the door is
+      // shut" is not a runtime observation this suite can make. What it can do
+      // is pin the source property the guarantee rests on, and say out loud
+      // that it is the source and not the behaviour being checked. Same
+      // technique and same caveat as `release_log_test.dart`.
+      final code = File('lib/src/domain/net_worth_history.dart')
+          .readAsLinesSync()
+          .where((line) => !line.trimLeft().startsWith('//'))
+          .join('\n');
+
+      /// Every declaration of a `NetWorthHistory` constructor, named or not.
+      final declarations = RegExp(
+        r'^\s*(?:const\s+|factory\s+)?NetWorthHistory(\.\w+)?\s*\(',
+        multiLine: true,
+      ).allMatches(code).map((m) => m.group(1) ?? '<unnamed>').toList();
+
+      test('the scan finds the constructors at all', () {
+        // A regex over source is the kind of check that passes by matching
+        // nothing. There are two: `._` and `.reduce`.
+        expect(declarations, hasLength(2));
+      });
+
+      test('every constructor is private or the validating one', () {
+        for (final name in declarations) {
+          expect(
+            name == '._' || name == '.reduce',
+            isTrue,
+            reason: 'NetWorthHistory$name can build a series without the currency '
+                'check; make it private or route it through reduce',
+          );
+        }
+      });
     });
   });
 }
