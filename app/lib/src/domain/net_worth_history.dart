@@ -104,6 +104,14 @@ class NetWorthHistory {
   static const NetWorthHistory empty = NetWorthHistory._(<HistoryPoint>[]);
 
   /// Ascending by day, at most one per day.
+  ///
+  /// **Unmodifiable, and that is part of the invariant rather than tidiness.**
+  /// `final` protects the binding, not the contents: while this was a growable
+  /// list, `reduce([usd]).points.add(eur)` walked past the currency check after
+  /// construction, and `points[1] = eur` did the same by assignment. Making the
+  /// constructor private closed the door marked *build*; this closes the one
+  /// marked *edit*, and the sorted, one-per-day and never-redraw-the-past
+  /// guarantees were standing open behind it too.
   final List<HistoryPoint> points;
 
   /// Collapse readings to the curve's points: **the latest reading of each day**,
@@ -149,7 +157,12 @@ class NetWorthHistory {
       }
     }
     final days = latestPerDay.keys.toList()..sort();
-    return NetWorthHistory._([for (final day in days) latestPerDay[day]!]);
+    // `unmodifiable`, not `List.of(..., growable: false)`: a fixed-length list
+    // still accepts `points[i] = other`, which is the same bypass by a
+    // different verb.
+    return NetWorthHistory._(
+      List<HistoryPoint>.unmodifiable([for (final day in days) latestPerDay[day]!]),
+    );
   }
 
   bool get isEmpty => points.isEmpty;

@@ -308,6 +308,56 @@ void main() {
       expect(NetWorthHistory.empty.currency, isNull);
     });
 
+    group('nor a third one marked "edit"', () {
+      // PR #83 review, round 3. Making the constructor private closed the door
+      // marked *build*; `points` was still a growable list, so the same
+      // invariant fell over after construction:
+      //
+      //   NetWorthHistory.reduce([usd]).points.add(eur)   // succeeded
+      //   history.points[1] = eur                          // succeeded
+      //
+      // and `currency` still answered USD while the series held both, which is
+      // the exact state `reduce` refuses to construct. `final` protects the
+      // binding, never the contents — the sorted, one-per-day and
+      // never-redraw-the-past guarantees were standing open behind it too.
+      //
+      // Unlike the source scan below, these are behavioural: the property is
+      // observable at runtime, so nothing here has to settle for reading the
+      // source. Codex measured 1 control pass / 2 failures on the head before
+      // this fix.
+      test('the control: a reduced series is readable and says what it holds', () {
+        final history = NetWorthHistory.reduce([
+          point('2026-09-10T04:00:00Z', 100),
+          point('2026-09-11T04:00:00Z', 200),
+        ]);
+        expect(history.points, hasLength(2));
+        expect(history.currency, 'USD');
+      });
+
+      test('a later reading cannot be appended past the currency check', () {
+        final history = NetWorthHistory.reduce([point('2026-09-10T04:00:00Z', 100)]);
+        expect(
+          () => history.points.add(point('2026-09-11T04:00:00Z', 200, currency: 'EUR')),
+          throwsUnsupportedError,
+          reason: 'appending bypasses reduce, and the series would then hold '
+              'USD and EUR while currency still answered USD',
+        );
+      });
+
+      test('nor can an existing point be replaced by assignment', () {
+        final history = NetWorthHistory.reduce([
+          point('2026-09-10T04:00:00Z', 100),
+          point('2026-09-11T04:00:00Z', 200),
+        ]);
+        expect(
+          () => history.points[1] = point('2026-09-11T04:00:00Z', 200, currency: 'EUR'),
+          throwsUnsupportedError,
+          reason: 'a fixed-length list would still allow this, which is why the '
+              'points are unmodifiable rather than merely non-growable',
+        );
+      });
+    });
+
     group('and there is no second door into the room', () {
       // PR #83 review, round 2. The refusal above lived in `reduce` while the
       // generative constructor stood open beside it, public and `const`:
