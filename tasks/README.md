@@ -81,7 +81,7 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **READY** |
+| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **WIP** (07a contract review; implementation pending) |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
@@ -1463,21 +1463,19 @@ Production Trial account; the first re-confirmed in Sandbox 2026-09-09 at commit
 - The hosted token's lifetime is 30 minutes, observed exactly.
 - That absent-key response is a **documented shape, not an error**.
 
-**What is NOT measured, and must not be assumed** *(corrected 2026-09-09 from PR #59's
-review; this row previously said "until a session completes", which is a claim about the
-whole pre-completion period drawn from a token nobody had opened)*: the shape returned once
-someone **has opened the URL and has not finished**. `finished_at` is nullable in Plaid's
-schema, so that state is real and distinct, and **this task's poller spends most of its
-ticks in it** — see `DESIGN.md` F7's two-state table. It is `06a` criterion **2b**, it needs
-a browser, and it has not run.
+**The started-but-unfinished shape is now measured** (`06a` criterion 2b,
+2026-09-16/17): `SESSION_IN_PROGRESS`, 1 session and 0 public tokens; after
+completion the same token returned `ITEM_ADDED`, 1 session and 1 public token.
+Preserve the session and its observed timestamps while waiting for a token.
 
-- [ ] **Branch on the measured 2b shape; do not assume it equals the 2a shape.** Treat
-      "no `public_token` yet" as the not-ready condition rather than keying on the absent
-      key specifically, so that a started-but-unfinished response carrying an empty array,
-      or a session with `finished_at: null`, is *also* handled as not-ready instead of as an
-      error or as a completion. **If `06a` 2b lands before this task ships, write the
-      measured shape in here and test against it.** A poller written to the 2a shape and
-      deployed into the 2b state is the exact failure `06a` criterion 2 exists to prevent.
+- [ ] Test both measured shapes and the other not-ready forms: absent/null/empty
+      session lists and unfinished sessions. No token yet must not imply no session.
+
+**Implementation contract under review:** [07a flow contract](07a-flow-contract.md).
+The existing one-row-per-URL schema cannot retain every session identifier or
+represent multiple successful results. Resolve the proposed storage and budget
+boundary there with Claude before implementing that behavior. This is an agent
+review dependency; it does not reopen `06a` or require an owner measurement.
 
 **Acceptance:**
 
@@ -1493,8 +1491,9 @@ a browser, and it has not run.
       **Scope it honestly in the code comment and in any doc this task writes: this
       serialises workers sharing *this* database file.** It does not reach `07b`, which runs
       on another host against another file precisely because this one is gone. Cross-host
-      at-most-once is Plaid's single-use `public_token` plus `07b`'s power-off precondition,
-      not this `UPDATE`.
+      fencing relies on `07b`'s power-off precondition; the accepted duplicate in
+      `06a` means Plaid's single-use wording cannot enforce it. No automatic
+      retry is permitted after an uncertain exchange.
 - [ ] `EXCHANGE_UNCERTAIN` is a real terminal outcome, not a retry loop against a
       single-use token.
 - [ ] The `access_token` is written through `TokenStore` **before** the `item` row.
