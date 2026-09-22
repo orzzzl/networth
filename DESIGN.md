@@ -5,6 +5,48 @@ implemented; `tasks/README.md` is the live state. *(Rev 19: this line still read
 "proposed (design phase; nothing implemented)" with three tasks merged.)*
 Author: Claude. Reviewer: Codex.
 
+Revision 24 — **The first revision driven by live measurement rather than by
+review. `06a` ran against Sandbox on 2026-09-16/17; three numbers this document
+had been carrying on argument are now carrying evidence, and one of them came
+back against the argument.**
+
+- **F7 is proven, not reasoned.** A completed Hosted Link session's
+  `public_token` has now actually come back through `/link/token/get`, been
+  exchanged, and produced a working `access_token`. §16's claim that this is the
+  only path in existence was always sound — no frontend integration is possible
+  and `completion_redirect_uri` carries no token — but "the only path" and "a
+  path that works" are different claims and only the first was established.
+- **The 30-minute deadline stands, and stands for the reason the design
+  demanded.** §14a.1 said only a *passing* late exchange could widen it. A
+  session left **>5h** was still retrievable and its exchange was **refused**, so
+  nothing widens. The measurement also sharpens *why*: the two clocks are not
+  merely different lengths, they are **independent** — retrieval kept succeeding
+  after the exchange had stopped being possible, so a successful
+  `/link/token/get` is not evidence that the token it returns is still good.
+  Anything owner-facing must quote the **exchange** deadline.
+- **The one-time exchange is not one-time in Sandbox, and this is the finding
+  that cuts against us.** Exchanging the same `public_token` twice was
+  **ACCEPTED**, not refused, and the first `access_token` stayed **HEALTHY**.
+  This document says Plaid "documents as single-use" — still true of the
+  documentation, and now known not to be enforced on the Sandbox wire. **The
+  at-most-one exchange claim and `EXCHANGE_UNCERTAIN` stay exactly as they
+  are**: they were built to be correct whether or not the remote refuses, which
+  is the property that just paid off. What must not happen is the inverse
+  inference — "the duplicate is harmless, so the claim is unnecessary". Two
+  reasons it does not follow: this is **Sandbox**, and **whether the accepted
+  duplicate consumed a second Item is not measured**, which is the half that
+  costs a lifetime slot.
+- **Host separation across the two API calls works (§19 step 2a, `07b`).** A
+  token minted on the VPS was retrieved and exchanged from
+  `zelengs-macbook-air-2`, with the VPS taking no part in either call. The
+  lost-VPS recovery path was resting on this and it is no longer untested.
+- **A defect that only a real terminal could find.** The Mac half first crashed
+  on a non-seekable `fdopen(..., "r+")` and a double close, before any prompt or
+  API call — a path that exists only when the prompt is attached to a TTY rather
+  than a pipe, so every non-interactive rehearsal had missed it. Fixed in PR #85.
+  The general lesson, which §19's step-by-step style invites: **running a
+  command's first line does not rehearse an interactive command.**
+
 Revision 23 — **The guard asked which tokens were present; `ssh` asks a
 different question, and the two disagree.**
 
@@ -200,7 +242,14 @@ invariants.**
   cannot: no ordering makes a remote call and a local write atomic. There is now
   an **at-most-one exchange claim**, an explicit **`EXCHANGE_UNCERTAIN`**
   outcome, and the **residual permanent-loss window is stated rather than
-  argued away**.
+  argued away**. *(Rev 24: "documents as single-use" is still what the docs say,
+  and `06a` (ii) measured that **Sandbox does not enforce it** — a duplicate
+  exchange was accepted and the first `access_token` stayed healthy. The claim
+  and `EXCHANGE_UNCERTAIN` are unchanged, and deliberately so: they were written
+  to be correct whether or not the remote refuses, and that is exactly why the
+  surprise costs nothing here. Do not read the measurement as making them
+  redundant — it is Sandbox, and whether the duplicate spent a second Item is
+  still unmeasured.)*
 - **The canary's freshness rule compared clocks on two machines (§15).** Rev 17
   required the VPS's `built_at` to be later than the moment `link.sh` started on
   the Mac — in a document that elsewhere refuses to infer ordering from untrusted
@@ -1108,6 +1157,18 @@ caveats:
   exchanged — and **only a passing measurement may widen this number.** Until
   then the 30-minute bound stands, because the direction of a wrong guess here is
   a permanently stranded slot.
+
+  *(Rev 24: `06a` ran this on 2026-09-16/17 and **the number does not move**. The
+  session sat **>5h** and the exchange was **refused** (HTTP 400) — a failing
+  measurement, which by the rule above changes nothing. Two honest limits on what
+  was learned: the wait was >5h rather than 30m+ε, so this bounds the expiry
+  below 5h without locating it at 30 minutes; and the error code was not
+  available in the reviewed redacted rendering, so no retry policy may key on a
+  specific expiry code. The genuinely new fact is that **the two clocks are
+  independent, not merely different** — retrieval still succeeded at >5h, long
+  after the exchange had stopped working. A worker that infers "the session is
+  still there, so the token is still good" is wrong in exactly the window this
+  paragraph exists to protect.)*
 
   *(Rev 17 wrote "six hours is the whole recovery window" and built an owner
   procedure on it. That procedure could hand the owner an expired token five

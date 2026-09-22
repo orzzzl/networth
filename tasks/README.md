@@ -75,13 +75,13 @@ that row. He caught it, not us.)
 | 00a | Generate the constrained backup SSH keypair and archive key; pin its `command=` | 03a | **codex** | claude | **DONE** (#50, 2026-09-07) |
 | 03a-live | `03a`'s acceptance **over the installed restricted key**: negative SSH, battery pull, offline drill, escrow attestation | 03a, 00b, 00b-escrow, 16 | **codex** (the wire, the records, and the LaunchAgent install) / **owner** (§19 step 1c items 3 and 4/4a only — *he attests to an escrow only he can hold, and the offline drill needs the network an agent session runs on*) | claude | BLOCKED (16) |
 | 06 | Sandbox end-to-end rehearsal of the Link flow | 05, 05a, 00c | **claude** | codex | **DONE** (#49, 2026-09-08) |
-| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | **WIP** (claude, 2026-09-08) |
+| 06a | Prove F7 in Sandbox + measure the four unknowns | 06 | **claude** (builds all; runs i–iii) / **owner** (runs iv's Mac half — *he types the Sandbox secret at a TTY prompt; it lives only on the VPS and no agent may read it*) | codex | **DONE** (2026-09-17, live) |
 
 ### Phase 2 — linking (the only phase that spends the scarce resource)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | BLOCKED (06a) |
+| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **READY** |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
@@ -1169,17 +1169,41 @@ cannot help — by **F2a** the slot is already spent.
 matters — a *completed* session's `public_token`** — because observing that in Production
 means completing a real Link and spending a lifetime slot. So it is proven in Sandbox.
 
+**It has now been proven in Sandbox — this row is DONE (2026-09-17).** Every criterion
+below carries a live measurement. The short version, because the detail is long: F7 holds
+end to end; the 30-minute deadline **stands** (the late exchange was refused, and only a
+success could have widened it); the duplicate exchange was **accepted** rather than
+refused, which is the one result that came back against its own criterion's premise; and a
+token minted on the VPS was retrieved and exchanged **from the Mac**, so host separation
+is real and `07b` is not built on an untested assumption. The owner's part is complete and
+**must not be requested again** — the exchanged flow is never to be rerun and the
+`networth-06a` heartbeat stays **PAUSED**. Authoritative run records are kept **outside
+this public repository**; only sanitized shapes and outcomes appear here.
+
 **Normative:** `DESIGN.md` **F7**, §16 ("The Link flow needs no hosted page at all"), §8.
 Issues **#3, #4, #5**, **#13**, **#15**.
 
 **Acceptance — prove F7:**
 
-- [ ] A Sandbox Hosted Link session is completed with `user_good`/`pass_good` — **by a
+- [x] A Sandbox Hosted Link session is completed with `user_good`/`pass_good` — **by a
       browser opening the hosted URL; there is no API for this step and no agent can
       substitute for it** (escalation `2c8feb59` decides how it happens). Then poll
       `/link/token/get`, assert `link_sessions[].results.item_add_results[].public_token`
       is present, exchange it, and assert the resulting `access_token` works.
-- [ ] Assert the **negative shape**, in **two states rather than one**. "Before
+
+      **MET — measured live 2026-09-16/17.** The owner opened the hosted URL in a browser
+      and completed it with `user_good`/`pass_good`; the poll returned `ITEM_ADDED` with
+      **1 session and 1 public token**; the exchange succeeded and the resulting
+      `access_token` was verified **HEALTHY**. Runtime was merged commit `d7cb101`.
+
+      **F7 is proven, and the sentence above it is now measured rather than reasoned.**
+      The argument for building any of this was that `/link/token/get` is *the only path
+      in existence* — no frontend integration is possible, `completion_redirect_uri`
+      carries no token, and webhooks are out of v0. A completed session's `public_token`
+      has now actually come back through that path. The one thing that could not be
+      measured in Production without spending a lifetime slot is measured in Sandbox,
+      which is exactly what this row was created to do.
+- [x] Assert the **negative shape**, in **two states rather than one**. "Before
       completion" is not a single condition, and the poller's "not ready" branch runs in
       both of them:
       - **(2a) Pre-start** — a token that has been minted and that nobody has opened.
@@ -1197,6 +1221,14 @@ Issues **#3, #4, #5**, **#13**, **#15**.
         really produces this state, and **`07a` spends most of its ticks in it**. Record
         the shape it returns. **Reaching it needs the browser step**, so it is gated on
         the same decision as criterion 1 (escalation `2c8feb59`).
+        **DONE — measured live 2026-09-16/17**, in the same session 1 that proved
+        criterion 1: while the hosted URL was open and unfinished the poll returned
+        `SESSION_IN_PROGRESS` with **1 session and 0 public tokens**, and after completion
+        the same token returned `ITEM_ADDED` with **1 session and 1 public token**.
+        So the two states differ by the *token count on a session that exists*, not by
+        the presence of `link_sessions` — which is what separates 2b from 2a, where the
+        key is absent entirely. **A poller that treats "no token yet" as "no session yet"
+        would be correct in 2a and wrong here**, and `07a` lives in this state.
 
       *Split 2026-09-09 (PR #59 review).* This was one universal criterion, and the
       agent-runnable probe reaches only 2a. Marking the universal claim proved from a
@@ -1206,16 +1238,62 @@ Issues **#3, #4, #5**, **#13**, **#15**.
 
 **Acceptance — the four measurements. Record each as a measurement whatever the result:**
 
-- [ ] **(i) The two clocks (issue #3).** Complete a session, **wait past 30 minutes**, then
+- [x] **(i) The two clocks (issue #3).** Complete a session, **wait past 30 minutes**, then
       retrieve and attempt the exchange. If the exchange fails, the 30-minute deadline is
       confirmed and nothing changes. If it succeeds, that is the **only** evidence that may
       widen the window, and `DESIGN.md` must be updated with the observation rather than
       with Plaid's phrasing. **Until this runs, 30 minutes is operative everywhere.**
-- [ ] **(ii) Duplicate exchange (issue #4).** Exchange one `public_token` twice. Record the
+
+      *Measured live 2026-09-16/17.* Session 2 was completed and then left alone; the
+      delayed attempt began **more than 5 hours** after the conservative
+      completion-observed time. **Retrieval still succeeded** (`ITEM_ADDED`, 3 sessions,
+      1 public token) and **the exchange was refused with HTTP 400**.
+
+      **So nothing changes, and that is the criterion operating as written** — only a
+      *successful* late exchange could have widened the window, and this was a refusal.
+      **30 minutes stays operative everywhere, and Production timing policy is not
+      widened.**
+
+      **What this does NOT establish, stated because the convenient reading is available
+      and wrong.** The wait was >5h rather than 30m+ε, so this bounds the expiry
+      somewhere below 5h and **does not locate it at 30 minutes**; and the error code was
+      **not available in the redacted rendering that was reviewed**, so the *particular*
+      expiry error is still unmeasured. A retry policy keyed on a specific expiry code
+      cannot cite this measurement. What it does establish is the shape that matters for
+      `07a`: **retrieval and exchange expire independently** — the session was still
+      retrievable long after it stopped being exchangeable, so a successful
+      `/link/token/get` is no evidence that the `public_token` it returns is still good.
+- [x] **(ii) Duplicate exchange (issue #4).** Exchange one `public_token` twice. Record the
       error code and **whether the original `access_token` is still usable**. `07a`'s
       `EXCHANGE_UNCERTAIN` handling is written against this behaviour, so a guess here
       becomes a wrong recovery procedure at the moment a slot is burning.
-- [ ] **(iii) The four crash boundaries, not one (issues #5 and #15).** Inject a failure at
+
+      *Measured live 2026-09-16/17, and it contradicts the question.* The second exchange
+      of the same `public_token` was **ACCEPTED, not rejected**, and the original
+      `access_token` **remained HEALTHY**. There is no error code to record, because there
+      was no error: this criterion asked "record the error code" and the premise that
+      there would be one was wrong.
+
+      **This is the measurement the row most needed, and it inverts the assumption `07a`
+      was being written against.** `EXCHANGE_UNCERTAIN` exists for the case where a
+      credential may or may not have been minted and a retry might burn a slot; in
+      Sandbox the retry was harmless and non-destructive. Had this been guessed instead
+      of measured, the guess would have been "the duplicate is refused with some code",
+      and the recovery path would have been built to avoid a retry that is in fact safe —
+      the criterion's own stated failure ("a guess here becomes a wrong recovery
+      procedure at the moment a slot is burning"), arrived at from the opposite side.
+
+      **Two limits, and `07a` must respect both rather than adopting "retry is safe".**
+      First, **this is Sandbox**. Production is not measured here and cannot be, without
+      spending a lifetime slot — which is the whole reason F7 was proven in Sandbox.
+      Second, **whether the accepted duplicate consumed a second Item is not established
+      by the reviewed record**: it states acceptance and the first credential's continued
+      health, not the Item count afterwards. That gap matters more than it looks, because
+      this project is budgeted in *lifetime Item slots* — "the retry succeeded" and "the
+      retry was free" are different claims, and only the first is measured. Treat a
+      duplicate exchange as **safe for the existing credential and unproven for the
+      budget**.
+- [x] **(iii) The four crash boundaries, not one (issues #5 and #15).** Inject a failure at
       each of **before send**, **after send / before response**, **after response / before
       `fsync`**, and **after `fsync` / before the DB commit**, restart, and attempt
       recovery. Assert an **honest** outcome for each — honest, *not necessarily distinct*.
@@ -1236,12 +1314,39 @@ Issues **#3, #4, #5**, **#13**, **#15**.
       The wording above previously demanded four distinct outcomes and named the whole third
       boundary as the irreducible one; both were corrected by measurement rather than by
       argument.
-- [ ] **(iv) Can a *different host* finish the flow at all? (issue #13).** Mint the Hosted
+- [x] **(iv) Can a *different host* finish the flow at all? (issue #13).** Mint the Hosted
       Link token **on the VPS**, complete its hosted URL **in a browser**, then call
       `/link/token/get` and exchange the `public_token` **from
       `zelengs-macbook-air-2`** — a different machine, same Plaid credentials, **the VPS
       taking no part in either API call**. Record whether retrieval and exchange both
       succeed.
+
+      **MET — measured live 2026-09-17. Both succeed.** The VPS minted and wrote its
+      verified second copy at `07:18:50Z`; the owner completed the hosted URL in a browser
+      and typed the Sandbox credential at hidden prompts in a native Terminal; **both API
+      calls were then made from `zelengs-macbook-air-2`**, whose identity was verified
+      before either call — `ITEM_ADDED`, 3 sessions, 1 public token, exchanged 1, exit 0
+      at `07:34:38Z`. **The VPS took no part in retrieval or exchange.** No client or
+      access credential persisted on the laptop: the successful command emitted
+      `EXCHANGED` and removed its temporary local recovery record. Ran at independently
+      reviewed commit `022bb211`.
+
+      **So the assumption §19 step 2a and all of `07b` rest on is now tested, and it
+      holds.** Host separation across the two API calls is real: a Hosted Link session
+      minted on one machine can be retrieved and exchanged from another under the same
+      credentials. **The lost-VPS recovery path is therefore not built on an untested
+      premise, and `07b` does not need redesigning before `08`** — which is the outcome
+      this criterion existed to decide either way.
+
+      **One thing this run found that no amount of review had:** the *first* attempt at
+      the Mac half crashed before it reached either the credential prompt or any API
+      call — a non-seekable `fdopen(..., "r+")` followed by a double close. That path
+      only exists when the prompt is attached to a real terminal rather than a pipe, so
+      every agent-side rehearsal had missed it. Fixed and independently reviewed as
+      **PR #85** (`022bb211`), and the measurement above is the replacement run on the
+      fixed commit. The lesson is narrow and worth keeping: **"we ran its first line"
+      does not cover an interactive command**, because the interactive part is precisely
+      what a non-interactive rehearsal replaces.
 
       *Wording corrected 2026-09-09 (PR #59 review).* This read "mint the `link_token` and
       complete a Sandbox session **on the VPS**", which no executor can carry out: **there
@@ -1492,13 +1597,32 @@ capture is issue **#14**.
       that fails a ping can still be mid-`/link/token/get`. State plainly in the
       owner-facing text that this host is also his exit node (§15.1), so powering it off is
       a real decision and not a formality.
-- [ ] **The losing branch is classified from a measurement, not a guess.** The
-      `public_token` is single-use, so Plaid — not our database — is what actually enforces
-      at-most-once on the wire. If both hosts reach the API, one exchange fails. `06a` (ii)
-      measured that error code **and whether the first `access_token` survives**; this
-      script's duplicate-exchange branch is written against that measurement. Losing the
-      race is **not** a stranded slot — it means the other host holds the credential — and
-      reporting it as a loss would send the owner to Plaid support over a working Item.
+- [ ] **The losing branch is classified from a measurement, not a guess — and the
+      measurement came back the other way, so read this whole bullet before writing the
+      branch.** This read: *"the `public_token` is single-use, so Plaid — not our database —
+      is what actually enforces at-most-once on the wire. If both hosts reach the API, one
+      exchange fails. `06a` (ii) measured that error code."* **`06a` (ii) measured no error
+      code, because there was no error**: the second exchange of the same `public_token`
+      was **ACCEPTED** and the first `access_token` stayed **HEALTHY** (2026-09-16/17,
+      Sandbox). So the premise above is not confirmed on the wire — at-most-once is what we
+      assumed Plaid enforces, not what it was observed to enforce.
+
+      What survives unchanged is the *conclusion*: losing the race is **not** a stranded
+      slot, and reporting it as a loss would send the owner to Plaid support over a working
+      Item. What changes is the branch's shape — **it cannot be keyed on "the loser gets an
+      error"**, because in the one environment where this has been measured the loser gets
+      a success. Write it so that *both* hosts succeeding is an expected outcome rather
+      than an impossible one, and so the two credentials are reconciled to one usable
+      `TokenStore` entry afterwards.
+
+      **And the part that is still unmeasured is the part that costs money**: whether the
+      accepted duplicate consumed a **second Item**. The reviewed record establishes
+      acceptance and the first credential's health, not the Item count. A double exchange
+      that is free and one that silently spends a lifetime slot look identical from here.
+      Until that is measured, treat a concurrent double exchange as **safe for the
+      credential and unproven for the budget**, and prefer a design that does not race at
+      all over one that races and reconciles. *(Sandbox only; Production is not measured
+      and cannot be without spending a slot.)*
 - [ ] **The uncertain case is tested: the old VPS comes back after recovery exchanged.**
       Assert the outcome is classified honestly, that `TokenStore` ends with one usable
       credential rather than a silently preferred one, and that the budget (`26a`) counts
@@ -1611,8 +1735,14 @@ Mac. **Agents never run it.**
       a reachability ping and all fail a real backup. The canary runs over the
       **restricted key and its dispatcher**, or it proves a route no backup takes.
 - [ ] The owner-facing text states the **30-minute** deadline (issue #3). Six hours is
-      session-data retention and is diagnostics only. Until `06a` measures otherwise, 30
-      minutes is operative.
+      session-data retention and is diagnostics only. **`06a` has now measured, and it did
+      not measure otherwise: 30 minutes stays operative.** A session left >5h was still
+      *retrievable* and its exchange was **refused** (HTTP 400), so the late-exchange
+      success that was the only thing permitted to widen this window never happened. Note
+      for the owner-facing text specifically: the two clocks really are separate — a
+      successful retrieval says nothing about whether the token can still be exchanged —
+      so the deadline he is shown must be the **exchange** one and must not be softened by
+      the fact that the session is still visible.
 - [ ] **The completion worker is triggered through task `16`'s durable wake-up, never with
       a bare `systemctl start` on the shared sync unit** (issue #17). A plain `start`
       against an already-active service is silently discarded, and the service it targets
