@@ -94,4 +94,46 @@ void main() {
       );
     });
   });
+
+  group('written back for the phone\'s own record (task 23a)', () {
+    // The store keeps readings in this shape and reads them back with the
+    // parser above, so `toJson` being the exact inverse of `fromJson` is what
+    // makes a recorded reading a readable one. A round trip is the test: it
+    // fails on a field dropped, renamed, or spelled differently in one
+    // direction, which no assertion about a single key would catch.
+    for (final (name, fixture) in [
+      ('KNOWN', knownFixture),
+      ('UNKNOWN', mixedFixture),
+      ('STATIC_ONLY', staticOnlyFixture),
+    ]) {
+      test('$name survives a round trip unchanged', () {
+        final written = DatedTotal.fromJson(_total(fixture)).toJson();
+
+        expect(DatedTotal.fromJson(written).toJson(), written);
+        expect(written['age_state'], name);
+      });
+    }
+
+    test('it carries the published numbers, not a re-rendering of them', () {
+      final written = DatedTotal.fromJson(_total(knownFixture)).toJson();
+
+      expect(written['value_minor'], 4250000);
+      expect(written['assets_minor'], 5000000);
+      expect(written['liabilities_minor'], 750000);
+      expect(written['currency'], 'USD');
+      expect(written['is_complete'], true);
+      expect(written['as_of'], '2026-09-14T20:15:00.000Z');
+    });
+
+    test('an undatable total writes no as_of at all — absent, not null', () {
+      // §8.1 R3 forbids the two undatable states a date, and `fromJson` refuses
+      // a total that carries one. A `null` would round-trip today and become a
+      // refusal the moment anything wrote it as a string, so the key is absent.
+      final written = DatedTotal.fromJson(_total(mixedFixture)).toJson();
+
+      expect(written.containsKey('as_of'), isFalse);
+      expect(written['unknown_freshness_account_count'], isA<int>());
+      expect(written['account_count'], isA<int>());
+    });
+  });
 }

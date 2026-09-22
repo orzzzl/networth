@@ -67,7 +67,7 @@ void main() {
       // assert a value that was never stored — the deformation §12 rules out,
       // arriving from the renderer. A run wider than one day is that assertion,
       // so this measures every run rather than counting them.
-      final history = loadHistoryFixture();
+      final history = demoSeries();
       final geometry = CurveGeometry.layOut(history, _box);
       final dayWidth = _dayWidth(history);
 
@@ -85,7 +85,7 @@ void main() {
       // Without this the previous test would also pass on a curve that simply
       // packed the points side by side — the break would exist arithmetically
       // and be invisible, which is not what "must look like a gap" asks for.
-      final history = loadHistoryFixture();
+      final history = demoSeries();
       final geometry = CurveGeometry.layOut(history, _box);
 
       final before = history.segments.first.last;
@@ -103,7 +103,7 @@ void main() {
     });
 
     test('there is exactly one run fewer than points in each segment', () {
-      final history = loadHistoryFixture();
+      final history = demoSeries();
       final geometry = CurveGeometry.layOut(history, _box);
 
       expect(
@@ -166,7 +166,7 @@ void main() {
       // label would be exactly that: a number with no age beside it. The whole
       // rendered surface is checked rather than one widget, because the defect
       // would be an amount reaching the screen, not a particular `Text`.
-      await pump(tester, loadHistoryFixture());
+      await pump(tester, demoSeries());
 
       for (final line in renderedText(tester, find.byType(HistoryCurve))) {
         expect(
@@ -194,7 +194,7 @@ void main() {
     });
 
     testWidgets('and names both when both are', (tester) async {
-      await pump(tester, loadHistoryFixture());
+      await pump(tester, demoSeries());
 
       expect(find.text('dashed where a reading was incomplete'), findsOneWidget);
       expect(find.text('breaks are days with no reading'), findsOneWidget);

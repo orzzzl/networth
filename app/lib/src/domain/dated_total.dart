@@ -108,6 +108,52 @@ sealed class DatedTotal {
     }
   }
 
+  /// The reading as the host sent it, for the phone's own record (task `23a`).
+  ///
+  /// **The exact inverse of [DatedTotal.fromJson], and the sealed `switch` is
+  /// what keeps it that way.** A fourth age state added later does not compile
+  /// until it is written down here too, so the store cannot quietly begin
+  /// recording readings the parser will refuse to read back.
+  ///
+  /// **Nothing here is computed.** Every value is one the host put on the wire,
+  /// carried through this object unchanged — the record holds what was
+  /// published, never what the phone derived from it.
+  ///
+  /// The one thing it does *not* carry is the fields this build does not parse
+  /// (`oldest_known_source_as_of`, the per-account counts §11 reads). That is a
+  /// real cost and it is this direction on purpose: the alternative is keeping
+  /// the raw body beside the parsed object, and two copies of one fact are how
+  /// the stored reading comes to disagree with the total that was on screen when
+  /// it was stored. A display that later wants one of those fields gets it from
+  /// the day it starts asking, not retroactively.
+  Map<String, Object?> toJson() => <String, Object?>{
+        'value_minor': amount.minorUnits,
+        'assets_minor': assets.minorUnits,
+        'liabilities_minor': liabilities.minorUnits,
+        'currency': amount.currency,
+        'static_account_count': staticAccountCount,
+        'is_complete': isComplete,
+        // `as_of` is *absent* rather than null for the two undatable states:
+        // §8.1 R3's table forbids them a date, and [DatedTotal.fromJson]
+        // enforces it by refusing a total that carries one.
+        ...switch (this) {
+          KnownAgeTotal(:final asOf) => <String, Object?>{
+              'age_state': 'KNOWN',
+              'as_of': asOf.toIso8601String(),
+            },
+          UndatableTotal(
+            :final undatableAccountCount,
+            :final accountCount,
+          ) =>
+            <String, Object?>{
+              'age_state': 'UNKNOWN',
+              'unknown_freshness_account_count': undatableAccountCount,
+              'account_count': accountCount,
+            },
+          StaticOnlyTotal() => <String, Object?>{'age_state': 'STATIC_ONLY'},
+        },
+      };
+
   static Money _money(Map<String, Object?> total, String field) =>
       Money(minorUnits: _int(total, field), currency: _string(total, 'currency'));
 

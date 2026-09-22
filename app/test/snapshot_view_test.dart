@@ -142,7 +142,7 @@ void main() {
               data: MediaQueryData(textScaler: TextScaler.linear(textScale)),
               child: SnapshotView(
                 payload: loadFixture(mixedFixture),
-                history: loadHistoryFixture(),
+                history: demoSeries(),
                 deviceNow: DateTime.utc(2026, 9, 20),
               ),
             ),

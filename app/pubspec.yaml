@@ -21,6 +21,16 @@ dependencies:
   # payload key is protected by Android Keystore and never compiled into the APK.
   flutter_secure_storage: ^11.2.0
   intl: any
+  # The history store's directory, and nothing else (task 23a's dependency
+  # approval, which is for a storage package only). It resolves the platform's
+  # app-private path; the file itself is `dart:io`. Free, offline, no service
+  # behind it, so it stays inside the zero-marginal-cost rule.
+  #
+  # Deliberately NOT `flutter_secure_storage`, which is already here: the row
+  # requires the record to live *outside* the key vault. The pairing key is the
+  # revocable thing, the owner's own curve is not, and re-pairing must not erase
+  # it.
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:
