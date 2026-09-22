@@ -150,12 +150,18 @@ Items raises `ItemBudgetError` (unavailable count), including the existing
 nameless-`EXCHANGED` case; do not guess whether that evidence names a stored Item.
 
 The reader must also inspect **unresolved success observations**, even though
-they minted no result UUID. While any exists, the budget is unavailable through
-`ItemBudgetError`: a returned token or Item-add evidence may already have spent a
-slot, and absence of a result row is not free capacity. This includes missing
-session/token identity and unavailable digest-key observations. Request/session
-states themselves contribute zero, but cannot suppress this evidence. No
-automatic Link mint may use an unavailable budget as headroom.
+they minted no result UUID. While any remains unresolved, the budget is
+unavailable through `ItemBudgetError`: a returned token or Item-add evidence may
+already have spent a slot, and absence of a result row is not free capacity. This
+includes missing session/token identity and unavailable digest-key observations.
+Each observation
+is a hold cleared by explicit, recorded adjudication of its possible spent slot;
+the refusal must identify the hold and the adjudication needed so the owner-run
+`08` script surfaces an actionable reason, including when a reaped digest key
+can never be recovered. Preserve the observation and its resolution for audit;
+automatic polls or elapsed time cannot clear it. Request/session states themselves
+contribute zero, but cannot suppress this evidence. No Link mint may use an
+unavailable budget as headroom.
 
 Backfill each legacy success into one durable legacy-result record, preserving
 its state, identifiers, deadlines and attempts; do not invent provider session
@@ -215,7 +221,10 @@ is synthetic; no already-exchanged 06a token is exercised again.
   credentials and count twice; established token identity without Item identity
   counts one per deduplicated result; ambiguous overlap and unresolved success
   observations produce no numeric budget, including observations with zero
-  result rows.
+  result rows. An unavailable-key hold survives automatic passes; recorded
+  adjudication resolves it and restores a numeric budget accounting for the
+  adjudicated slot outcome (unless another hold remains). The refusal identifies
+  the hold and required adjudication for `08`.
 - Capture Item and request IDs before later failures; reject `item_id` equal to
   credential material before any persistence of that identifier or `put`.
 - Inject before send, after send/before response, before durable response
