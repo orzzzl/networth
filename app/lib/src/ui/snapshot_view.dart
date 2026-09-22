@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../l10n/generated/app_localizations.dart';
 import '../domain/copy_freshness.dart';
+import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
 import 'headline.dart';
+import 'history_curve.dart';
 import 'instant.dart';
 
 /// One published snapshot, with both staleness dimensions kept apart.
@@ -14,9 +16,17 @@ import 'instant.dart';
 /// combined badge. Task 22 deepens this treatment; it does not introduce it,
 /// which is why the distinction is built in here rather than deferred.
 class SnapshotView extends StatelessWidget {
-  const SnapshotView({super.key, required this.payload, required this.deviceNow});
+  const SnapshotView({
+    super.key,
+    required this.payload,
+    required this.history,
+    required this.deviceNow,
+  });
 
   final PhonePayload payload;
+
+  /// The curve's series, or null when it could not be read.
+  final NetWorthHistory? history;
 
   /// Injected rather than read from the clock inside `build`, so the copy
   /// dimension is testable at a chosen instant and a widget test never depends
@@ -26,7 +36,14 @@ class SnapshotView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    return Padding(
+    // **Scrollable, because this screen's height is not ours to choose.** The
+    // curve made the content taller than a 640x360 landscape viewport and the
+    // `Column` rendered overflow stripes — and the same arithmetic fails in
+    // portrait as soon as the owner raises the system text size, which is a
+    // setting people who care about reading numbers actually use. A fixed
+    // layout that happens to fit the test device is not a layout; the content
+    // is what it is, and the screen must be able to show all of it.
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -49,6 +66,17 @@ class SnapshotView extends StatelessWidget {
             detail: _copyText(l10n, payload, deviceNow),
             isWarning: payload.copyFreshness(deviceNow) != CopyFreshness.fresh,
           ),
+          // Last, deliberately. The order on this screen is the order of the
+          // claims: the number, its age, the two reasons it could be old, and
+          // only then its shape over time.
+          const SizedBox(height: 24),
+          // The headline's currency travels with the series, because this is the
+          // only place both are in scope. `NetWorthHistory.reduce` refuses a
+          // series that mixes currencies internally; it cannot see a series that
+          // agrees with itself and disagrees with the total above it, and a
+          // figure-less curve of the wrong quantity looks exactly like a right
+          // one.
+          HistoryCurve(history: history, headlineCurrency: payload.total.amount.currency),
         ],
       ),
     );

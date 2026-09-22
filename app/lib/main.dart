@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'l10n/generated/app_localizations.dart';
+import 'src/data/history_source.dart';
 import 'src/data/snapshot_source.dart';
 import 'src/ui/home_page.dart';
 
@@ -16,14 +17,34 @@ const SnapshotSource _source = FixtureSnapshotSource(
   'assets/fixtures/mixed_known_and_unknown.json',
 );
 
+/// The curve's series — **empty, and deliberately not a fixture.**
+///
+/// The payload above is synthetic and that is fine; a synthetic *past* is not
+/// the same object. A made-up today announces itself, because the screen it
+/// draws is covered in `UNKNOWN` and stale annotations. A made-up thirty-day
+/// curve announces nothing: it carries no figures to recognise as wrong, and it
+/// would sit directly under a headline that becomes real before this file is
+/// next edited. So this entry point does not name the fixture at all — the
+/// synthetic series is reachable only from `main_demo.dart`, and
+/// `FixtureHistorySource` refuses to load in a release build besides.
+///
+/// What the owner sees here is therefore the truth: a new install has recorded
+/// nothing, and the curve says so. Task `23a` is what fills it.
+const HistorySource _historySource = EmptyHistorySource();
+
 void main() {
   runApp(const NetWorthApp());
 }
 
 class NetWorthApp extends StatelessWidget {
-  const NetWorthApp({super.key, this.source = _source});
+  const NetWorthApp({
+    super.key,
+    this.source = _source,
+    this.historySource = _historySource,
+  });
 
   final SnapshotSource source;
+  final HistorySource historySource;
 
   @override
   Widget build(BuildContext context) {
@@ -39,7 +60,7 @@ class NetWorthApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2F6F4E)),
         useMaterial3: true,
       ),
-      home: HomePage(source: source),
+      home: HomePage(source: source, historySource: historySource),
     );
   }
 }

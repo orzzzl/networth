@@ -1,14 +1,23 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/domain/copy_freshness.dart';
+import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
 import 'package:networth_app/src/ui/headline.dart';
 import 'package:networth_app/src/ui/snapshot_view.dart';
 
 import 'fixtures.dart';
 
-Future<void> _pump(WidgetTester tester, PhonePayload payload, DateTime deviceNow) async {
+Future<void> _pump(
+  WidgetTester tester,
+  PhonePayload payload,
+  DateTime deviceNow, {
+  NetWorthHistory? history = NetWorthHistory.empty,
+}) async {
   await tester.pumpWidget(
-    localized(SnapshotView(payload: payload, deviceNow: deviceNow)),
+    localized(
+      SnapshotView(payload: payload, history: history, deviceNow: deviceNow),
+    ),
   );
 }
 
@@ -105,6 +114,57 @@ void main() {
         await _pump(tester, loadFixture(fixture), now);
         expect(find.byType(Headline), findsOneWidget, reason: '$fixture at $now');
       }
+    }
+  });
+
+  group('the screen fits, or scrolls — it never renders overflow stripes', () {
+    // Phone landscape, and the same portrait phone with the system text size
+    // raised. Both are one rotation or one settings toggle away, and the second
+    // is a setting that people who care about reading numbers actually use.
+    const cases = <String, (Size, double)>{
+      'landscape 640x360': (Size(640, 360), 1.0),
+      'portrait 360x640 at 2.0x text': (Size(360, 640), 2.0),
+      'landscape 640x360 at 1.5x text': (Size(640, 360), 1.5),
+    };
+
+    for (final entry in cases.entries) {
+      testWidgets(entry.key, (tester) async {
+        final (size, textScale) = entry.value;
+        tester.view.physicalSize = size;
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        // The shipped series, not an empty one: the curve and both of its notes
+        // are exactly the height this regression is about.
+        await tester.pumpWidget(
+          localized(
+            MediaQuery(
+              data: MediaQueryData(textScaler: TextScaler.linear(textScale)),
+              child: SnapshotView(
+                payload: loadFixture(mixedFixture),
+                history: loadHistoryFixture(),
+                deviceNow: DateTime.utc(2026, 9, 20),
+              ),
+            ),
+          ),
+        );
+
+        // `takeException` rather than a `find` on the yellow stripes: a
+        // `RenderFlex overflowed` is reported as a `FlutterError` and the
+        // stripes are painted, not built, so nothing in the widget tree would
+        // show it.
+        expect(
+          tester.takeException(),
+          isNull,
+          reason: '${entry.key} overflowed',
+        );
+        // And the content is still reachable rather than merely not complained
+        // about — a `ClipRect` would also have silenced the exception.
+        expect(find.byType(Headline), findsOneWidget);
+        await tester.drag(find.byType(SnapshotView), const Offset(0, -400));
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+      });
     }
   });
 }
