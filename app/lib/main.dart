@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'l10n/generated/app_localizations.dart';
 import 'src/data/history_source.dart';
+import 'src/data/history_store.dart';
 import 'src/data/snapshot_source.dart';
 import 'src/ui/home_page.dart';
 
@@ -17,30 +18,49 @@ const SnapshotSource _source = FixtureSnapshotSource(
   'assets/fixtures/mixed_known_and_unknown.json',
 );
 
-/// The curve's series — **empty, and deliberately not a fixture.**
+/// The curve's series — **the phone's own record, and nothing else.**
 ///
 /// The payload above is synthetic and that is fine; a synthetic *past* is not
 /// the same object. A made-up today announces itself, because the screen it
 /// draws is covered in `UNKNOWN` and stale annotations. A made-up thirty-day
 /// curve announces nothing: it carries no figures to recognise as wrong, and it
 /// would sit directly under a headline that becomes real before this file is
-/// next edited. So this entry point does not name the fixture at all — the
-/// synthetic series is reachable only from `main_demo.dart`, and
-/// `FixtureHistorySource` refuses to load in a release build besides.
+/// next edited. So no entry point names a bundled series — there is no longer
+/// one to name.
 ///
-/// What the owner sees here is therefore the truth: a new install has recorded
-/// nothing, and the curve says so. Task `23a` is what fills it.
-const HistorySource _historySource = EmptyHistorySource();
+/// What fills this is [RecordingSnapshotSource] below, one reading per accepted
+/// payload. Until task `22` swaps the fixture above for the real transport it
+/// records nothing at all, because the recorder refuses a synthetic source, so
+/// what the owner sees here is the truth: a new install has recorded nothing,
+/// and the curve says so.
+HistoryStore _historyStore() => FileHistoryStore.appPrivate();
 
 void main() {
-  runApp(const NetWorthApp());
+  final history = _historyStore();
+  // **One wrapper, and it is where task 22's change lands.** Recording is a
+  // property of accepting a payload rather than of a screen, so it sits on the
+  // source: swapping `_source` for the networked one is the whole of making the
+  // curve fill, and nothing that renders has to know.
+  //
+  runApp(
+    NetWorthApp(
+      source: RecordingSnapshotSource(inner: _source, store: history),
+      historySource: history,
+    ),
+  );
 }
 
 class NetWorthApp extends StatelessWidget {
+  /// Both seams are **required**: there is no default that quietly ships.
+  ///
+  /// The defaults they replaced meant a test could pump the app with one half of
+  /// the production wiring and no way to tell, and — since the history seam is
+  /// now a store that writes to a real path — a widget test that forgot to pass
+  /// one would have written to the *host's* documents directory.
   const NetWorthApp({
     super.key,
-    this.source = _source,
-    this.historySource = _historySource,
+    required this.source,
+    required this.historySource,
   });
 
   final SnapshotSource source;

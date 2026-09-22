@@ -1,19 +1,20 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:networth_app/src/data/history_source.dart';
-
-import 'fixtures.dart';
 
 void main() {
-  group('the production entry point does not name the synthetic series', () {
-    // A *source* property, pinned the way `release_log_test.dart` pins the
-    // print boundary and for the same stated reason: `kReleaseMode` is false in
-    // this process, so no test running here can observe what a release build
-    // wires. What can be checked is which class `main.dart` names, and that is
-    // the property the whole arrangement rests on.
-    final main = File('lib/main.dart');
-    final demo = File('lib/main_demo.dart');
+  group('no build can reach an invented past', () {
+    // A *source* property, pinned the way `release_log_test.dart` pins the print
+    // boundary and for the same stated reason: `kReleaseMode` is false in this
+    // process, so no test running here can observe what a release build wires.
+    // What can be checked is what the entry points name and what the app
+    // bundles, and that is the property the whole arrangement rests on.
+    final entryPoints = Directory('lib')
+        .listSync()
+        .whereType<File>()
+        .where((file) => file.path.endsWith('.dart'))
+        .toList();
 
     /// A file's code, with `//` and `///` lines dropped.
     ///
@@ -29,83 +30,50 @@ void main() {
         .where((line) => !line.trimLeft().startsWith('//'))
         .join('\n');
 
-    test('both entry points exist — a scan over a missing file passes vacuously', () {
-      expect(main.existsSync(), isTrue);
-      expect(demo.existsSync(), isTrue);
-      expect(code(main), contains('void main()'));
-      expect(code(demo), contains('void main()'));
+    test('lib/main.dart exists — a scan over a missing file passes vacuously', () {
+      expect(File('lib/main.dart').existsSync(), isTrue);
+      expect(code(File('lib/main.dart')), contains('void main()'));
     });
 
-    test('main.dart names EmptyHistorySource and never FixtureHistorySource', () {
-      expect(code(main), contains('EmptyHistorySource'));
+    test('main.dart is the only entry point, so there is no second wiring', () {
+      // `main_demo.dart` was the one place a synthetic series was wired, and
+      // task 23a deleted it with the fixture it rendered. This is the control
+      // for the scan below: without it, "no entry point names a series asset"
+      // would also be satisfied by a demo nobody noticed had come back.
       expect(
-        code(main),
-        isNot(contains('FixtureHistorySource')),
-        reason: 'the production entry point may not reach the invented past',
+        [for (final file in entryPoints) file.uri.pathSegments.last],
+        ['main.dart'],
       );
     });
 
-    test('and the demo entry point is where it lives instead — the control', () {
-      // Without this, the assertion above is also satisfied by deleting the
-      // fixture wiring outright, and nothing would say the demo had been lost.
-      expect(code(demo), contains('FixtureHistorySource'));
-    });
-  });
-
-  group('production wiring cannot render a synthetic past', () {
-    test('the empty source is empty, and that is what production gets', () async {
-      // `main.dart` names this class and does not name the fixture. The
-      // assertion is trivial; what it pins is that the class exists as shipped
-      // code rather than as a test helper, so `main.dart` has something honest
-      // to point at.
-      expect((await const EmptyHistorySource().load()).isEmpty, isTrue);
+    test('no entry point names a history asset', () {
+      for (final file in entryPoints) {
+        expect(
+          code(file),
+          isNot(contains('assets/fixtures/history')),
+          reason: '${file.path} reaches a bundled series',
+        );
+      }
     });
 
-    test('the fixture source refuses to load in a release build', () async {
-      // The flag is injected because `flutter test` runs in debug: a guard
-      // keyed only on the real `kReleaseMode` could never be executed here, and
-      // a check whose only state is "never ran" is not a check.
-      await expectLater(
-        const FixtureHistorySource(historyFixture, isReleaseBuild: true).load(),
-        throwsA(isA<StateError>()),
-      );
+    test('and the app ships no series to reach', () {
+      // The asset directory is bundled wholesale (`pubspec.yaml` lists
+      // `assets/fixtures/`), so a file put back there would ship whether or not
+      // any code named it. Every remaining fixture must be a *payload* — a
+      // synthetic today, which announces itself in the UNKNOWN and stale
+      // annotations the screen draws around it — and never a series.
+      final assets = Directory('assets/fixtures')
+          .listSync()
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.json'));
+
+      for (final asset in assets) {
+        expect(
+          jsonDecode(asset.readAsStringSync()),
+          isA<Map<String, Object?>>(),
+          reason: '${asset.path} is a series, not a payload',
+        );
+      }
     });
-
-    test('and still loads in a debug build, which is the control', () async {
-      final history = await FixtureHistorySource(
-        historyFixture,
-        bundle: StringAssetBundle.ofFixtures(),
-        isReleaseBuild: false,
-      ).load();
-
-      expect(history.isEmpty, isFalse);
-      expect(history.hasGap, isTrue);
-      expect(history.hasIncompletePoint, isTrue);
-    });
-
-    test('its default is the real build mode, not a convenient false', () async {
-      // The parameter exists so the refusal is testable, not so it defaults
-      // open. `kReleaseMode` is false under `flutter test`, so this is what the
-      // default resolves to here — and if someone changes the default to a
-      // literal `false`, the release branch becomes unreachable in every build
-      // and this test is where that is written down.
-      expect(
-        const FixtureHistorySource(historyFixture).isReleaseBuild,
-        isFalse,
-        reason: 'flutter test runs in debug, so the default must resolve to false here',
-      );
-    });
-  });
-
-  test('a bundled series still parses into the shape the curve needs', () async {
-    final history = await FixtureHistorySource(
-      historyFixture,
-      bundle: StringAssetBundle.ofFixtures(),
-    ).load();
-
-    expect(history.points, isNotEmpty);
-    expect(history.currency, 'USD');
-    expect(history.points.map((point) => point.day).toList(), isA<List<DateTime>>());
-    expect(history.segments.length, greaterThan(1), reason: 'the fixture carries a gap');
   });
 }

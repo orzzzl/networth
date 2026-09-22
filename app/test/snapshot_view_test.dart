@@ -13,10 +13,16 @@ Future<void> _pump(
   PhonePayload payload,
   DateTime deviceNow, {
   NetWorthHistory? history = NetWorthHistory.empty,
+  bool recordingFailed = false,
 }) async {
   await tester.pumpWidget(
     localized(
-      SnapshotView(payload: payload, history: history, deviceNow: deviceNow),
+      SnapshotView(
+        payload: payload,
+        history: history,
+        recordingFailed: recordingFailed,
+        deviceNow: deviceNow,
+      ),
     ),
   );
 }
@@ -142,7 +148,8 @@ void main() {
               data: MediaQueryData(textScaler: TextScaler.linear(textScale)),
               child: SnapshotView(
                 payload: loadFixture(mixedFixture),
-                history: loadHistoryFixture(),
+                history: demoSeries(),
+                recordingFailed: false,
                 deviceNow: DateTime.utc(2026, 9, 20),
               ),
             ),

@@ -23,7 +23,18 @@ class HomePage extends StatefulWidget {
     this.clock,
   });
 
+  /// Where the payload comes from — and, when it is a [RecordingStatus], the
+  /// answer to whether that payload was kept.
+  ///
+  /// **Asked of the source rather than wired separately, and that is the fix
+  /// for a defect this had in its first draft.** The recording outcome arrived
+  /// as its own optional constructor argument, which meant a caller that wired
+  /// the recorder and forgot the second seam got the reassuring answer by
+  /// default — a build that loses every reading, silently, exactly as before.
+  /// The reviewer's own probe wired it that way, which is the evidence that it
+  /// is the shape a caller reaches for. One object cannot be half-wired.
   final SnapshotSource source;
+
   final HistorySource historySource;
 
   /// Overridable so a test can choose the instant the copy age is measured from.
@@ -33,8 +44,9 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-/// What one screenful needs: the payload, and the series if it could be read.
-typedef _Loaded = (PhonePayload payload, NetWorthHistory? history);
+/// What one screenful needs: the payload, the series if it could be read, and
+/// whether this payload reached the record.
+typedef _Loaded = (PhonePayload payload, NetWorthHistory? history, bool recordingFailed);
 
 class _HomePageState extends State<HomePage> {
   late Future<_Loaded> _payload;
@@ -52,8 +64,24 @@ class _HomePageState extends State<HomePage> {
   /// which the curve renders as "couldn't read the history" — a smaller, truer
   /// statement than the error screen, and one that leaves the headline standing.
   /// The payload's failure is not caught: there is nothing to show without it.
+  ///
+  /// **A record that cannot be written gets the same treatment**, and it is a
+  /// third state rather than a second: reading and writing the record fail
+  /// independently, and the one this screen would otherwise describe wrongly is
+  /// "reads fine, writes nothing".
   Future<_Loaded> _load() async {
-    final payload = await widget.source.load();
+    final source = widget.source;
+    final payload = await source.load();
+    // After the await, never before: the recording happens inside `load()`, so
+    // reading this first would report the previous payload's outcome for the one
+    // about to be drawn. A source that is not a [RecordingStatus] records
+    // nothing and so has no failure to report — which is not the same claim as
+    // "it recorded successfully", but renders the same and is the only honest
+    // thing to say about a build that keeps no record.
+    final recordingFailed = switch (source) {
+      RecordingStatus(:final lastRecordingFailed) => lastRecordingFailed,
+      _ => false,
+    };
     NetWorthHistory? history;
     try {
       history = await widget.historySource.load();
@@ -62,7 +90,7 @@ class _HomePageState extends State<HomePage> {
       // the payload branch below.
       debugLog(() => 'history unreadable: $error');
     }
-    return (payload, history);
+    return (payload, history, recordingFailed);
   }
 
   @override
@@ -98,10 +126,11 @@ class _HomePageState extends State<HomePage> {
             if (loaded == null) {
               return const Center(child: CircularProgressIndicator());
             }
-            final (payload, history) = loaded;
+            final (payload, history, recordingFailed) = loaded;
             return SnapshotView(
               payload: payload,
               history: history,
+              recordingFailed: recordingFailed,
               deviceNow: (widget.clock ?? DateTime.now)(),
             );
           },

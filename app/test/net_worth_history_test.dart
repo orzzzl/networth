@@ -163,14 +163,14 @@ void main() {
       // the fixture's gap, averaging the two readings of 09-12, or smoothing the
       // series would each put an amount on the curve that appears nowhere in the
       // source — so the assertion is membership, not equality to a guess.
-      final source = jsonDecode(readFixture(historyFixture)) as List<Object?>;
+      final source = jsonDecode(demoSeriesJson) as List<Object?>;
       final stored = {
         for (final reading in source)
           ((reading as Map<String, Object?>)['total'] as Map<String, Object?>)['value_minor']
               as int,
       };
 
-      final history = loadHistoryFixture();
+      final history = demoSeries();
       expect(history.points, isNotEmpty);
       for (final p in history.points) {
         expect(
@@ -182,16 +182,16 @@ void main() {
     });
   });
 
-  group('the shipped series', () {
-    test('parses, and carries both treatments so the demo shows them', () {
-      final history = loadHistoryFixture();
+  group('a series in the shape the store writes', () {
+    test('parses, and carries both treatments so a test can render them', () {
+      final history = demoSeries();
 
       expect(history.hasGap, isTrue, reason: 'no gap to render');
       expect(history.hasIncompletePoint, isTrue, reason: 'no incomplete reading to render');
     });
 
     test('its two readings on one day reduce to the later one', () {
-      final day = loadHistoryFixture()
+      final day = demoSeries()
           .points
           .singleWhere((p) => p.day == DateTime.utc(2026, 9, 12));
 
@@ -212,7 +212,7 @@ void main() {
 
   group('is_complete comes off the wire and is required', () {
     test('a false flag survives the parse onto the point', () {
-      final incomplete = loadHistoryFixture()
+      final incomplete = demoSeries()
           .points
           .singleWhere((p) => p.day == DateTime.utc(2026, 9, 11));
 

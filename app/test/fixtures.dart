@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/l10n/generated/app_localizations.dart';
 import 'package:networth_app/src/data/history_source.dart';
+import 'package:networth_app/src/data/history_store.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
 
@@ -20,12 +21,76 @@ const String knownFixture = 'assets/fixtures/known.json';
 const String mixedFixture = 'assets/fixtures/mixed_known_and_unknown.json';
 const String staticOnlyFixture = 'assets/fixtures/static_only.json';
 
-/// The curve's series. Not a payload, so it is not in [allFixtures].
-const String historyFixture = 'assets/fixtures/history.json';
-
 const List<String> allFixtures = [knownFixture, mixedFixture, staticOnlyFixture];
 
 String readFixture(String assetPath) => File(assetPath).readAsStringSync();
+
+/// A series carrying both treatments §10.5 asks for — a gap, and one incomplete
+/// reading — **in the test, because the app no longer ships one.**
+///
+/// This was `assets/fixtures/history.json` until task `23a` deleted it along
+/// with the demo entry point that rendered it. The rule those two failed is the
+/// one the row is named after: a made-up *past* announces nothing, so none may
+/// be reachable from a build. A test is not a build.
+///
+/// It is the real shape rather than a convenient one — `published_at`, `seq`
+/// and a `total` as the host sends it, which is exactly what `FileHistoryStore`
+/// writes. `history_store_test.dart` is what pins that claim: it records
+/// payloads, reads the file back through the same [parseHistory] used here, and
+/// would go red if the store's format and this one drifted apart.
+const String demoSeriesJson = '''
+[
+  {"published_at": "2026-09-05T04:00:00.000000Z", "seq": "1", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-05T01:35:00.000000Z", "currency": "USD",
+    "value_minor": 4812000, "assets_minor": 4812000, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": true}},
+  {"published_at": "2026-09-06T04:00:00.000000Z", "seq": "2", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-06T01:35:00.000000Z", "currency": "USD",
+    "value_minor": 4835500, "assets_minor": 4835500, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": true}},
+  {"published_at": "2026-09-07T04:00:00.000000Z", "seq": "3", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-07T01:35:00.000000Z", "currency": "USD",
+    "value_minor": 4801200, "assets_minor": 4801200, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": true}},
+  {"published_at": "2026-09-10T04:00:00.000000Z", "seq": "4", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-10T01:35:00.000000Z", "currency": "USD",
+    "value_minor": 4776900, "assets_minor": 4776900, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": true}},
+  {"published_at": "2026-09-11T04:00:00.000000Z", "seq": "5", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-11T01:35:00.000000Z", "currency": "USD",
+    "value_minor": 4780300, "assets_minor": 4780300, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": false}},
+  {"published_at": "2026-09-12T04:00:00.000000Z", "seq": "6", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-12T01:35:00.000000Z", "currency": "USD",
+    "value_minor": 4790000, "assets_minor": 4790000, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": true}},
+  {"published_at": "2026-09-12T19:30:00.000000Z", "seq": "7", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-12T18:05:00.000000Z", "currency": "USD",
+    "value_minor": 4844100, "assets_minor": 4844100, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": true}},
+  {"published_at": "2026-09-13T04:00:00.000000Z", "seq": "8", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-13T01:35:00.000000Z", "currency": "USD",
+    "value_minor": 4861700, "assets_minor": 4861700, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": true}},
+  {"published_at": "2026-09-14T04:00:00.000000Z", "seq": "9", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-14T01:35:00.000000Z", "currency": "USD",
+    "value_minor": 4903400, "assets_minor": 4903400, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": true}},
+  {"published_at": "2026-09-15T04:00:00.000000Z", "seq": "10", "total": {
+    "age_state": "KNOWN", "as_of": "2026-09-15T01:35:00.000000Z", "currency": "USD",
+    "value_minor": 4925000, "assets_minor": 4925000, "liabilities_minor": 0,
+    "static_account_count": 0, "is_complete": true}}
+]
+''';
+
+/// A store on [directory], using the shipped class rather than a stand-in.
+///
+/// A test that wants "the phone has recorded nothing" points one at a fresh
+/// temporary directory: that is the real first-launch state, and it exercises
+/// the code the app ships instead of a twin of it.
+FileHistoryStore storeIn(Directory directory) => FileHistoryStore(
+      open: () async => File('${directory.path}/${FileHistoryStore.fileName}'),
+    );
 
 /// Wrap a widget in the localizations it now needs, spelled once.
 ///
@@ -46,7 +111,7 @@ Widget localized(Widget child, {bool scaffold = true}) => MaterialApp(
 PhonePayload loadFixture(String assetPath) =>
     PhonePayload.fromJsonString(readFixture(assetPath));
 
-NetWorthHistory loadHistoryFixture() => parseHistory(readFixture(historyFixture));
+NetWorthHistory demoSeries() => parseHistory(demoSeriesJson);
 
 // Tests whose subject is the payload half of the screen hand `HomePage` the
 // production `EmptyHistorySource` from `src/data/history_source.dart`. There
@@ -61,7 +126,7 @@ class StringAssetBundle extends CachingAssetBundle {
 
   /// Every shipped fixture, keyed by the asset path the app uses.
   factory StringAssetBundle.ofFixtures() => StringAssetBundle({
-        for (final path in [...allFixtures, historyFixture]) path: readFixture(path),
+        for (final path in allFixtures) path: readFixture(path),
       });
 
   final Map<String, String> contents;

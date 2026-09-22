@@ -67,7 +67,7 @@ void main() {
       // assert a value that was never stored — the deformation §12 rules out,
       // arriving from the renderer. A run wider than one day is that assertion,
       // so this measures every run rather than counting them.
-      final history = loadHistoryFixture();
+      final history = demoSeries();
       final geometry = CurveGeometry.layOut(history, _box);
       final dayWidth = _dayWidth(history);
 
@@ -85,7 +85,7 @@ void main() {
       // Without this the previous test would also pass on a curve that simply
       // packed the points side by side — the break would exist arithmetically
       // and be invisible, which is not what "must look like a gap" asks for.
-      final history = loadHistoryFixture();
+      final history = demoSeries();
       final geometry = CurveGeometry.layOut(history, _box);
 
       final before = history.segments.first.last;
@@ -103,7 +103,7 @@ void main() {
     });
 
     test('there is exactly one run fewer than points in each segment', () {
-      final history = loadHistoryFixture();
+      final history = demoSeries();
       final geometry = CurveGeometry.layOut(history, _box);
 
       expect(
@@ -152,10 +152,15 @@ void main() {
       WidgetTester tester,
       NetWorthHistory? history, {
       String headlineCurrency = 'USD',
+      bool recordingFailed = false,
     }) =>
         tester.pumpWidget(
           localized(
-            HistoryCurve(history: history, headlineCurrency: headlineCurrency),
+            HistoryCurve(
+              history: history,
+              recordingFailed: recordingFailed,
+              headlineCurrency: headlineCurrency,
+            ),
           ),
         );
 
@@ -166,7 +171,7 @@ void main() {
       // label would be exactly that: a number with no age beside it. The whole
       // rendered surface is checked rather than one widget, because the defect
       // would be an amount reaching the screen, not a particular `Text`.
-      await pump(tester, loadHistoryFixture());
+      await pump(tester, demoSeries());
 
       for (final line in renderedText(tester, find.byType(HistoryCurve))) {
         expect(
@@ -194,7 +199,7 @@ void main() {
     });
 
     testWidgets('and names both when both are', (tester) async {
-      await pump(tester, loadHistoryFixture());
+      await pump(tester, demoSeries());
 
       expect(find.text('dashed where a reading was incomplete'), findsOneWidget);
       expect(find.text('breaks are days with no reading'), findsOneWidget);
@@ -210,6 +215,65 @@ void main() {
       await pump(tester, NetWorthHistory.empty);
       expect(find.text('no readings recorded yet'), findsOneWidget);
       expect(find.text("couldn't read the history"), findsNothing);
+    });
+
+    group('a reading that was not recorded says so', () {
+      const notRecorded = "this reading couldn't be saved, so it won't appear in the history";
+
+      testWidgets('over an empty record, instead of "no readings recorded yet"', (
+        tester,
+      ) async {
+        // Reported by review: a store that reads as empty and refuses every
+        // write rendered the ordinary first-launch message. It is literally
+        // true — the record *is* empty — and that is what makes it wrong: the
+        // "yet" promises readings that are in fact being dropped, every launch,
+        // silently.
+        await pump(tester, NetWorthHistory.empty, recordingFailed: true);
+
+        expect(find.text(notRecorded), findsOneWidget);
+        expect(find.text('no readings recorded yet'), findsNothing);
+      });
+
+      testWidgets('and under a curve that renders perfectly well', (tester) async {
+        // The state that makes this a third fact rather than a second: reading
+        // and writing the record fail independently, so a phone can show a
+        // correct thirty-day curve while keeping none of what arrives now.
+        await pump(tester, demoSeries(), recordingFailed: true);
+
+        expect(find.byType(CustomPaint), findsWidgets, reason: 'the curve still draws');
+        expect(find.text(notRecorded), findsOneWidget);
+      });
+
+      testWidgets('and beside the currency refusal, which also hides the curve', (
+        tester,
+      ) async {
+        // The branch a per-branch implementation would have forgotten, which is
+        // why the note is appended once to every series branch rather than
+        // written into each.
+        final history = NetWorthHistory.reduce([
+          point('2026-09-10T04:00:00Z', 100, currency: 'EUR'),
+          point('2026-09-11T04:00:00Z', 200, currency: 'EUR'),
+        ]);
+
+        await pump(tester, history, headlineCurrency: 'USD', recordingFailed: true);
+
+        expect(find.text(notRecorded), findsOneWidget);
+        expect(
+          find.text("history is in a different currency from the total, so it isn't shown"),
+          findsOneWidget,
+        );
+      });
+
+      testWidgets('and stays quiet when the reading was recorded', (tester) async {
+        // The control. Without it every assertion above is also satisfied by a
+        // widget that shows the warning unconditionally.
+        await pump(tester, demoSeries());
+        expect(find.text(notRecorded), findsNothing);
+
+        await pump(tester, NetWorthHistory.empty);
+        expect(find.text(notRecorded), findsNothing);
+        expect(find.text('no readings recorded yet'), findsOneWidget);
+      });
     });
 
     testWidgets('a series in another currency than the headline is not drawn', (
