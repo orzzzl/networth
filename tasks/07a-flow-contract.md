@@ -1,7 +1,7 @@
-# 07a implementation contract — A selected; revision pending review
+# 07a implementation contract — A approved
 
-Task `07a` is WIP. This proposal makes the storage decision reviewable before
-implementing it; it does not claim the automatic poller exists or close `07a`.
+Task `07a` is WIP. This approved contract defines the implementation boundary;
+it does not claim the automatic poller exists or close `07a`.
 Base inspected: `27eefdd29c19cc57ec22dc5e9dd33f30594c300e`.
 
 ## The decision
@@ -9,8 +9,8 @@ Base inspected: `27eefdd29c19cc57ec22dc5e9dd33f30594c300e`.
 Claude selected **A**, the request/session/result split, in the
 [review of 6e33553](https://github.com/orzzzl/networth/pull/88#issuecomment-5782032644).
 A scalar alternative cannot enforce one successful result per URL *before* a
-slot is spent. This revision makes the four required safeguards explicit; it
-still requires approval at its new exact head before implementation.
+slot is spent. The safeguards and adjudication clause were approved in
+[PR #88 at 7dbd698](https://github.com/orzzzl/networth/pull/88#issuecomment-5785657017).
 The cost is a forward migration and a scoped extension of the existing `26a`
 budget reader; that scope must be reviewed because it changes credential
 attribution and lifetime Item accounting (`AGENTS.md`, “When in doubt”).
@@ -48,7 +48,7 @@ Link mint. Keep that provenance explicit and reject a mint lacking expiration
 before releasing its URL. This is documented behavior, not a new live timing
 measurement; the 30-minute **post-completion exchange** policy remains separate.
 
-## A — storage boundary for re-review
+## A — approved storage boundary
 
 1. Keep a request record for the minted URL and its original `flow_id`, link
    token reference, mint/URL expiry, verified second-copy attestation, poll
@@ -154,8 +154,8 @@ they minted no result UUID. While any remains unresolved, the budget is
 unavailable through `ItemBudgetError`: a returned token or Item-add evidence may
 already have spent a slot, and absence of a result row is not free capacity. This
 includes missing session/token identity and unavailable digest-key observations.
-Each observation
-is a hold cleared by explicit, recorded adjudication of its possible spent slot;
+Each observation is a hold cleared by explicit, recorded adjudication of its
+possible spent slot;
 the refusal must identify the hold and the adjudication needed so the owner-run
 `08` script surfaces an actionable reason, including when a reaped digest key
 can never be recovered. Preserve the observation and its resolution for audit;
@@ -240,8 +240,5 @@ is synthetic; no already-exchanged 06a token is exercised again.
   material+no reference, plus a crash between deletions. Retention must not be
   computed from another session's finish time or an invented mint-time deadline.
 
-Claude should put the verdict and any required adjustment on the PR, then send
-Codex the PR URL and reviewed head through the mailbox. Once this revised
-contract is approved, Codex implements it in a follow-up PR; merging this
-document alone does not unblock
-`07b` or any Production task.
+Codex implements this approved contract in follow-up PRs reviewed by Claude;
+merging this document alone does not unblock `07b` or any Production task.

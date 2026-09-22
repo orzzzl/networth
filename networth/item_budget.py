@@ -6,14 +6,18 @@ never returns one.  **F2a**: a slot is spent the moment a Link session
 Together those make this count the only currency section 14 has: reserve is
 literally the number of link mistakes this project can survive.
 
-Two tables hold evidence of a succeeded Link, and the whole job of this module
+Items and successful results hold evidence of a succeeded Link; this module
 is to reconcile them **by Item identity** so one slot is never counted twice:
 
 - an ``item`` row — the exchange finished and the token was stored;
-- a ``link_flow`` row whose state follows a completed Link but which has no
-  ``item`` row (yet, or ever).
+- a ``link_result`` row whose state follows a completed Link but which has no
+  ``item`` row (yet, or ever). ``link_success_evidence`` also includes unmigrated
+  legacy flow evidence; a migrated parent is never counted beside its result.
+- a success observation whose token cannot be identified. Until explicitly
+  adjudicated this is a refusal, even with no result rows. Adjudication retains
+  its evidence and records the additional spent slots beyond known Items/results.
 
-Where several ``link_flow`` rows describe the same Item, the slot is classified
+Where several result rows describe the same Item, the slot is classified
 from **all** of them at once. Reading whichever row was written first made the
 same pair of rows report two different things depending on their insertion
 order, which is not a fact about the Item.
@@ -74,6 +78,9 @@ _FLOW_STATES_AFTER_A_COMPLETED_LINK = (*_STRANDED_STATES, *_IN_FLIGHT_STATES, "E
 #: default, which is the optimistic direction; naming the free states is what
 #: lets a test see that omission instead of confirming what it already believes.
 _SPENDS_NO_SLOT = ("URL_MINTED", "SESSION_STARTED", "SESSION_EXITED", "URL_EXPIRED", "ABANDONED")
+_REQUEST_STATES = ("URL_MINTED", "URL_EXPIRED", "ABANDONED")
+_SESSION_STATES = ("SESSION_STARTED", "SESSION_EXITED")
+_RESULT_STATES = _FLOW_STATES_AFTER_A_COMPLETED_LINK
 
 #: Every state this module has decided about. The schema's CHECK must admit
 #: exactly these — see ``test_the_schema_and_this_module_classify_the_same_states``.
@@ -105,6 +112,9 @@ class SlotEvidence(StrEnum):
     #: stops being knowable, and :func:`read_item_budget` refuses there rather
     #: than labelling a number it cannot stand behind.
     ORPHANED_FLOW = "ORPHANED_FLOW"
+    #: Explicit adjudication of success evidence whose token identity is lost.
+    #: No result or exchange state is fabricated for this spent slot.
+    ADJUDICATED_OBSERVATION = "ADJUDICATED_OBSERVATION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,16 +128,26 @@ class SpentSlot:
     plaid_item_id: str | None
     #: The ``link_flow.flow_id`` this was read from; ``None`` for ITEM evidence.
     flow_id: str | None
-    #: The ``link_flow.state``; ``None`` for ITEM evidence.
+    #: Result/legacy flow state; None for Items or adjudicated observations.
     state: str | None
     #: Set when this Item replaced another one, which cost a *second* slot
     #: (**F2**: the first was not returned). Makes a replacement's cost visible.
     replaces_plaid_item_id: str | None
+    #: Result identity, while flow_id remains the original recovery request key.
+    result_id: str | None = None
+    observation_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.evidence, SlotEvidence):
             raise TypeError("evidence must be a SlotEvidence")
-        for field in ("plaid_item_id", "flow_id", "state", "replaces_plaid_item_id"):
+        for field in (
+            "plaid_item_id",
+            "flow_id",
+            "state",
+            "replaces_plaid_item_id",
+            "result_id",
+            "observation_id",
+        ):
             value = cast(str | None, getattr(self, field))
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"{field} must be non-empty when present")
@@ -184,7 +204,11 @@ class ItemBudget:
     def stranded(self) -> tuple[SpentSlot, ...]:
         """Spent slots with no usable Item and no outcome still pending."""
 
-        return tuple(s for s in self.spent if s.evidence is SlotEvidence.STRANDED_FLOW)
+        return tuple(
+            s
+            for s in self.spent
+            if s.evidence in (SlotEvidence.STRANDED_FLOW, SlotEvidence.ADJUDICATED_OBSERVATION)
+        )
 
     @property
     def in_flight(self) -> tuple[SpentSlot, ...]:
@@ -215,11 +239,16 @@ class ItemBudget:
 
 @dataclass(frozen=True, slots=True)
 class _FlowRow:
-    """One ``link_flow`` row, reduced to the three columns this read uses."""
+    """One result or unmigrated legacy flow from the unified success view."""
 
     flow_id: str
     state: str
     item_id: str | None
+    result_id: str | None = None
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        return self.flow_id, self.result_id or ""
 
 
 def _classify(rows: list[_FlowRow]) -> tuple[SlotEvidence, _FlowRow]:
@@ -227,7 +256,7 @@ def _classify(rows: list[_FlowRow]) -> tuple[SlotEvidence, _FlowRow]:
 
     Returns the evidence and the row that decided it. Both are functions of the
     rows themselves and never of the order they were written in — the tie-break
-    is ``flow_id`` (unique, and the flow's own name) rather than the rowid,
+    is request/result identity rather than the rowid,
     which is only the order somebody inserted them.
 
     The precedence is section 7's own: ``EXCHANGED`` is terminal and promises a
@@ -239,11 +268,11 @@ def _classify(rows: list[_FlowRow]) -> tuple[SlotEvidence, _FlowRow]:
 
     exchanged = [row for row in rows if row.state == "EXCHANGED"]
     if exchanged:
-        return SlotEvidence.ORPHANED_FLOW, min(exchanged, key=lambda row: row.flow_id)
+        return SlotEvidence.ORPHANED_FLOW, min(exchanged, key=lambda row: row.identity)
     stranded = [row for row in rows if row.state in _STRANDED_STATES]
     if stranded:
-        return SlotEvidence.STRANDED_FLOW, min(stranded, key=lambda row: row.flow_id)
-    return SlotEvidence.IN_FLIGHT_FLOW, min(rows, key=lambda row: row.flow_id)
+        return SlotEvidence.STRANDED_FLOW, min(stranded, key=lambda row: row.identity)
+    return SlotEvidence.IN_FLIGHT_FLOW, min(rows, key=lambda row: row.identity)
 
 
 def _text(value: object, *, field: str) -> str:
@@ -300,22 +329,21 @@ def read_item_budget(connection: sqlite3.Connection) -> ItemBudget:
             )
         )
 
-    placeholders = ", ".join("?" * len(_FLOW_STATES_AFTER_A_COMPLETED_LINK))
+    spent.extend(_adjudicated_slots(connection))
     slots_of_flows: list[list[_FlowRow]] = []
     by_item: dict[str, list[_FlowRow]] = {}
     for row in connection.execute(
-        f"""
-        SELECT flow_id, state, item_id
-        FROM link_flow
-        WHERE state IN ({placeholders})
-        ORDER BY id
-        """,  # noqa: S608 — placeholders only, from a module-level tuple
-        _FLOW_STATES_AFTER_A_COMPLETED_LINK,
+        """
+        SELECT flow_id, state, item_id, result_id
+        FROM link_success_evidence
+        ORDER BY flow_id, result_id
+        """,
     ).fetchall():
         flow = _FlowRow(
             flow_id=_text(row[0], field="link_flow.flow_id"),
             state=_text(row[1], field="link_flow.state"),
             item_id=_optional_text(row[2], field="link_flow.item_id"),
+            result_id=_optional_text(row[3], field="link_result.result_id"),
         )
 
         if flow.item_id is None:
@@ -359,7 +387,43 @@ def read_item_budget(connection: sqlite3.Connection) -> ItemBudget:
                 flow_id=deciding.flow_id,
                 state=deciding.state,
                 replaces_plaid_item_id=None,
+                result_id=deciding.result_id,
             )
         )
 
     return ItemBudget(capacity=LIFETIME_ITEM_SLOTS, spent=tuple(spent))
+
+
+def _adjudicated_slots(connection: sqlite3.Connection) -> list[SpentSlot]:
+    """Unresolved observations refuse; explicit resolutions add their audited cost.
+
+    The resolution names additional cost beyond the Items/results in the same
+    budget, so adjudicating already-counted evidence adds zero. Neither a poll
+    nor the passage of time is a resolution, including after digest-key reaping.
+    """
+    slots: list[SpentSlot] = []
+    for row in connection.execute(
+        "SELECT observation_id, flow_id, reason, resolved_at, additional_slots "
+        "FROM link_success_observation ORDER BY observation_id"
+    ):
+        observation_id = _text(row[0], field="observation_id")
+        if row[3] is None:
+            raise ItemBudgetError(
+                f"success observation {observation_id!r} ({row[2]}) requires "
+                "recorded adjudication of its possible spent slot before Link can mint"
+            )
+        additional = row[4]
+        if not isinstance(additional, int) or additional < 0:
+            raise ItemBudgetError("success observation has an invalid adjudicated slot count")
+        for _ in range(additional):
+            slots.append(
+                SpentSlot(
+                    evidence=SlotEvidence.ADJUDICATED_OBSERVATION,
+                    plaid_item_id=None,
+                    flow_id=_text(row[1], field="observation.flow_id"),
+                    state=None,
+                    replaces_plaid_item_id=None,
+                    observation_id=observation_id,
+                )
+            )
+    return slots
