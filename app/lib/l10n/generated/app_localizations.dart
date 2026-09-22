@@ -219,6 +219,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'breaks are days with no reading'**
   String get historyGapNote;
+
+  /// The reading on screen reached the app but not its record — a full disk being the ordinary cause. A third state, independent of historyEmpty and historyUnreadable: reading and writing the record fail separately, so the series can render perfectly while every new reading is dropped. It replaces historyEmpty over an empty store (there, 'no readings recorded yet' is true but its 'yet' promises readings that are in fact being lost) and is appended below a series that does render. Not latched — a later launch that records successfully stops showing it.
+  ///
+  /// In en, this message translates to:
+  /// **'this reading couldn\'t be saved, so it won\'t appear in the history'**
+  String get historyNotRecorded;
 }
 
 class _AppLocalizationsDelegate

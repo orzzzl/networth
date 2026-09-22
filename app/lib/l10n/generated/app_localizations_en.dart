@@ -102,4 +102,8 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get historyGapNote => 'breaks are days with no reading';
+
+  @override
+  String get historyNotRecorded =>
+      'this reading couldn\'t be saved, so it won\'t appear in the history';
 }

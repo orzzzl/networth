@@ -120,7 +120,12 @@ class CurveGeometry {
 /// asks it to make visible: which readings were incomplete, and which days have
 /// no reading at all.
 class HistoryCurve extends StatelessWidget {
-  const HistoryCurve({super.key, required this.history, required this.headlineCurrency});
+  const HistoryCurve({
+    super.key,
+    required this.history,
+    required this.recordingFailed,
+    required this.headlineCurrency,
+  });
 
   /// The series, or **null when it could not be read**.
   ///
@@ -130,6 +135,17 @@ class HistoryCurve extends StatelessWidget {
   /// about the owner's own history, and the same shape as the failure this
   /// project exists to refuse, one layer down.
   final NetWorthHistory? history;
+
+  /// Whether the reading on screen failed to reach the record.
+  ///
+  /// **The third state, independent of the other two.** Reading and writing the
+  /// record fail separately, so a readable series says nothing about whether
+  /// today's reading was kept. Review reproduced the state this exists for: a
+  /// store that loads an empty series and refuses every write rendered "no
+  /// readings recorded yet" — which is the same false claim as the one above,
+  /// made about the future instead of the past, and it repeats silently on every
+  /// launch while each new reading is lost.
+  final bool recordingFailed;
 
   /// The currency of the total shown above this curve.
   ///
@@ -146,45 +162,65 @@ class HistoryCurve extends StatelessWidget {
     final l10n = AppLocalizations.of(context);
     final history = this.history;
     if (history == null) {
+      // Not also the recording note. With the store validating the same bytes on
+      // both paths, a record this could not read is a record it would refuse to
+      // write, so the two would fire together and say one thing twice.
       return _Note(text: l10n.historyUnreadable);
     }
     if (history.isEmpty) {
-      return _Note(text: l10n.historyEmpty);
+      // **Replaced rather than joined**, the only branch where that is right.
+      // "no readings recorded yet" is literally true of an empty store, which
+      // is exactly what makes it the wrong sentence: the *yet* promises the
+      // readings are on their way, when the reason there are none is that every
+      // one of them is being dropped.
+      return _Note(text: recordingFailed ? l10n.historyNotRecorded : l10n.historyEmpty);
     }
     // §10 item 6: one currency, and mixed units fail *loudly*. Drawing the shape
     // anyway would be the loudest thing on the screen and would say nothing —
     // the curve has no figures, so a euro series under a dollar total renders as
     // a perfectly ordinary picture of the wrong quantity.
-    if (history.currency != headlineCurrency) {
-      return _Note(text: l10n.historyCurrencyMismatch);
-    }
+    final List<Widget> series = history.currency != headlineCurrency
+        ? <Widget>[_Note(text: l10n.historyCurrencyMismatch)]
+        : <Widget>[
+            Text(l10n.historyLabel, style: theme.textTheme.labelMedium),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: _height,
+              width: double.infinity,
+              child: CustomPaint(
+                painter: _CurvePainter(
+                  history: history,
+                  line: theme.colorScheme.primary,
+                  fill: theme.colorScheme.surface,
+                ),
+              ),
+            ),
+            // Each note appears only when the thing it describes is on screen.
+            // Explaining a treatment the owner cannot see is noise, and it
+            // invites him to go looking for a gap that is not there.
+            if (history.hasIncompletePoint) ...[
+              const SizedBox(height: 8),
+              _Note(text: l10n.historyIncompleteNote),
+            ],
+            if (history.hasGap) ...[
+              const SizedBox(height: 4),
+              _Note(text: l10n.historyGapNote),
+            ],
+          ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(l10n.historyLabel, style: theme.textTheme.labelMedium),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: _height,
-          width: double.infinity,
-          child: CustomPaint(
-            painter: _CurvePainter(
-              history: history,
-              line: theme.colorScheme.primary,
-              fill: theme.colorScheme.surface,
-            ),
-          ),
-        ),
-        // Each note appears only when the thing it describes is on screen.
-        // Explaining a treatment the owner cannot see is noise, and it invites
-        // him to go looking for a gap that is not there.
-        if (history.hasIncompletePoint) ...[
+        ...series,
+        // **Appended to every branch that draws a series, by construction.**
+        // The two above are the curve and the currency refusal, and the warning
+        // belongs under both: a series on screen says the record can be *read*
+        // and nothing at all about whether today's reading was kept. Written as
+        // one append rather than a line in each branch, so a third branch added
+        // later inherits it instead of being a third place to remember.
+        if (recordingFailed) ...[
           const SizedBox(height: 8),
-          _Note(text: l10n.historyIncompleteNote),
-        ],
-        if (history.hasGap) ...[
-          const SizedBox(height: 4),
-          _Note(text: l10n.historyGapNote),
+          _Note(text: l10n.historyNotRecorded),
         ],
       ],
     );

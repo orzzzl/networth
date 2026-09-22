@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/main.dart';
 import 'package:networth_app/src/data/history_source.dart';
+import 'package:networth_app/src/data/history_store.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/data/snapshot_source.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
@@ -42,6 +44,27 @@ class _NoHistory implements HistorySource {
 
   @override
   Future<NetWorthHistory> load() async => NetWorthHistory.empty;
+}
+
+/// A source in the shape task 22's will be, so the recorder does not refuse it.
+class _RealSource implements SnapshotSource {
+  @override
+  bool get isSynthetic => false;
+
+  @override
+  Future<PhonePayload> load() async =>
+      PhonePayload.fromJsonString(readFixture(knownFixture));
+}
+
+/// Reads fine, writes never — a full disk. The two halves of the record fail
+/// independently, and this is the half nothing on screen used to report.
+class _UnwritableStore implements HistoryStore {
+  @override
+  Future<NetWorthHistory> load() async => NetWorthHistory.empty;
+
+  @override
+  Future<void> record(PhonePayload payload) async =>
+      throw const FileSystemException('no space left on device');
 }
 
 void main() {
@@ -105,6 +128,58 @@ void main() {
         );
       }
     }
+  });
+
+  group('a record that cannot be written reaches the screen', () {
+    const notRecorded = "this reading couldn't be saved, so it won't appear in the history";
+
+    testWidgets('from the wiring a caller actually writes', (tester) async {
+      // **End to end, and that is the point of putting it here.** The widget
+      // tests cover what `HistoryCurve` renders given the flag; this covers
+      // whether the flag arrives, which is the half that was wrong twice. The
+      // first fix passed the recording outcome to `HomePage` as its own
+      // optional argument — so this exact wiring, a recorder handed straight in
+      // as the source, silently reported success. The reviewer's probe was
+      // written this way before the defect existed, which is the evidence that
+      // it is the shape a caller reaches for.
+      final store = _UnwritableStore();
+      await tester.pumpWidget(
+        localized(
+          HomePage(
+            source: RecordingSnapshotSource(inner: _RealSource(), store: store),
+            historySource: store,
+            clock: () => DateTime.utc(2026, 9, 15, 12),
+          ),
+          scaffold: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(Headline), findsOneWidget,
+          reason: 'a store that will not write must not take the total off the screen');
+      expect(find.text(notRecorded), findsOneWidget);
+      expect(find.text('no readings recorded yet'), findsNothing);
+    });
+
+    testWidgets('and a build that records nothing claims no failure', (tester) async {
+      // The control, and a real state: the shipped wiring is a fixture source,
+      // which records nothing on purpose. "Attempted nothing" must render as
+      // silence rather than as a warning about the owner's record.
+      await tester.pumpWidget(
+        localized(
+          HomePage(
+            source: FixtureSnapshotSource(knownFixture, bundle: StringAssetBundle.ofFixtures()),
+            historySource: const _NoHistory(),
+            clock: () => DateTime.utc(2026, 9, 15, 12),
+          ),
+          scaffold: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(notRecorded), findsNothing);
+      expect(find.text('no readings recorded yet'), findsOneWidget);
+    });
   });
 
   testWidgets('the app boots', (tester) async {

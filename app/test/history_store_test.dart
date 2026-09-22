@@ -305,6 +305,92 @@ void main() {
       expect((await launch().load()).points, hasLength(2));
     });
 
+    /// A reading whose shape is right and whose total is not.
+    ///
+    /// **The case the write path used to be blind to**, and it is blind in a
+    /// specific way: `published_at` and `seq` are the two fields the store
+    /// decides *where* a reading goes with, so a reading damaged only in its
+    /// total sorts, buckets and prunes exactly like a healthy one — while
+    /// `load()` refuses the whole file. Syntactically valid JSON is the whole
+    /// point: the malformed-JSON tests above cannot reach this.
+    String damagedTotal(String publishedAt, {String seq = '1'}) => jsonEncode([
+          {
+            'published_at': publishedAt,
+            'seq': seq,
+            'total': <String, Object?>{'value_minor': 'damaged'},
+          },
+        ]);
+
+    test('a valid reading with an invalid total is unreadable, so it is unwritable',
+        () async {
+      // The two halves of the defect, in one test because they are one claim:
+      // `load()` refusing while `record()` accepted is exactly what let the
+      // recorder modify a record the curve could not show.
+      file.writeAsStringSync(damagedTotal('2026-09-10T04:00:00Z'));
+
+      await expectLater(launch().load(), throwsA(isA<PayloadFormatException>()));
+      await expectLater(
+        launch().record(payload(publishedAt: '2026-09-11T04:00:00Z', seq: '2')),
+        throwsA(isA<PayloadFormatException>()),
+      );
+    });
+
+    test('a later reading of the damaged day does not replace it', () async {
+      // Same UTC day, strictly later instant: `_merge`'s replacement branch,
+      // which is the path that overwrites a stored reading in place. Reported
+      // by review — the recorder replaced the damaged record and the evidence
+      // was gone before `HomePage` (which records before it loads) had shown
+      // the owner anything was wrong.
+      final damaged = damagedTotal('2026-09-10T01:00:00Z');
+      file.writeAsStringSync(damaged);
+
+      await expectLater(
+        launch().record(payload(publishedAt: '2026-09-10T22:00:00Z', seq: '2')),
+        throwsA(isA<PayloadFormatException>()),
+      );
+      expect(file.readAsStringSync(), damaged);
+    });
+
+    test('and the retention window does not prune it', () async {
+      // The other way a stored reading disappears: it is the oldest, and the
+      // bound drops from the front. A one-day window makes every new reading
+      // try to evict it.
+      final damaged = damagedTotal('2026-09-10T04:00:00Z');
+      file.writeAsStringSync(damaged);
+
+      await expectLater(
+        launch(retainedDays: 1).record(payload(publishedAt: '2026-09-11T04:00:00Z', seq: '2')),
+        throwsA(isA<PayloadFormatException>()),
+      );
+      expect(file.readAsStringSync(), damaged);
+    });
+
+    test('and a file that mixes currencies is refused the same way', () async {
+      // **The class, not the instance.** A malformed total was one way the read
+      // path could refuse a file the write path accepted; the currency refusal
+      // lives in `NetWorthHistory.reduce` and was a second one sitting beside
+      // it. The fix is that `record` runs the parse `load` runs, so this needs
+      // no separate guard — which is only true if it is measured.
+      final body = jsonDecode(readFixture(knownFixture)) as Map<String, Object?>;
+      final total = Map<String, Object?>.from(body['total']! as Map<String, Object?>);
+      final mixed = jsonEncode([
+        {'published_at': '2026-09-10T04:00:00Z', 'seq': '1', 'total': total},
+        {
+          'published_at': '2026-09-11T04:00:00Z',
+          'seq': '2',
+          'total': {...total, 'currency': 'EUR'},
+        },
+      ]);
+      file.writeAsStringSync(mixed);
+
+      await expectLater(launch().load(), throwsA(isA<PayloadFormatException>()));
+      await expectLater(
+        launch().record(payload(publishedAt: '2026-09-12T04:00:00Z', seq: '3')),
+        throwsA(isA<PayloadFormatException>()),
+      );
+      expect(file.readAsStringSync(), mixed);
+    });
+
     test('a half-written file is not what the next launch reads', () async {
       // The write goes through a temporary name and a rename, so the record is
       // never the thing being truncated. What a crash mid-write can leave is

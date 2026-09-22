@@ -33,6 +33,26 @@ class _BrokenStore implements HistoryStore {
       throw const FileSystemException('no space left on device');
 }
 
+/// A store whose writes can be broken and then repaired, so the *recovery* can
+/// be measured and not only the failure.
+class _SwitchableStore implements HistoryStore {
+  _SwitchableStore(this.inner);
+
+  final HistoryStore inner;
+  bool broken = false;
+
+  @override
+  Future<NetWorthHistory> load() => inner.load();
+
+  @override
+  Future<void> record(PhonePayload payload) async {
+    if (broken) {
+      throw const FileSystemException('no space left on device');
+    }
+    return inner.record(payload);
+  }
+}
+
 void main() {
   late Directory directory;
   late FileHistoryStore store;
@@ -105,16 +125,70 @@ void main() {
     });
   });
 
-  test('a store that will not write does not take the total off the screen', () async {
-    // The number with its age is what this product is for; the curve is what it
-    // adds. Same rule `HomePage` applies to an unreadable series, one layer
-    // down, because the write happens before anything is rendered.
-    final source = RecordingSnapshotSource(
-      inner: _RealSource(payload(publishedAt: '2026-09-15T04:00:00Z')),
-      store: _BrokenStore(),
-    );
+  group('a store that will not write', () {
+    test('does not take the total off the screen', () async {
+      // The number with its age is what this product is for; the curve is what
+      // it adds. Same rule `HomePage` applies to an unreadable series, one layer
+      // down, because the write happens before anything is rendered.
+      final source = RecordingSnapshotSource(
+        inner: _RealSource(payload(publishedAt: '2026-09-15T04:00:00Z')),
+        store: _BrokenStore(),
+      );
 
-    expect((await source.load()).total.amount.minorUnits, 4250000);
+      expect((await source.load()).total.amount.minorUnits, 4250000);
+    });
+
+    test('but does say so, rather than only to the debug log', () async {
+      // **Not propagating is not the same as not reporting**, and this class did
+      // the second one until review reproduced the cost: a phone whose store had
+      // become unwritable lost every reading with nothing on screen ever saying
+      // so. `lastRecordingFailed` is what the screen reads.
+      final source = RecordingSnapshotSource(
+        inner: _RealSource(payload(publishedAt: '2026-09-15T04:00:00Z')),
+        store: _BrokenStore(),
+      );
+
+      expect(source.lastRecordingFailed, isFalse,
+          reason: 'nothing has been attempted yet');
+      await source.load();
+      expect(source.lastRecordingFailed, isTrue);
+    });
+
+    test('and stops saying so once a write succeeds', () async {
+      // Not latched. The failure being over is as much a fact as the failure,
+      // and a warning that never clears is one the owner learns to read past.
+      final failing = _SwitchableStore(store);
+      final source = RecordingSnapshotSource(
+        inner: _RealSource(payload(publishedAt: '2026-09-15T04:00:00Z')),
+        store: failing,
+      );
+
+      failing.broken = true;
+      await source.load();
+      expect(source.lastRecordingFailed, isTrue);
+
+      failing.broken = false;
+      await source.load();
+
+      expect(source.lastRecordingFailed, isFalse);
+      expect((await store.load()).points, hasLength(1),
+          reason: 'the recovered launch recorded its reading for real');
+    });
+
+    test('a synthetic source reports no failure, because it attempted none',
+        () async {
+      // The shipped wiring records nothing on purpose. Reporting that as a
+      // failure would put a warning about the owner's record on every screen of
+      // the build that deliberately keeps no record.
+      final source = RecordingSnapshotSource(
+        inner: FixtureSnapshotSource(knownFixture, bundle: StringAssetBundle.ofFixtures()),
+        store: _BrokenStore(),
+      );
+
+      await source.load();
+
+      expect(source.lastRecordingFailed, isFalse);
+    });
   });
 
   test('the wrapper is transparent about what it wraps', () {

@@ -37,12 +37,13 @@ HistoryStore _historyStore() => FileHistoryStore.appPrivate();
 
 void main() {
   final history = _historyStore();
+  // **One wrapper, and it is where task 22's change lands.** Recording is a
+  // property of accepting a payload rather than of a screen, so it sits on the
+  // source: swapping `_source` for the networked one is the whole of making the
+  // curve fill, and nothing that renders has to know.
+  //
   runApp(
     NetWorthApp(
-      // **One wrapper, and it is where task 22's change lands.** Recording is a
-      // property of accepting a payload rather than of a screen, so it sits on
-      // the source: swapping `_source` for the networked one is the whole of
-      // making the curve fill, and nothing that renders has to know.
       source: RecordingSnapshotSource(inner: _source, store: history),
       historySource: history,
     ),

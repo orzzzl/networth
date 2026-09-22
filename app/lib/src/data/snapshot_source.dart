@@ -50,6 +50,26 @@ class FixtureSnapshotSource implements SnapshotSource {
   }
 }
 
+/// Whether the reading now on screen reached the phone's record.
+///
+/// **A separate fact from whether the record can be read**, which is why it is
+/// its own seam rather than folded into the series the curve receives. History
+/// that loads fine and a store that cannot be written is a real state — a full
+/// disk is the ordinary way to reach it — and in it the app has a correct
+/// headline, a correct curve, and is quietly keeping none of it.
+///
+/// Read it *after* awaiting [SnapshotSource.load]: the recording happens inside
+/// that call, so before it returns this still describes the previous payload.
+abstract interface class RecordingStatus {
+  /// True when the most recent accepted payload could not be recorded.
+  ///
+  /// Not latched. It answers for the payload the screen is about to show, so a
+  /// launch that records successfully after one that failed reports `false` and
+  /// the screen stops warning — the failure being over is as much a fact as the
+  /// failure.
+  bool get lastRecordingFailed;
+}
+
 /// Records every payload it passes through — the accumulating half of task
 /// `23a`.
 ///
@@ -60,18 +80,31 @@ class FixtureSnapshotSource implements SnapshotSource {
 ///
 /// **Two failures it must not turn into a third.** A store that cannot be
 /// written is not a reason to take the total off the screen — the number with
-/// its age is what this product is for — so the write's failure is logged and
-/// swallowed, exactly as `HomePage` treats an unreadable series. And it is
-/// awaited rather than fired and forgotten, so a caller that records then reads
-/// sees its own write.
-class RecordingSnapshotSource implements SnapshotSource {
-  const RecordingSnapshotSource({required this.inner, required this.store});
+/// its age is what this product is for — so the write's failure does not
+/// propagate. And it is awaited rather than fired and forgotten, so a caller
+/// that records then reads sees its own write.
+///
+/// **But not propagating is not the same as not reporting**, and for a while
+/// this class did the second one: the failure went to [debugLog] and nowhere
+/// else, so a phone whose store had become unwritable showed the owner either
+/// an ordinary curve or the words "no readings recorded yet" — the latter a
+/// false claim about his own history, and the same shape as the `historyEmpty`
+/// / `historyUnreadable` split the curve already refuses to collapse, one layer
+/// over. Every launch could then lose its reading with nothing on screen ever
+/// saying so. So the outcome is kept in [lastRecordingFailed] and the screen
+/// says which of the three states it is in.
+class RecordingSnapshotSource implements SnapshotSource, RecordingStatus {
+  RecordingSnapshotSource({required this.inner, required this.store});
 
   final SnapshotSource inner;
   final HistoryStore store;
 
   @override
   bool get isSynthetic => inner.isSynthetic;
+
+  @override
+  bool get lastRecordingFailed => _lastRecordingFailed;
+  bool _lastRecordingFailed = false;
 
   @override
   Future<PhonePayload> load() async {
@@ -82,12 +115,19 @@ class RecordingSnapshotSource implements SnapshotSource {
       // keep working — showing a synthetic *today*, which announces itself in
       // `UNKNOWN` and stale annotations, while recording nothing. Passing the
       // payload through unrecorded is the whole refusal.
+      //
+      // And it is not a *failure* either: nothing was attempted, so reporting
+      // one would put a warning about the owner's record on every screen of the
+      // build that deliberately keeps no record.
+      _lastRecordingFailed = false;
       debugLog(() => 'not recording a payload from a synthetic source');
       return payload;
     }
     try {
       await store.record(payload);
+      _lastRecordingFailed = false;
     } on Object catch (error) {
+      _lastRecordingFailed = true;
       debugLog(() => 'history not recorded: $error');
     }
     return payload;

@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import '../domain/dated_total.dart';
-import '../domain/instant.dart';
 import '../domain/net_worth_history.dart';
 import '../domain/payload_format_exception.dart';
 import '../domain/phone_payload.dart';
@@ -68,14 +67,17 @@ class FileHistoryStore implements HistoryStore {
   /// publishes. A phone that fetches every five minutes and one that fetches
   /// once a day reach the same size.
   ///
-  /// **What 400 days costs.** Just over thirteen months, so a full year of curve
-  /// plus the margin to still show it on a phone that was off for a while; about
-  /// 100 KB of JSON at ~250 bytes a reading. Past that the oldest day is dropped
-  /// and the phone has genuinely forgotten it: the curve can no longer be asked
-  /// for a two-year comparison, and the only complete record is the host's
-  /// SQLite, which keeps every snapshot row (§7). The other half of the cost is
-  /// the one §6.2 measures — a stolen phone leaks the window it holds, and this
-  /// is what bounds it.
+  /// **What 400 costs, and it is 400 *recorded* days rather than a time
+  /// window.** The cap is on entries, and an entry exists only for a day the
+  /// phone actually recorded something — so on a phone fetching daily it is just
+  /// over thirteen months, and on one opened occasionally the same 400 entries
+  /// can reach back years. Size is bounded either way, which is what the bound
+  /// is for: about 100 KB of JSON at ~250 bytes a reading. Past the cap the
+  /// oldest recorded day is dropped and the phone has genuinely forgotten it —
+  /// the only complete record is the host's SQLite, which keeps every snapshot
+  /// row (§7). The other half of the cost is the one §6.2 measures: a stolen
+  /// phone leaks the window it holds, and this is what bounds it. Stated as a
+  /// duration it would be a claim about calendar reach that nothing enforces.
   static const int defaultRetainedDays = 400;
 
   /// Where the file is. Injected so a test uses a temporary directory rather
@@ -101,11 +103,12 @@ class FileHistoryStore implements HistoryStore {
   Future<void> record(PhonePayload payload) async {
     final file = await open();
     // Read first, and **never** fall back to an empty list on a file that exists
-    // but does not parse. A store that recovers by overwriting is a store that
-    // silently deletes the owner's record the one time something goes wrong with
-    // it; the failure travels up instead, where the caller logs it, the curve
-    // says it could not read the history, and the bytes are still on disk for
-    // the next launch.
+    // but does not parse — where "does not parse" is everything [load] refuses,
+    // including a malformed total (see [_readingFromStored]). A store that
+    // recovers by overwriting is a store that silently deletes the owner's
+    // record the one time something goes wrong with it; the failure travels up
+    // instead, where `RecordingSnapshotSource` turns it into a state the screen
+    // shows, and the bytes are still on disk for the next launch.
     final stored = await _read(file);
     final merged = _merge(stored, _readingOf(payload));
     if (merged == null) {
@@ -186,34 +189,58 @@ class FileHistoryStore implements HistoryStore {
     if (decoded is! List<Object?>) {
       throw const PayloadFormatException('stored history is not a JSON array');
     }
-    return <_Reading>[
-      for (final reading in decoded) _readingFromStored(reading),
-    ];
+    final readings = <_Reading>[];
+    final points = <HistoryPoint>[];
+    for (final stored in decoded) {
+      final (reading, point) = _readingFromStored(stored);
+      readings.add(reading);
+      points.add(point);
+    }
+    // The collection-level refusal [load] makes, made here too: `reduce` is what
+    // rejects a series that mixes currencies, and a file it would reject is a
+    // file this method must not report as understood. Its result is discarded —
+    // what is wanted is the throw.
+    NetWorthHistory.reduce(points);
+    return readings;
   }
 
-  /// Reads back only the two fields this class decides with.
+  /// Reads back a stored reading, validating **everything [load] validates**.
   ///
-  /// The `total` is *not* validated here, and that is the division of labour:
-  /// [load] puts every stored reading through `parseHistory`, so a malformed
-  /// total surfaces where it can be rendered as "couldn't read the history".
-  /// Validating it on the write path too would mean one bad reading blocking
-  /// every future recording, which turns a display problem into a permanent one.
-  _Reading _readingFromStored(Object? reading) {
+  /// The two fields this class decides with are `published_at` and `seq`, and
+  /// for a while those were the only ones checked here — `total` was left to
+  /// [load], on the argument that validating it on the write path would let one
+  /// bad reading block every future recording and so turn a display problem into
+  /// a permanent one.
+  ///
+  /// **That trade was not real, and review reproduced the cost.** [load] refuses
+  /// the *whole file* when any reading's total is malformed, so by the time this
+  /// matters the curve already says "couldn't read the history" and keeps saying
+  /// it: readings recorded after the damage are no more renderable than the
+  /// damaged one. The laxness bought no display, and it spent the thing this
+  /// store promises — [_merge] replaces a stored reading that shares the new
+  /// one's UTC day and drops the oldest past [retainedDays], either of which
+  /// destroys the bytes [record]'s "the failure travels up instead" exists to
+  /// keep. `HomePage` records before it loads, so that happened *before* the
+  /// owner was ever shown that something was wrong.
+  ///
+  /// So writability and readability are now one predicate rather than two that
+  /// can disagree, and the way that is kept true is structural: the check is
+  /// `HistoryPoint.fromJson` itself — the same parser, not a second
+  /// reimplementation of it — so a field it learns to refuse is refused here on
+  /// the same commit.
+  (_Reading, HistoryPoint) _readingFromStored(Object? reading) {
     if (reading is! Map<String, Object?>) {
       throw const PayloadFormatException('stored reading is not a JSON object');
-    }
-    final publishedAt = reading['published_at'];
-    if (publishedAt is! String) {
-      throw const PayloadFormatException('stored reading published_at is not a string');
     }
     final seq = reading['seq'];
     if (seq is! String) {
       throw const PayloadFormatException('stored reading seq is not a string');
     }
+    // Validates `published_at` and the total, through `DatedTotal.fromJson`.
+    final point = HistoryPoint.fromJson(reading);
     return (
-      publishedAt: parseWireInstant(publishedAt, field: 'published_at'),
-      seq: seq,
-      json: reading,
+      (publishedAt: point.publishedAt, seq: seq, json: reading),
+      point,
     );
   }
 

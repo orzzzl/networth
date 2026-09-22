@@ -20,6 +20,7 @@ class SnapshotView extends StatelessWidget {
     super.key,
     required this.payload,
     required this.history,
+    required this.recordingFailed,
     required this.deviceNow,
   });
 
@@ -27,6 +28,13 @@ class SnapshotView extends StatelessWidget {
 
   /// The curve's series, or null when it could not be read.
   final NetWorthHistory? history;
+
+  /// Whether the reading now on screen failed to reach the record.
+  ///
+  /// Required rather than defaulted, for the reason the headline currency below
+  /// is: a caller that does not know cannot claim it is `false`, and `false` is
+  /// the reassuring answer.
+  final bool recordingFailed;
 
   /// Injected rather than read from the clock inside `build`, so the copy
   /// dimension is testable at a chosen instant and a widget test never depends
@@ -76,7 +84,11 @@ class SnapshotView extends StatelessWidget {
           // agrees with itself and disagrees with the total above it, and a
           // figure-less curve of the wrong quantity looks exactly like a right
           // one.
-          HistoryCurve(history: history, headlineCurrency: payload.total.amount.currency),
+          HistoryCurve(
+            history: history,
+            recordingFailed: recordingFailed,
+            headlineCurrency: payload.total.amount.currency,
+          ),
         ],
       ),
     );
