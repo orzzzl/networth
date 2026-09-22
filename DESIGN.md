@@ -1203,7 +1203,7 @@ puts that at a successful Link):
 | Hosted-link token lifetime | **exactly 30 minutes** (a plain link token minted in the same run got 4 hours). `url_lifetime_seconds` can widen it |
 | `link_sessions` on a **freshly minted token nobody has opened** | **absent — the key is not in the response at all**, not an empty array. A poller that treats a missing key as an error breaks on the *first* poll. **This is a pre-start observation only** — see the two states below |
 
-**"Before completion" is two states, and only the first one has been measured.**
+**"Before completion" is two states, and both have now been measured.**
 *(Corrected 2026-09-09, from PR #59's review. The row above previously said the
 key is absent "on every poll before the owner finishes logging in" — a claim
 about the whole pre-completion period drawn from a token nobody had opened.)*
@@ -1214,22 +1214,19 @@ polls in the second:
 | State | What it is | Measured? |
 |---|---|---|
 | **Pre-start** | minted; nobody has opened the hosted URL | **Yes.** `link_sessions` **absent** — Production probe 2026-08-31, and again in Sandbox 2026-09-09 at commit `c63668d` (`SESSIONS_ABSENT`, 0 sessions, no Item spent) |
-| **Started, unfinished** | someone opened the URL and has not finished | **No.** Reaching it requires a browser, which no agent and no API can supply. Task `06a` criterion 2b |
+| **Started, unfinished** | someone opened the URL and has not finished | **Yes.** Sandbox 2026-09-16/17: `SESSION_IN_PROGRESS`, 1 session and 0 public tokens; after completion, the same token returned `ITEM_ADDED`, 1 session and 1 public token (task `06a` criterion 2b) |
 
-**A poller must therefore branch on what 2b actually returns, not assume it
-matches 2a.** The plausible shapes — key still absent, present-but-empty, or a
-session with `finished_at: null` — are not interchangeable: the middle one turns
-"not ready" into an empty-array read, and the third carries a session id `07a`
-would otherwise never see. Deploying the 2a shape into the 2b state is exactly
-the failure criterion 2 exists to prevent, so the measurement gates the code
-rather than the code assuming the measurement.
+**The poller must preserve the session while waiting for its token.** The measured
+2b reply contains a session; the measured 2a reply does not. Both are not ready
+for exchange. Null or empty session lists and an unfinished session without a
+result also remain not-ready. Absence of a public token alone does not prove
+absence of a spent slot: an Item-add result with a missing token must remain
+visible as unresolved success evidence.
 
-**What could not be measured here, stated as the gap it is:** a *completed*
-session's `public_token` was not observed, because completing a Production Link
-spends one of the ten lifetime slots — the exact resource this section exists to
-protect, so it is not a thing to spend on a test. The proof belongs in Sandbox
-(task `06a`), and until it passes, F7 is documented-and-partially-measured rather
-than proven end to end.
+**F7 is proven end to end in Sandbox**, as recorded in task `06a`: the completed
+Hosted Link yielded a public token, its exchange succeeded, and its access token
+was healthy. No Production Link was used to establish this result. The owner's
+measurement work is finished; it must not be requested again.
 
 **Rev 16 answered that gap with a manual-paste fallback, and there is no such
 thing to fall back to.** *(Rev 17, from review, and checked on Plaid's
@@ -1259,9 +1256,9 @@ pretending to carry:
   rather than escaped: poll immediately, then on a bounded schedule until either
   a `public_token` arrives or `session_retention_expires_at` passes. A missing
   `link_sessions` key is *not* an error — it is the **measured pre-start
-  response** above, and the started-but-unfinished shape is **not yet measured**,
-  so the poller treats "no `public_token` yet" as the not-ready condition rather
-  than keying on the absent key specifically. A transport failure is retried; a
+  response** above. The started-but-unfinished measurement carries a session
+  with no public token, so the poller treats "no `public_token` yet" as the
+  not-ready condition rather than keying on the absent key specifically. A transport failure is retried; a
   `link_token` Plaid rejects is terminal and reported as such. There is no branch
   that asks the owner for anything, because there is nothing he could supply.
 - **The poll runs on the VPS, not on the laptop.** It is a due-ness job like
@@ -1989,7 +1986,7 @@ link_flow(                                         -- rev 17, from review: F7's 
   exchange_claimed_at,                             -- rev 18: the at-most-one exchange claim. A worker
   exchange_claim_owner,                            --   enters EXCHANGING only by a conditional UPDATE
                                                    --   off SUCCESS_PENDING_EXCHANGE; the loser does
-                                                   --   not call Plaid. public_token is single-use
+                                                   --   not call Plaid. Duplicate refusal is not a lock
   exchange_attempts,                               -- >1 is itself a finding: doctor surfaces it
   last_poll_at, poll_error,                        -- the VPS-side poller's own two clocks
   item_id)                                         -- set on exchange; the row is retained after
@@ -2026,9 +2023,9 @@ budget by `doctor`** (§14), because only they follow a completed Link.
 `ABANDONED` is reachable — rev 17 declared the state without ever saying what
 reaches it — and it is deliberately a *no slot spent* outcome.
 
-**The exchange is claimed, because the token is single-use and two workers can
-reach it.** `link.sh` triggers an immediate poll while the 5-minute timer also
-polls; "trigger" is therefore defined narrowly as **`systemctl start` on the same
+**The exchange is claimed because two workers can reach the same token and
+remote duplicate refusal is not a safety mechanism.** `link.sh` triggers an
+immediate poll while the 5-minute timer also polls; "trigger" is therefore defined narrowly as **`systemctl start` on the same
 unit**, which systemd coalesces — a start against a running unit is a no-op, so
 there is one worker by construction and not by hope. That alone would be an
 argument rather than a mechanism, so the claim is also in the database: a worker
@@ -2040,8 +2037,20 @@ UPDATE link_flow SET state='EXCHANGING', exchange_claimed_at=?, exchange_claim_o
  WHERE flow_id=? AND state='SUCCESS_PENDING_EXCHANGE';   -- 0 rows changed ⇒ you did not win
 ```
 
-and a worker that changes 0 rows **does not call Plaid**. A claim older than the
-call timeout is not silently re-claimable: it resolves to `EXCHANGE_UNCERTAIN`.
+and a worker that changes 0 rows **does not call Plaid**. This claim serialises
+only workers sharing **this database file**. It cannot
+fence `07b` on another host with another database; `07b` requires the old VPS to
+be powered off. The accepted Sandbox duplicate in `06a` means remote single-use
+language cannot supply cross-host at-most-once enforcement.
+
+A stale claim first reconciles `TokenStore` by `flow_id`. Durable material means
+finish the local Item and flow transaction with **no additional exchange**.
+Absent material means `EXCHANGE_UNCERTAIN`, with no automatic retry.
+`UnverifiedMaterial` means neither found nor absent: retain the claim, surface
+the durability failure for adjudication, and neither commit the Item nor call
+Plaid again. A persisted exchange response distinguishes known success with
+missing material from an unknown remote outcome; both stay terminal for
+automatic exchange, as `06a`'s crash-boundary measurement requires.
 
 **And the crash window is admitted rather than argued away.** *(Rev 18, from
 review.)* Rev 17's timeline said the token is `fsync`ed "before anything else",
@@ -2049,16 +2058,20 @@ as though ordering removed the interval between Plaid returning an
 `access_token` and that token being durable here. **It cannot** — no local write
 ordering makes a remote API response and a disk write atomic. Writing first
 *minimises* the window; it does not close it. So: if a worker dies in that
-interval, the flow lands in `EXCHANGE_UNCERTAIN`, and because Plaid documents
-`public_token` as one-time use, **a retry may find the token already consumed
-with the `access_token` lost — a permanently stranded slot**. `doctor` reports
-that state distinctly from `TOKEN_EXPIRED` precisely because the owner's next
-step differs: this is the one case worth taking to Plaid support with an
-`item_id` (which `/link/token/get` still returns for the remaining retention
-window — the diagnostic value of the long clock, §14a.1). Task `06a` must
-measure the two behaviours this rests on: a **duplicate exchange** of the same
-`public_token`, and an **injected failure after the response and before the
-`fsync`**.
+interval, the flow lands in `EXCHANGE_UNCERTAIN`, and must not retry
+automatically. `06a` observed an accepted duplicate in Sandbox with the first credential still healthy; it did **not** establish the
+identity or Item cost of the second result, or Production duplicate behavior.
+Recovery must compare returned Item identities: same Item means count one;
+distinct Items mean preserve both credentials and count both; unestablished
+identity means explicitly unresolved. Never overwrite one credential with
+another based only on a shared public token or flow id.
+
+Support identifiers come from the response that actually exposes them:
+`link_session_id` from `/link/token/get`, and `item_id` plus `request_id` from
+an exchange response. Capture them when first visible, before later work can
+lose them. **`/link/token/get` does not return `item_id`.** A lost exchange
+response can therefore leave a session id without either exchange identifier;
+the support procedure must report that absence rather than promise retrieval.
 
 Modelling choices worth defending:
 
@@ -3502,8 +3515,8 @@ the owner is not waiting on the 5-minute tick, and then **watches**: it reports
 the outcome, but it is not the mechanism, and closing it does not stop anything.
 
 **"Triggers" is `systemctl start` on the same unit, and the wording matters
-because the token is single-use** *(rev 18, from review)*. If the trigger spawned
-its own process, `link.sh`'s poll and the timer's poll could both retrieve the
+because duplicate exchange is not reliably refused** *(updated after `06a`)*.
+If the trigger spawned its own process, `link.sh`'s poll and the timer's poll could both retrieve the
 same `public_token` and race the exchange. It does not: the trigger starts **the
 same systemd unit the timer starts**, and systemd coalesces a start against an
 already-running unit into a no-op. That gives one worker by construction; the
@@ -5146,9 +5159,10 @@ If you are reconstructing the steps by hand:
    (§15) — the standing rule does not relax because it is an emergency.
 5. **If the 30 minutes have passed, the slot is stranded and no copy anywhere
    changes that.** Do not re-link blindly — that spends another one. Record it
-   against the budget (§14). For the next six hours `/link/token/get` will still
-   name the session and its `item_id`, which is worth capturing for the budget
-   record and for any conversation with Plaid.
+   against the budget (§14). Within the session-data retention window,
+   `/link/token/get` may still supply the `link_session_id`. It does not supply `item_id`. Include that
+   session id and any `request_id` or `item_id` already captured from an exchange
+   response when contacting Plaid; explicitly report missing identifiers.
 
 **Before you start step 2, make sure this Mac is awake and on the tailnet.**
 *(Rev 13; sharpened in rev 14, because rev 13 got the boundary wrong.)* Rev 13
