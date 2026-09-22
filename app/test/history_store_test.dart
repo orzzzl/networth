@@ -395,6 +395,39 @@ void main() {
       expect(file.readAsStringSync(), mixed);
     });
 
+    test('and a merge that would drop the mixing reading still refuses', () async {
+      // **Which of the two collection checks is doing the work here.** The test
+      // above is refused by either one: the merged series still mixes, so
+      // checking the output would catch it even if the file had been read
+      // without complaint. This one is refused by the *read* alone — the new
+      // reading lands on the EUR reading's UTC day and replaces it, so what the
+      // output check sees is a clean single-currency series it would happily
+      // write, with the owner's damaged reading deleted and no trace that
+      // anything was wrong.
+      //
+      // Found by mutation: deleting `_read`'s `NetWorthHistory.reduce` left all
+      // 166 tests green, so the claim that it is not made redundant by the
+      // output check was true and unpinned. The same hole exists on the
+      // retention path, which drops from the front for the same reason.
+      final body = jsonDecode(readFixture(knownFixture)) as Map<String, Object?>;
+      final total = Map<String, Object?>.from(body['total']! as Map<String, Object?>);
+      final mixed = jsonEncode([
+        {'published_at': '2026-09-10T04:00:00Z', 'seq': '1', 'total': total},
+        {
+          'published_at': '2026-09-11T04:00:00Z',
+          'seq': '2',
+          'total': {...total, 'currency': 'EUR'},
+        },
+      ]);
+      file.writeAsStringSync(mixed);
+
+      await expectLater(
+        launch().record(payload(publishedAt: '2026-09-11T22:00:00Z', seq: '3')),
+        throwsA(isA<PayloadFormatException>()),
+      );
+      expect(file.readAsStringSync(), mixed);
+    });
+
     /// Two valid readings that form an invalid series.
     ///
     /// **The gap the checks above could not see**, reported by review. Every
