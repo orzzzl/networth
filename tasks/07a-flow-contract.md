@@ -84,10 +84,11 @@ measurement; the 30-minute **post-completion exchange** policy remains separate.
    result facts must not be summed together. `26a` consumes successful result
    evidence and stored Items, deduplicating by returned Item identity. Preserve
    legacy flow accounting during migration; do not count migrated evidence
-   twice. Any ambiguous overlap or unidentifiable successful result makes the
-   existing `ItemBudgetError` path report an unavailable count, not zero or one
-   by assumption. This also carries through the existing payload unavailable
-   branch without changing its wire contract.
+   twice. A result with established token identity but no returned Item identity
+   counts one slot; ambiguous overlap with stored Items or unresolved success
+   observations make `ItemBudgetError` report an unavailable count. This carries
+   through the existing payload unavailable branch without changing its wire
+   contract.
 6. Every result exchange uses a conditional pending-to-exchanging update. It
    serialises workers sharing the database only. Reconcile stale claims before
    classification; never retry an uncertain exchange. Record an
@@ -140,13 +141,21 @@ Its classification remains: `SUCCESS_PENDING_EXCHANGE`/`EXCHANGING` are
 in-flight; `TOKEN_EXPIRED`/`EXCHANGE_UNCERTAIN` are stranded; `EXCHANGED` without
 its matching Item is orphaned. An existing Item takes precedence, and all
 results with the same returned Item identity count once; distinct returned
-identities count separately and keep every credential. Missing identity or
-ambiguous overlap raises `ItemBudgetError` (unavailable count), rather than
-assuming each NULL names a different Item. This explicitly replaces the old
-reader's anonymous-flow-as-one-slot rule for unresolved results. Request/session
-states themselves contribute zero, but that is not permission to ignore missing
-or unresolved child evidence. No automatic Link mint may use an unavailable
-budget as headroom.
+identities count separately and keep every credential. A result with established
+public-token identity but no returned Item identity counts **one slot**, using
+A's digest deduplication: this is normal for pending/in-flight results and may
+remain true permanently for expired or uncertain results. Missing Item identity
+alone does not make their budget unavailable. Ambiguous overlap with stored
+Items raises `ItemBudgetError` (unavailable count), including the existing
+nameless-`EXCHANGED` case; do not guess whether that evidence names a stored Item.
+
+The reader must also inspect **unresolved success observations**, even though
+they minted no result UUID. While any exists, the budget is unavailable through
+`ItemBudgetError`: a returned token or Item-add evidence may already have spent a
+slot, and absence of a result row is not free capacity. This includes missing
+session/token identity and unavailable digest-key observations. Request/session
+states themselves contribute zero, but cannot suppress this evidence. No
+automatic Link mint may use an unavailable budget as headroom.
 
 Backfill each legacy success into one durable legacy-result record, preserving
 its state, identifiers, deadlines and attempts; do not invent provider session
@@ -203,7 +212,10 @@ is synthetic; no already-exchanged 06a token is exercised again.
 - Responses containing sentinel `accounts` and `institution` fields leave none
   of those values in SQLite, logs or exception messages.
 - Returned equal Item identities count once; different identities preserve both
-  credentials and count twice; ambiguous identities produce no numeric budget.
+  credentials and count twice; established token identity without Item identity
+  counts one per deduplicated result; ambiguous overlap and unresolved success
+  observations produce no numeric budget, including observations with zero
+  result rows.
 - Capture Item and request IDs before later failures; reject `item_id` equal to
   credential material before any persistence of that identifier or `put`.
 - Inject before send, after send/before response, before durable response
