@@ -1,4 +1,4 @@
-# 07a implementation contract — pending Claude review
+# 07a implementation contract — A selected; revision pending review
 
 Task `07a` is WIP. This proposal makes the storage decision reviewable before
 implementing it; it does not claim the automatic poller exists or close `07a`.
@@ -6,9 +6,11 @@ Base inspected: `27eefdd29c19cc57ec22dc5e9dd33f30594c300e`.
 
 ## The decision
 
-Approve **A**, the proposed request/session/result split below, or provide a
-concrete **B** that enforces one successful result per URL *before* any slot can
-be spent and still retains all observed session identifiers. Recommendation: A.
+Claude selected **A**, the request/session/result split, in the
+[review of 6e33553](https://github.com/orzzzl/networth/pull/88#issuecomment-5782032644).
+A scalar alternative cannot enforce one successful result per URL *before* a
+slot is spent. This revision makes the four required safeguards explicit; it
+still requires approval at its new exact head before implementation.
 The cost is a forward migration and a scoped extension of the existing `26a`
 budget reader; that scope must be reviewed because it changes credential
 attribution and lifetime Item accounting (`AGENTS.md`, “When in doubt”).
@@ -46,7 +48,7 @@ Link mint. Keep that provenance explicit and reject a mint lacking expiration
 before releasing its URL. This is documented behavior, not a new live timing
 measurement; the 30-minute **post-completion exchange** policy remains separate.
 
-## A — proposed storage boundary
+## A — storage boundary for re-review
 
 1. Keep a request record for the minted URL and its original `flow_id`, link
    token reference, mint/URL expiry, verified second-copy attestation, poll
@@ -55,11 +57,16 @@ measurement; the 30-minute **post-completion exchange** policy remains separate.
 2. Record every observed session under the request, uniquely keyed by the
    provider session id, with observed start/finish timestamps. A session exit
    cannot erase a different active or successful session under the same URL.
+   Persist only the allowlisted identifiers, timestamps, counts and outcome
+   metadata: **never persist or log `accounts` or `institution` from
+   `item_add_results`**, or any raw response body. Bearer material goes only to
+   `TokenStore`; error output remains redacted and no runtime data enters git.
 3. Give each distinct successful Item-add result a locally minted UUID, an
    exchange state, an attempt record, and its own access-token storage name.
    The result UUID is durable **before** claiming its exchange. Use
-   `TokenStore` unchanged with that UUID; a reconcile call addresses the result,
-   not a request that could hold several results.
+   `TokenStore` primitives with that UUID for new material; the migration-aware
+   reconciliation boundary below must also check the original request name.
+   A request holding several results is never treated as one credential.
 4. Identifying the same public token on a later poll must not persist bearer
    material or a plain digest into SQLite. Derive a stable keyed digest using
    the stored link token as the key and a domain-separated public-token input;
@@ -68,6 +75,11 @@ measurement; the 30-minute **post-completion exchange** policy remains separate.
    cross-request or cross-host Item identity. Cover repeated and reordered polls
    and duplicate entries in one reply. Missing session IDs or missing tokens
    remain explicit unresolved observations, never fabricated result identities.
+   If the digest key is missing, reaped, unreadable or unverified, fail closed:
+   the token cannot be identified, so record an unresolved observation, mint no
+   new result UUID and make no exchange call. Do not generate a replacement key
+   or infer novelty from a digest lookup miss when the key is unavailable. A
+   late response after reaping follows this same rule.
 5. The existing ten state names remain the state vocabulary, but request and
    result facts must not be summed together. `26a` consumes successful result
    evidence and stored Items, deduplicating by returned Item identity. Preserve
@@ -91,12 +103,105 @@ This is a proposed extension of §7, not permission to silently add an eleventh
 state or change Item-budget policy. Exact migration/backfill SQL and all code
 remain the subsequent `07a` implementation after the boundary is approved.
 
+## State ownership and the budget projection
+
+The ten names are partitioned between entities; they are no longer ten possible
+states of each request. The migration and each table's CHECK must enforce these
+sets, and tests compare the budget classification with **each** schema set in
+both directions. A new or unclassified state must fail that test, never default
+to zero cost.
+
+| Entity | Allowed states | Budget meaning |
+|---|---|---|
+| Request (`flow_id`) | `URL_MINTED`, `URL_EXPIRED`, `ABANDONED` | No independent slot evidence. Never suppress child success evidence. |
+| Session (provider session id under request) | `SESSION_STARTED`, `SESSION_EXITED` | No independent slot evidence. `SESSION_EXITED` requires an ended session with no successful Item-add result. |
+| Result (durable local UUID) | `SUCCESS_PENDING_EXCHANGE`, `EXCHANGING`, `EXCHANGED`, `TOKEN_EXPIRED`, `EXCHANGE_UNCERTAIN` | Every row evidences successful Link; reconcile by Item identity before counting. |
+
+`URL_MINTED` now means the request was minted, not that no session opened it.
+`SESSION_STARTED` means the session exists; successful completion is represented
+by its `finished_at` and child results, not by copying a result state onto it.
+Request polling closure/reaping is separate metadata (`polling_closed_at`,
+`material_reaped_at`), not an eleventh state or a success summary. A successful
+request can finish polling while retaining `URL_MINTED`; its children carry the
+outcomes. `URL_EXPIRED`/`ABANDONED` remain proven no-success request outcomes,
+never labels applied just because a timer elapsed or a sibling session exited.
+Unresolved observations prevent no-success classification and automatic cleanup.
+
+Replace `stranded_link_flow` in the same forward migration: one row per stranded
+**result**, joining its request and session. Project `result_id` as well as the
+original `flow_id`, `link_session_id`, returned `item_id`, result state and that
+result's deadlines. Do not leave the existing scalar view in place or group
+several results back into one row. Update its consumers together; result UUID
+is the evidence identity, original flow id is the request/recovery lookup key.
+
+`26a` must read Items plus all successful-result rows (not just the stranded
+view), never request/session row counts.
+Its classification remains: `SUCCESS_PENDING_EXCHANGE`/`EXCHANGING` are
+in-flight; `TOKEN_EXPIRED`/`EXCHANGE_UNCERTAIN` are stranded; `EXCHANGED` without
+its matching Item is orphaned. An existing Item takes precedence, and all
+results with the same returned Item identity count once; distinct returned
+identities count separately and keep every credential. Missing identity or
+ambiguous overlap raises `ItemBudgetError` (unavailable count), rather than
+assuming each NULL names a different Item. This explicitly replaces the old
+reader's anonymous-flow-as-one-slot rule for unresolved results. Request/session
+states themselves contribute zero, but that is not permission to ignore missing
+or unresolved child evidence. No automatic Link mint may use an unavailable
+budget as headroom.
+
+Backfill each legacy success into one durable legacy-result record, preserving
+its state, identifiers, deadlines and attempts; do not invent provider session
+IDs when absent. Keep an explicit unique old-row-to-result mapping. Switch the
+reader and view atomically with that backfill: migrated parents are never also
+counted as legacy success evidence. Preserve ambiguous legacy evidence as a hold
+and an unavailable budget, not a guessed mapping. Tests must cover every state,
+multiple results per request, equal/distinct/missing Item identities, and equal
+budgets before/after migration for unambiguous legacy records.
+
+## Legacy credentials: reconcile both deterministic names
+
+Existing Sandbox material is not presumed absent. No live inventory or owner
+rerun is required to make this safe: support the old name during migration.
+Before classifying a migrated claim or allowing a new result exchange under a
+legacy request, a migration-aware reconciler calls the existing `TokenStore`
+reconciliation path for **both** the result UUID (`access-token.<result_uuid>`)
+and original flow id (`access-token.<flow_id>`). Each call retains the existing
+final/pending-file lookup and durability barrier; do not replace it with an
+existence check. Consult recorded legacy secret references as well, if present.
+A result-name `None` alone says nothing about legacy material.
+
+- Found legacy material is bound only to its mapped legacy result using durable
+  request/result metadata and returned Item identity. Complete the local Item
+  transaction with no exchange, retaining the original secret reference; there
+  is no requirement to rename or delete the credential to upgrade the schema.
+- If legacy material cannot be attributed to exactly one result, hold automatic
+  exchanges for that request. Do not attach it to every child or decide that an
+  unmatched token is new. Keep all material for adjudication.
+- If both names exist, preserve both; only established equal Item identity may
+  deduplicate budget evidence. Conflicting or unestablished attribution is a
+  hold, not permission to overwrite one credential with the other.
+- `UnverifiedMaterial` or any unreadable/corrupt candidate is neither found nor
+  absent. Persist the hold, make no exchange and do not finalize an Item against
+  unverified bytes. A subsequent pass cannot silently downgrade that hold.
+- Only absence at **all applicable names** establishes local absence. Even then,
+  a previous send/stale exchange claim stays `EXCHANGE_UNCERTAIN`, with no retry;
+  absence is not proof that Plaid never consumed the token.
+
+Retain this compatibility lookup for legacy requests until an explicit audited
+migration retires it. Cover final and pending legacy names, both names, absent
+names, missing references, unverified material, attribution ambiguity and a
+crash between credential durability and database backfill. All rehearsal data
+is synthetic; no already-exchanged 06a token is exercised again.
+
 ## Review conditions and implementation tests
 
 - Multiple sessions, including an earlier exit and a later success, retain all
   support identifiers and never exchange an earlier or unrelated result.
 - Multiple returned tokens get independent durable result identities. Repeated
-  polls do not make another claim; missing-token results do not disappear.
+  polls do not make another claim; missing-token results do not disappear. A
+  reaped/unavailable digest key yields an unresolved observation and zero new
+  result UUIDs/exchanges, including a late poll response after cleanup.
+- Responses containing sentinel `accounts` and `institution` fields leave none
+  of those values in SQLite, logs or exception messages.
 - Returned equal Item identities count once; different identities preserve both
   credentials and count twice; ambiguous identities produce no numeric budget.
 - Capture Item and request IDs before later failures; reject `item_id` equal to
@@ -115,6 +220,7 @@ remain the subsequent `07a` implementation after the boundary is approved.
   computed from another session's finish time or an invented mint-time deadline.
 
 Claude should put the verdict and any required adjustment on the PR, then send
-Codex the PR URL and reviewed head through the mailbox. If A is approved, Codex
-implements it in a follow-up PR; merging this document alone does not unblock
+Codex the PR URL and reviewed head through the mailbox. Once this revised
+contract is approved, Codex implements it in a follow-up PR; merging this
+document alone does not unblock
 `07b` or any Production task.
