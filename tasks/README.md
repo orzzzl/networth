@@ -113,7 +113,7 @@ that row. He caught it, not us.)
 | 21 | Flutter app skeleton | 19 | **claude** | codex | **DONE** (#77, 2026-09-16) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | **READY** |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **DONE** (#83, 2026-09-22) |
-| 23a | Record the history the curve draws: app-private, durable, across pairing rotation | 20, 23 | **claude** | codex | **READY** |
+| 23a | Record the history the curve draws: app-private, durable, across pairing rotation | 20, 23 | **claude** | codex | **DONE** (#89, 2026-09-22) |
 | 24 | Release signing + APK delivery | 20, 21, 22, 23a | **claude** | codex | BLOCKED |
 | 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 19, 22 | **claude** | codex | BLOCKED |
 
@@ -2494,19 +2494,60 @@ whose curve is permanently empty is a feature that shipped without shipping.
 
 **Acceptance:**
 
-- [ ] An accepted payload is **recorded** — one reading per fetched payload, as the host
-      stored it. Nothing is derived from another reading.
-- [ ] The store is **app-private and durable across launches**, and **outside the key
+- [x] An accepted payload is **recorded** — **one latest reading per UTC day**, as the host
+      stored it. Nothing is derived from another reading. *(Written as "one reading per
+      fetched payload" until closure. That is what `record` is called with, but it is not
+      what the store keeps: the day's later reading replaces its earlier one, which is
+      `NetWorthHistory.reduce`'s rule — §7's "latest per day for the curve" — applied where
+      the bytes are rather than only where they are drawn. A phone fetching every five
+      minutes would otherwise have been promised 288 stored readings a day.)*
+- [x] The store is **app-private and durable across launches**, and **outside the key
       vault**: history is not a capability. The pairing key is the revocable thing; the
       owner's own curve is not, so re-pairing or recovering secure storage must not erase
       it. Points are identified by `published_at`/`seq`, never by `pairing_id`.
-- [ ] **A later payload never mutates an earlier point.** The phone-side analogue of `13`'s
+- [x] **A later payload never mutates an earlier point.** The phone-side analogue of `13`'s
       criterion, and the same test: revaluing in 2026 leaves the 2024 points unchanged.
-- [ ] `main.dart` renders the recorded series, and **`assets/fixtures/history.json` is
+- [x] `main.dart` renders the recorded series, and **`assets/fixtures/history.json` is
       removed from the app's assets**. The demo entry point goes with it.
-- [ ] The store is **bounded** — §6.2 calls it a history *window*, and an unbounded local
-      cache of the owner's net worth is a growing blast radius on a stolen phone. Name the
-      bound and say what it costs.
+- [x] The store is **bounded**, at **400 recorded UTC days** — §6.2 calls it a history
+      *window*, and an unbounded local cache of the owner's net worth is a growing blast
+      radius on a stolen phone. **The cap is on entries, not on calendar reach**, which is
+      why it is not written as "thirteen months": an entry exists only for a day the phone
+      actually recorded something, so on a phone fetching daily 400 entries is just over
+      thirteen months, while on one opened occasionally the same 400 reach back years.
+      What it costs: past the cap the oldest recorded day is dropped and the phone has
+      genuinely forgotten it — the only complete record is the host's SQLite, which keeps
+      every snapshot row (§7). About 100 KB of JSON, and that window is what a stolen
+      phone leaks.
+
+**Landed as #89, squashed `3f4a2b5` (2026-09-22)** — `FileHistoryStore` (a JSON array in
+the app-private documents directory, written temp+rename), `RecordingSnapshotSource`, and
+the deletion of `assets/fixtures/history.json`, `lib/main_demo.dart` and
+`FixtureHistorySource`. `path_provider` is the one package taken under the OK below.
+
+**What this row does *not* fill, which matters for how `24` reads its dependency.** The app
+still has no transport — `22` brings it — so there is nothing real to record yet, and the
+recorder **refuses a synthetic source** (`SnapshotSource.isSynthetic`, declared with no
+default so a source added later does not compile until it says which kind it is). A fixture
+written into the durable record would sit at its own `published_at` forever, indistinguishable
+from a real point once real ones arrive: the invented past this row is named after, arriving
+through the door marked *record* instead of the one marked *bundle*. So **this build records
+nothing and its curve is still the honest empty state**, and it fills the first time `22`
+swaps the source — one constructor at the top of the app. `24` depends on `22` and `23a`
+**both**, which is what makes the delivered APK's curve neither empty nor invented; reading
+`23a` alone as "the curve now has data" is the misreading to avoid.
+
+**The format on disk *is* the format the curve parses**, deliberately: `load()` is
+`parseHistory` over the file's bytes, and `record` validates by running that same parser
+over the exact string it is about to write. So a reading the store wrote and a reading it
+could not read back cannot be different things, and a collection rule the read path learns
+later is enforced on the write path on the same commit. Two rounds of review went into
+that seam — first a per-field check that let a mixed-currency series through, then a valid
+payload whose *merge* produced a file `load()` refuses — and both cost the same thing: one
+accepted reading destroying the record it was joining. The store never repairs by
+overwriting; a refusal keeps the old bytes and surfaces as a failed recording on screen
+(`RecordingStatus`), because a store that recovers by deleting is the failure this project
+exists to refuse, one layer in.
 
 **Dependency approval — the one thing this row grants that `23` could not.** Durable
 storage needs a package, and `AGENTS.md` admits no dependency without an OK written in the
@@ -2535,6 +2576,14 @@ delivered app has a real transport. **And on `23a`**, so the delivered app's cur
 owner's own record rather than an empty panel or an invented one; `23` deliberately ships
 the empty state rather than a fixture, and this dependency is what stops that honest
 placeholder from becoming the shipped feature by default.
+
+**`23a` being DONE does not on its own discharge that** — read it as the conjunction it is.
+`23a` (#89) built the record and the seam that fills it, and deliberately records nothing
+from a synthetic source, so on `main` today the curve is still empty by design. The
+payloads come from `22`. So the check before delivering is not "is `23a` done" but **run
+the build and look at the curve**: an APK whose history panel is empty because `22` has not
+landed is exactly the shipped-without-shipping outcome this dependency was written to
+prevent, and it would pass a board-status reading of this row.
 
 **Must not:** deliver a debug-signed build, or one whose history is synthetic.
 
