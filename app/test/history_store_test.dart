@@ -20,11 +20,15 @@ PhonePayload payload({
   int valueMinor = 4250000,
   bool isComplete = true,
   String pairingId = 'fixture-pairing',
+  String? currency,
 }) {
   final body = jsonDecode(readFixture(knownFixture)) as Map<String, Object?>;
   final total = Map<String, Object?>.from(body['total']! as Map<String, Object?>);
   total['value_minor'] = valueMinor;
   total['is_complete'] = isComplete;
+  if (currency != null) {
+    total['currency'] = currency;
+  }
   return PhonePayload.fromJson(<String, Object?>{
     ...body,
     'published_at': publishedAt,
@@ -389,6 +393,67 @@ void main() {
         throwsA(isA<PayloadFormatException>()),
       );
       expect(file.readAsStringSync(), mixed);
+    });
+
+    /// Two valid readings that form an invalid series.
+    ///
+    /// **The gap the checks above could not see**, reported by review. Every
+    /// test in this group damages a *stored* reading, so the refusal comes from
+    /// reading the file. Here nothing is damaged: the stored series is healthy,
+    /// the new payload came through `PhonePayload.fromJson`, and what `load()`
+    /// refuses is the collection the merge produces. Validating the input can
+    /// never see that — the defect is in the output.
+    ///
+    /// It cost the record, not the reading: the append returned success, and
+    /// from that moment the whole series was unreadable and every later
+    /// recording failed too.
+    group('a series it could not read back is a series it does not write', () {
+      test('another currency is refused, and the record it would have joined stands',
+          () async {
+        await launch().record(payload(publishedAt: '2026-09-14T04:00:00Z', seq: '1'));
+        final before = file.readAsStringSync();
+
+        await expectLater(
+          launch().record(
+            payload(publishedAt: '2026-09-15T04:00:00Z', seq: '2', currency: 'EUR'),
+          ),
+          throwsA(isA<PayloadFormatException>()),
+        );
+
+        expect(file.readAsStringSync(), before, reason: 'the old bytes are the record');
+        expect((await launch().load()).points, hasLength(1), reason: 'still readable');
+        // **The half that makes this different from the damaged-file tests.**
+        // There the store is right to stay refused: the bytes on disk are bad.
+        // Here they are fine, so a refusal that persisted would have turned one
+        // rejected reading into a store that never accepts another — the
+        // permanent version of the defect being fixed.
+        await launch().record(payload(publishedAt: '2026-09-16T04:00:00Z', seq: '3'));
+        expect((await launch().load()).points, hasLength(2), reason: 'still recordable');
+      });
+
+      test('but a currency the window has aged out no longer mixes with anything',
+          () async {
+        // What the check actually says, stated where it can be checked: a
+        // collection is refused while it *mixes*, not because a reading
+        // disagrees with its predecessor. Once the bound has dropped the last
+        // reading of the old currency, what remains is a readable series and it
+        // is written.
+        //
+        // This is also the test that tells the fix apart from the shorter one
+        // that would pass the case above — comparing the new reading against
+        // the stored currency — which would refuse here forever, and would
+        // leave every *other* collection rule `load()` learns uncovered.
+        final store = launch(retainedDays: 1);
+        await store.record(payload(publishedAt: '2026-09-14T04:00:00Z', seq: '1'));
+
+        await store.record(
+          payload(publishedAt: '2026-09-15T04:00:00Z', seq: '2', currency: 'EUR'),
+        );
+
+        final history = await launch(retainedDays: 1).load();
+        expect(history.points, hasLength(1));
+        expect(history.currency, 'EUR');
+      });
     });
 
     test('a half-written file is not what the next launch reads', () async {

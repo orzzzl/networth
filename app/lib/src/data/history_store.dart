@@ -114,7 +114,45 @@ class FileHistoryStore implements HistoryStore {
     if (merged == null) {
       return;
     }
-    await _write(file, merged);
+    await _write(file, _readableBytes(merged));
+  }
+
+  /// The bytes [_write] is about to commit, refused unless [load] can read them.
+  ///
+  /// **[_read] checks the file this store was handed; this checks the file it is
+  /// about to create**, and for a while only the first check existed. Both are
+  /// needed because neither implies the other: every reading can be individually
+  /// valid — the new one came through `PhonePayload.fromJson` and the stored ones
+  /// through [_readingFromStored] — while the *collection* they form is one
+  /// [load] refuses. Review reproduced exactly that: recording a second
+  /// currency's payload onto a healthy file returned success, and from that
+  /// moment [load] refused the whole series and every later [record] failed in
+  /// [_read]. One accepted reading cost the record it was supposed to join.
+  ///
+  /// So the check is `parseHistory` over the exact string that will be written,
+  /// and `parseHistory` over bytes *is* [load] — not [NetWorthHistory.reduce]
+  /// over the points [_read] already parsed, which would be a second derivation
+  /// of the read path standing next to it, free to drift. **And the string that
+  /// was checked is the string that is returned**, so "what was validated" and
+  /// "what was written" cannot come apart.
+  ///
+  /// This bounds the damage to the one thing that is wrong. Nothing on disk is
+  /// touched before it throws, so the previous readings keep their bytes and
+  /// `RecordingSnapshotSource` reports a failed recording — the same outcome the
+  /// store already gives a full disk, which is the honest one: the record stands
+  /// and the screen says the newest reading is not in it.
+  ///
+  /// What it does **not** promise is that the series can never change currency.
+  /// A collection is refused while it *mixes*; once [retainedDays] has dropped
+  /// the last reading of the old one, a new currency is simply a readable series
+  /// and is written. That is the check being about the collection rather than
+  /// about the new reading's agreement with its predecessor.
+  String _readableBytes(List<_Reading> readings) {
+    final bytes =
+        jsonEncode(<Map<String, Object?>>[for (final reading in readings) reading.json]);
+    // Discarded, like [_read]'s: what is wanted is the throw.
+    parseHistory(bytes);
+    return bytes;
   }
 
   /// One accepted payload, as a reading.
@@ -200,6 +238,13 @@ class FileHistoryStore implements HistoryStore {
     // rejects a series that mixes currencies, and a file it would reject is a
     // file this method must not report as understood. Its result is discarded —
     // what is wanted is the throw.
+    //
+    // **Not made redundant by [_readableBytes], which checks the other file.**
+    // Without this one, an already-damaged file would be read, and a merge that
+    // happened to drop the damaged reading — its UTC day replaced, or aged past
+    // [retainedDays] — would produce a readable collection and write it. The
+    // store would then have silently repaired the owner's record by deleting
+    // part of it, which is the one thing [record] refuses to do.
     NetWorthHistory.reduce(points);
     return readings;
   }
@@ -251,13 +296,13 @@ class FileHistoryStore implements HistoryStore {
   /// the same filesystem is atomic, so a reader sees the old file or the new one
   /// — and `flush: true` is what makes that a real guarantee rather than a
   /// statement about a buffer the kernel had not written yet.
-  Future<void> _write(File file, List<_Reading> readings) async {
+  /// Takes the bytes rather than the readings, so that the string [_write]
+  /// commits is the one [_readableBytes] checked and not a second encoding of
+  /// the same list.
+  Future<void> _write(File file, String bytes) async {
     await file.parent.create(recursive: true);
     final temporary = File('${file.path}.writing');
-    await temporary.writeAsString(
-      jsonEncode(<Map<String, Object?>>[for (final reading in readings) reading.json]),
-      flush: true,
-    );
+    await temporary.writeAsString(bytes, flush: true);
     await temporary.rename(file.path);
   }
 }
