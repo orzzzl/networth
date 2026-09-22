@@ -112,8 +112,8 @@ that row. He caught it, not us.)
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | **DONE** (#82, 2026-09-16) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | **DONE** (#77, 2026-09-16) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | **READY** |
-| 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **WIP** (claude, 2026-09-16) |
-| 23a | Record the history the curve draws: app-private, durable, across pairing rotation | 20, 23 | **claude** | codex | BLOCKED (23) |
+| 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **DONE** (#83, 2026-09-22) |
+| 23a | Record the history the curve draws: app-private, durable, across pairing rotation | 20, 23 | **claude** | codex | **READY** |
 | 24 | Release signing + APK delivery | 20, 21, 22, 23a | **claude** | codex | BLOCKED |
 | 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 19, 22 | **claude** | codex | BLOCKED |
 
