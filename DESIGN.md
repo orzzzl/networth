@@ -19,11 +19,13 @@ back against the argument.**
 - **The 30-minute deadline stands, and stands for the reason the design
   demanded.** §14a.1 said only a *passing* late exchange could widen it. A
   session left **>5h** was still retrievable and its exchange was **refused**, so
-  nothing widens. The measurement also sharpens *why*: the two clocks are not
-  merely different lengths, they are **independent** — retrieval kept succeeding
-  after the exchange had stopped being possible, so a successful
-  `/link/token/get` is not evidence that the token it returns is still good.
-  Anything owner-facing must quote the **exchange** deadline.
+  nothing widens. **The cause of that refusal is unmeasured** — the error code
+  was not available in the reviewed rendering — so this establishes no expiry
+  boundary and no mechanism, and it must not be cited as one. What was observed
+  is narrower and still useful: at one instant, **retrieval succeeded while the
+  exchange was refused**. So, as an operational rule rather than a claim about
+  clocks: **do not infer exchangeability from retrievability**, and anything
+  owner-facing must quote the **exchange** deadline.
 - **The one-time exchange is not one-time in Sandbox, and this is the finding
   that cuts against us.** Exchanging the same `public_token` twice was
   **ACCEPTED**, not refused, and the first `access_token` stayed **HEALTHY**.
@@ -32,10 +34,13 @@ back against the argument.**
   at-most-one exchange claim and `EXCHANGE_UNCERTAIN` stay exactly as they
   are**: they were built to be correct whether or not the remote refuses, which
   is the property that just paid off. What must not happen is the inverse
-  inference — "the duplicate is harmless, so the claim is unnecessary". Two
-  reasons it does not follow: this is **Sandbox**, and **whether the accepted
+  inference — "the duplicate did no harm, so the claim is unnecessary". Three
+  reasons it does not follow: this is **Sandbox**; **whether the accepted
   duplicate consumed a second Item is not measured**, which is the half that
-  costs a lifetime slot.
+  costs a lifetime slot; and **the two exchanges are not known to refer to the
+  same Item**, so any recovery that reconciles them must branch on the identity
+  the responses return rather than assuming one. All that was observed is that
+  the first credential remained healthy.
 - **Host separation across the two API calls works (§19 step 2a, `07b`).** A
   token minted on the VPS was retrieved and exchanged from
   `zelengs-macbook-air-2`, with the VPS taking no part in either call. The
@@ -1160,15 +1165,18 @@ caveats:
 
   *(Rev 24: `06a` ran this on 2026-09-16/17 and **the number does not move**. The
   session sat **>5h** and the exchange was **refused** (HTTP 400) — a failing
-  measurement, which by the rule above changes nothing. Two honest limits on what
-  was learned: the wait was >5h rather than 30m+ε, so this bounds the expiry
-  below 5h without locating it at 30 minutes; and the error code was not
-  available in the reviewed redacted rendering, so no retry policy may key on a
-  specific expiry code. The genuinely new fact is that **the two clocks are
-  independent, not merely different** — retrieval still succeeded at >5h, long
-  after the exchange had stopped working. A worker that infers "the session is
-  still there, so the token is still good" is wrong in exactly the window this
-  paragraph exists to protect.)*
+  measurement, which by the rule above changes nothing. **The limits are larger
+  than the result.** The error code was not available in the reviewed redacted
+  rendering, so **the cause of the refusal is unmeasured**: this does not show
+  the token expired, and it locates no boundary. It does not even bound one in
+  the useful direction — a failure at >5h would, if expiry were the cause, bound
+  expiry by **the attempt's own time**, which is later than 5h. A late failure is
+  weaker evidence than an early one. No retry policy may key on a specific expiry
+  code. What was observed, stated plainly: **at one instant, retrieval succeeded
+  and the exchange was refused.** The rule that follows needs no mechanism — a
+  worker that infers "the session is still there, so the token is still good" is
+  reasoning from retrievability to exchangeability, and this run gives it no
+  support.)*
 
   *(Rev 17 wrote "six hours is the whole recovery window" and built an owner
   procedure on it. That procedure could hand the owner an expired token five

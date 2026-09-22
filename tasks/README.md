@@ -1255,14 +1255,23 @@ Issues **#3, #4, #5**, **#13**, **#15**.
       widened.**
 
       **What this does NOT establish, stated because the convenient reading is available
-      and wrong.** The wait was >5h rather than 30m+ε, so this bounds the expiry
-      somewhere below 5h and **does not locate it at 30 minutes**; and the error code was
-      **not available in the redacted rendering that was reviewed**, so the *particular*
-      expiry error is still unmeasured. A retry policy keyed on a specific expiry code
-      cannot cite this measurement. What it does establish is the shape that matters for
-      `07a`: **retrieval and exchange expire independently** — the session was still
-      retrievable long after it stopped being exchangeable, so a successful
-      `/link/token/get` is no evidence that the `public_token` it returns is still good.
+      and wrong — and because the first version of this paragraph made exactly that
+      reading.** The error code was **not available in the redacted rendering that was
+      reviewed**, so **the cause of the refusal is unmeasured**: this run does not show
+      that the token expired, only that *this* exchange attempt was refused. Nothing here
+      locates an expiry boundary. It does not even bound one — a failed attempt at >5h
+      would, *if* the cause were expiry, bound expiry by **the attempt's own time**, which
+      is later than 5h, not "below 5h". (The first draft of this paragraph wrote "bounds
+      the expiry somewhere below 5h", which inverts the direction of the bound; a *late*
+      failure is weaker evidence than an early one, not stronger.) A retry policy keyed on
+      a specific expiry code cannot cite this measurement either.
+
+      **The observation, stated as an observation.** At one instant more than 5 hours
+      after completion: **retrieval succeeded and the exchange attempt was refused.**
+      That is the whole of it. The operational rule it supports needs no mechanism and is
+      worth carrying into `07a`: **do not infer exchangeability from retrievability** — a
+      successful `/link/token/get` is no evidence that the `public_token` it returns is
+      still good, whatever the refusal's cause turns out to be.
 - [x] **(ii) Duplicate exchange (issue #4).** Exchange one `public_token` twice. Record the
       error code and **whether the original `access_token` is still usable**. `07a`'s
       `EXCHANGE_UNCERTAIN` handling is written against this behaviour, so a guess here
@@ -1276,22 +1285,32 @@ Issues **#3, #4, #5**, **#13**, **#15**.
 
       **This is the measurement the row most needed, and it inverts the assumption `07a`
       was being written against.** `EXCHANGE_UNCERTAIN` exists for the case where a
-      credential may or may not have been minted and a retry might burn a slot; in
-      Sandbox the retry was harmless and non-destructive. Had this been guessed instead
-      of measured, the guess would have been "the duplicate is refused with some code",
-      and the recovery path would have been built to avoid a retry that is in fact safe —
-      the criterion's own stated failure ("a guess here becomes a wrong recovery
-      procedure at the moment a slot is burning"), arrived at from the opposite side.
+      credential may or may not have been minted and a retry might burn a slot. Had this
+      been guessed instead of measured, the guess would have been "the duplicate is
+      refused with some code", and the recovery path would have been built against a
+      refusal that does not occur — the criterion's own stated failure ("a guess here
+      becomes a wrong recovery procedure at the moment a slot is burning"), arrived at
+      from the opposite side.
 
-      **Two limits, and `07a` must respect both rather than adopting "retry is safe".**
-      First, **this is Sandbox**. Production is not measured here and cannot be, without
-      spending a lifetime slot — which is the whole reason F7 was proven in Sandbox.
-      Second, **whether the accepted duplicate consumed a second Item is not established
-      by the reviewed record**: it states acceptance and the first credential's continued
-      health, not the Item count afterwards. That gap matters more than it looks, because
-      this project is budgeted in *lifetime Item slots* — "the retry succeeded" and "the
-      retry was free" are different claims, and only the first is measured. Treat a
-      duplicate exchange as **safe for the existing credential and unproven for the
+      **What was observed, and nothing beyond it:** in this Sandbox run the second
+      exchange was accepted and **the original `access_token` remained healthy**. That is
+      not the same as "the retry is harmless", and this paragraph deliberately does not
+      say so — the earlier draft did, and the words "harmless", "non-destructive" and "a
+      retry that is in fact safe" all assert more than one observation of one credential
+      can carry.
+
+      **Three limits, and `07a` must respect all three rather than adopting "retry is
+      safe".** First, **this is Sandbox**; Production is not measured here and cannot be
+      without spending a lifetime slot, which is the whole reason F7 was proven in
+      Sandbox. Second, **whether the accepted duplicate consumed a second Item is not
+      established** — the record states acceptance and the first credential's continued
+      health, not the Item count, and the project is budgeted in *lifetime Item slots*, so
+      "the retry succeeded" and "the retry was free" are different claims with only the
+      first measured. Third, and following from the second, **the two exchanges are not
+      known to refer to the same Item.** Every convenient conclusion here — dedupe to one
+      credential, count one slot, call the loser harmless — assumes they do. Until
+      identity is checked at runtime, a duplicate exchange is **observed not to have
+      harmed the first credential, and unresolved for both Item identity and the
       budget**.
 - [x] **(iii) The four crash boundaries, not one (issues #5 and #15).** Inject a failure at
       each of **before send**, **after send / before response**, **after response / before
@@ -1607,26 +1626,50 @@ capture is issue **#14**.
       Sandbox). So the premise above is not confirmed on the wire — at-most-once is what we
       assumed Plaid enforces, not what it was observed to enforce.
 
-      What survives unchanged is the *conclusion*: losing the race is **not** a stranded
-      slot, and reporting it as a loss would send the owner to Plaid support over a working
-      Item. What changes is the branch's shape — **it cannot be keyed on "the loser gets an
-      error"**, because in the one environment where this has been measured the loser gets
-      a success. Write it so that *both* hosts succeeding is an expected outcome rather
-      than an impossible one, and so the two credentials are reconciled to one usable
-      `TokenStore` entry afterwards.
+      **What changes is the branch's shape** — it cannot be keyed on "the loser gets an
+      error", because in the one environment where this has been measured the loser gets a
+      success. Write it so that *both* hosts succeeding is an expected outcome rather than
+      an impossible one.
 
-      **And the part that is still unmeasured is the part that costs money**: whether the
-      accepted duplicate consumed a **second Item**. The reviewed record establishes
-      acceptance and the first credential's health, not the Item count. A double exchange
-      that is free and one that silently spends a lifetime slot look identical from here.
-      Until that is measured, treat a concurrent double exchange as **safe for the
-      credential and unproven for the budget**, and prefer a design that does not race at
-      all over one that races and reconciles. *(Sandbox only; Production is not measured
-      and cannot be without spending a slot.)*
+      **Reconcile by returned Item identity, and by nothing else.** An earlier revision of
+      this bullet said to reconcile the two credentials "to one usable `TokenStore` entry",
+      which quietly assumes the very thing the new evidence leaves open: that both
+      exchanges refer to the **same Item**. If they refer to different ones, collapsing
+      them to a single entry **discards the only credential for the second Item and hides
+      a consumed lifetime slot** — turning an accounting question into an unrecoverable
+      one. So the branch has three outcomes, chosen on the identity the responses return:
+
+      - **Verified same Item** — deduplicate to one entry, count one slot.
+      - **Distinct Items** — keep and account for **both**. This is the case that costs a
+        slot, and the design must be able to say so rather than being unable to represent
+        it.
+      - **Identity or durability not establishable** — an explicit **unresolved** outcome.
+        Not a default to either branch above; the honest third answer, in the same spirit
+        as `06a` (iii)'s irreducible window.
+
+      **The at-most-one exchange claim and the fence stay mandatory.** They are what keeps
+      this rare rather than routine, and the measurement is not a reason to relax them —
+      it is the reason they had to be correct without depending on the remote refusing.
+      **Prefer a design that does not race at all over one that races and reconciles.**
+
+      **And the unmeasured part is the part that costs money**: whether an accepted
+      duplicate consumes a **second Item**. The reviewed record establishes acceptance and
+      the first credential's continued health, not the Item count, and codex confirmed the
+      private authoritative record holds no additional Item-count evidence. A double
+      exchange that is free and one that silently spends a lifetime slot look identical
+      from here. *(Sandbox only; Production is not measured and cannot be without spending
+      a slot.)*
 - [ ] **The uncertain case is tested: the old VPS comes back after recovery exchanged.**
-      Assert the outcome is classified honestly, that `TokenStore` ends with one usable
-      credential rather than a silently preferred one, and that the budget (`26a`) counts
-      **one** Item and not two.
+      Assert the outcome is classified honestly and that `TokenStore` never silently
+      prefers one credential over another. **The Item count asserted must follow the
+      identity the responses returned, not a fixed number.** This bullet used to require
+      the budget (`26a`) to count **one** Item and not two — which is only correct in the
+      same-Item case, and `06a` (ii) leaves identity open, so a fixed expectation of one
+      would make a genuinely consumed second slot *fail the test that was supposed to
+      catch it*. Cover all three shapes with synthetic responses — **same Item** (one
+      entry, one slot), **distinct Items** (both retained, two slots), **unknown
+      identity** (explicit unresolved, nothing discarded) — which needs no live exchange
+      and no new owner action.
 - [ ] The owner-facing text states **30 minutes**, and the script is pre-staged as one
       command — this is a minutes procedure, not a six-hour one.
 - [ ] **The Plaid client credential comes from the owner at a TTY, never from this Mac's
