@@ -5,6 +5,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/data/seq_baseline_store.dart';
 import 'package:networth_app/src/domain/publication_seq.dart';
 
+/// Stands in for the exception types this path can raise that `dart:io` does not
+/// define — `path_provider`'s `MissingPlatformDirectoryException` is the real
+/// one. Declared here rather than depended on so the test exercises the *shape*
+/// of the problem without pinning one package's class name.
+class _NotAFileSystemException implements Exception {
+  const _NotAFileSystemException();
+}
+
 void main() {
   late Directory directory;
   late File file;
@@ -188,6 +196,21 @@ void main() {
       // it needs no permission the test runner might have.
       final throwing = FileSeqBaselineStore(
         open: () async => throw const FileSystemException('no documents directory'),
+      );
+
+      expect(await throwing.read('pairing-a'), isA<BaselineUnreadable>());
+    });
+
+    test('including when opening it fails with something dart:io never raises', () async {
+      // **Added after mutation testing found the gap**, one commit late. The
+      // `on Object` in `read` was written deliberately, because `path_provider`
+      // raises `MissingPlatformDirectoryException` and that is not a
+      // `FileSystemException` — but every test covering that catch raised a
+      // `FileSystemException`, so narrowing it back would have left all of them
+      // green. A guard whose reason no test can distinguish is unpinned however
+      // carefully it was argued for.
+      final throwing = FileSeqBaselineStore(
+        open: () async => throw const _NotAFileSystemException(),
       );
 
       expect(await throwing.read('pairing-a'), isA<BaselineUnreadable>());

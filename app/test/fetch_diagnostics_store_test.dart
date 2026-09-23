@@ -1,0 +1,411 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:networth_app/src/data/fetch_diagnostics_store.dart';
+import 'package:networth_app/src/domain/payload_format_exception.dart';
+import 'package:networth_app/src/domain/publication_seq.dart';
+
+/// Stands in for the exception types this path can raise that `dart:io` does not
+/// define — `path_provider`'s `MissingPlatformDirectoryException` is the real
+/// one. Declared here rather than depended on so the test exercises the *shape*
+/// of the problem without pinning one package's class name.
+class _NotAFileSystemException implements Exception {
+  const _NotAFileSystemException();
+}
+
+void main() {
+  late Directory directory;
+  late File file;
+  late FileFetchDiagnosticsStore store;
+
+  setUp(() async {
+    directory = await Directory.systemTemp.createTemp('fetch-diagnostics-test');
+    file = File('${directory.path}/${FileFetchDiagnosticsStore.fileName}');
+    store = FileFetchDiagnosticsStore(open: () async => file);
+  });
+
+  tearDown(() async => directory.delete(recursive: true));
+
+  DateTime utc(int day, int hour) => DateTime.utc(2026, 9, day, hour);
+
+  FetchDiagnostics succeeded({
+    String pairingId = 'pairing-a',
+    DateTime? at,
+    String seq = '7',
+  }) =>
+      FetchDiagnostics.succeeded(
+        pairingId: pairingId,
+        at: at ?? utc(20, 9),
+        seq: PublicationSeq.parse(seq),
+      );
+
+  FetchDiagnostics failed({
+    String pairingId = 'pairing-a',
+    DateTime? at,
+    FetchFailureClass error = FetchFailureClass.offline,
+    FetchSuccess? after,
+  }) =>
+      FetchDiagnostics.failed(
+        pairingId: pairingId,
+        at: at ?? utc(21, 9),
+        error: error,
+        after: after,
+      );
+
+  FetchDiagnostics held(DiagnosticsState state) {
+    expect(state, isA<DiagnosticsHeld>());
+    return (state as DiagnosticsHeld).diagnostics;
+  }
+
+  group('a pairing with no diagnostics', () {
+    test('reads as absent when nothing has ever been written', () async {
+      expect(await store.read('pairing-a'), isA<DiagnosticsAbsent>());
+    });
+
+    test('reads as absent when the stored record belongs to another pairing', () async {
+      // The third conjunct of `HOST_NOT_PUBLISHING` compares `last_fetch_seq`
+      // with the per-pairing `last_seq`. A reading taken under another pairing is
+      // a reading of a different counter, and two unrelated counters are free to
+      // coincide — which would accuse a host that is publishing fine.
+      await store.write(succeeded(pairingId: 'pairing-a', seq: '400'));
+
+      expect(await store.read('pairing-b'), isA<DiagnosticsAbsent>());
+      expect(await store.read('pairing-a'), isA<DiagnosticsHeld>());
+    });
+  });
+
+  group('a successful attempt', () {
+    test('stores §9.1\'s field names, in UTC, with the host\'s own seq bytes', () async {
+      // '10' is the value a lexicographic comparison gets wrong, and it is also
+      // the one a sloppy round-trip would be free to rewrite.
+      await store.write(succeeded(at: utc(20, 9), seq: '10'));
+
+      final record = held(await store.read('pairing-a'));
+      expect(record.lastAttemptAt, utc(20, 9));
+      expect(record.lastError, isNull);
+      expect(record.lastSuccess?.at, utc(20, 9));
+      expect(record.lastSuccess?.seq.wire, '10');
+      expect(record.lastSuccess?.seq.value, 10);
+      expect(jsonDecode(await file.readAsString()), <String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-20T09:00:00.000Z',
+        'last_fetch_success_at': '2026-09-20T09:00:00.000Z',
+        'last_fetch_seq': '10',
+      });
+    });
+
+    test('is its own last success, so the two instants cannot be given separately', () async {
+      // The constructor takes one instant. Conjunct 2 reads
+      // `last_fetch_attempt_at == last_fetch_success_at` as "nothing has failed
+      // since", and a shape that let a caller pass two instants would let that
+      // conjunct be false on a record whose last attempt succeeded.
+      final record = succeeded(at: utc(20, 9));
+
+      expect(record.lastAttemptAt.isAtSameMomentAs(record.lastSuccess!.at), isTrue);
+    });
+
+    test('writes the instant in UTC even when it is given in local time', () async {
+      // `AGENTS.md`: every stored timestamp is UTC with an explicit zone, and
+      // staleness math is done in UTC.
+      final local = DateTime(2026, 9, 20, 9);
+      await store.write(succeeded(at: local));
+
+      final stored = jsonDecode(await file.readAsString()) as Map<String, Object?>;
+      expect(stored['last_fetch_attempt_at'], endsWith('Z'));
+      expect(held(await store.read('pairing-a')).lastAttemptAt, local.toUtc());
+    });
+  });
+
+  group('a failed attempt', () {
+    test('keeps the error class beside the success it did not replace', () async {
+      await store.write(
+        failed(
+          at: utc(21, 9),
+          error: FetchFailureClass.hostUnreachable,
+          after: FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7')),
+        ),
+      );
+
+      final record = held(await store.read('pairing-a'));
+      expect(record.lastAttemptAt, utc(21, 9));
+      expect(record.lastError, FetchFailureClass.hostUnreachable);
+      expect(record.lastSuccess?.at, utc(20, 9));
+      expect(record.lastSuccess?.seq.wire, '7');
+    });
+
+    test('distinguishes never having succeeded from never having attempted', () async {
+      // §9.1's "never fetched" is [DiagnosticsAbsent]. A phone that has tried and
+      // failed every time is a different state with a different error class to
+      // show, and collapsing them would report "never fetched" to a phone that
+      // has been trying all week.
+      await store.write(failed(error: FetchFailureClass.offline));
+
+      final record = held(await store.read('pairing-a'));
+      expect(record.lastSuccess, isNull);
+      expect(record.lastError, FetchFailureClass.offline);
+    });
+
+    test('round-trips every error class through its stored spelling', () async {
+      for (final error in FetchFailureClass.values) {
+        await store.write(failed(error: error));
+
+        expect(held(await store.read('pairing-a')).lastError, error);
+      }
+    });
+
+    test('and each class is stored as exactly these bytes, which are a format', () async {
+      // **The round trip above cannot see this and mutation testing proved it:**
+      // changing a stored spelling was the must-fail control, and every test
+      // stayed green, because write and read consult the same map and a
+      // self-consistent rename round-trips perfectly. What it breaks is on the
+      // *other* side of an app update — a phone upgrading to a build that spells
+      // one of these differently reads its own record as damaged and shows the
+      // owner a corrupted-diagnostics message for a file that was never
+      // corrupt. So the literals are asserted here, where changing one is a
+      // deliberate edit to a test that says it is the format.
+      const spellings = <FetchFailureClass, String>{
+        FetchFailureClass.offline: 'OFFLINE',
+        FetchFailureClass.hostUnreachable: 'HOST_UNREACHABLE',
+        FetchFailureClass.credentialRejected: 'CREDENTIAL_REJECTED',
+        FetchFailureClass.transportError: 'TRANSPORT_ERROR',
+      };
+      expect(
+        spellings.keys,
+        unorderedEquals(FetchFailureClass.values),
+        reason: 'a class added without a stored spelling has no format at all',
+      );
+
+      for (final entry in spellings.entries) {
+        await store.write(failed(error: entry.key));
+
+        final stored = jsonDecode(await file.readAsString()) as Map<String, Object?>;
+        expect(stored['last_fetch_error'], entry.value);
+      }
+    });
+
+    test('cannot be recorded at or before the last success it follows', () async {
+      // The one state conjunct 2 cannot describe honestly: the timestamps would
+      // read "nothing has failed since" while an error is held, and the phone
+      // would announce `HOST_NOT_PUBLISHING` on a fetch it knows failed.
+      final success = FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7'));
+
+      expect(
+        () => failed(at: utc(20, 9), after: success),
+        throwsA(isA<PayloadFormatException>()),
+      );
+      expect(
+        () => failed(at: utc(19, 9), after: success),
+        throwsA(isA<PayloadFormatException>()),
+      );
+      expect(() => failed(at: utc(20, 10), after: success), returnsNormally);
+    });
+  });
+
+  group('the record is replaced, never appended to', () {
+    test('so only the current attempt is kept', () async {
+      await store.write(succeeded(at: utc(20, 9), seq: '7'));
+      await store.write(
+        failed(
+          at: utc(21, 9),
+          after: FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7')),
+        ),
+      );
+
+      expect(held(await store.read('pairing-a')).lastError, FetchFailureClass.offline);
+      expect(
+        directory.listSync().map((entry) => entry.uri.pathSegments.last),
+        <String>[FileFetchDiagnosticsStore.fileName],
+      );
+    });
+
+    test('and a later success clears the error it followed', () async {
+      await store.write(failed(at: utc(21, 9), error: FetchFailureClass.credentialRejected));
+      await store.write(succeeded(at: utc(22, 9), seq: '8'));
+
+      expect(held(await store.read('pairing-a')).lastError, isNull);
+    });
+  });
+
+  group('a record that cannot be read is never read as absent', () {
+    Future<void> damaged(String bytes) async {
+      await file.writeAsString(bytes);
+      expect(await store.read('pairing-a'), isA<DiagnosticsUnreadable>());
+    }
+
+    test('when it is not JSON', () => damaged('{'));
+
+    test('when it is not a JSON object', () => damaged('[]'));
+
+    test('when it has no pairing_id', () => damaged('{"last_fetch_attempt_at": "2026-09-20T09:00:00Z"}'));
+
+    test('when its pairing_id is not a string', () async {
+      // It cannot be scoped away either: "which pairing is this for" is exactly
+      // the question it failed to answer.
+      await file.writeAsString('{"pairing_id": 1, "last_fetch_attempt_at": "2026-09-20T09:00:00Z"}');
+
+      expect(await store.read('pairing-b'), isA<DiagnosticsUnreadable>());
+    });
+
+    test('when it records no attempt', () => damaged('{"pairing_id": "pairing-a"}'));
+
+    test('when an instant carries no timezone', () async {
+      // The case this check exists for: `DateTime.parse` would read it as local
+      // time, landing seven or eight hours off on this owner's phone, and
+      // conjunct 1 is a comparison that flips inside that margin.
+      await damaged(jsonEncode(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-20T09:00:00',
+        'last_fetch_success_at': '2026-09-20T09:00:00',
+        'last_fetch_seq': '7',
+      }));
+    });
+
+    test('when an instant is not ISO-8601', () async {
+      await damaged(jsonEncode(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': 'yesterday',
+      }));
+    });
+
+    test('when it holds only half of a successful fetch', () async {
+      await damaged(jsonEncode(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-20T09:00:00Z',
+        'last_fetch_success_at': '2026-09-20T09:00:00Z',
+      }));
+      await damaged(jsonEncode(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-20T09:00:00Z',
+        'last_fetch_seq': '7',
+        'last_fetch_error': 'OFFLINE',
+      }));
+    });
+
+    test('when the attempt neither succeeded nor failed', () async {
+      // No error, and no success at the attempt's instant. Nothing true can be
+      // read out of it, and either guess feeds the predicate a fact nobody
+      // observed.
+      await damaged(jsonEncode(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-21T09:00:00Z',
+      }));
+      await damaged(jsonEncode(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-21T09:00:00Z',
+        'last_fetch_success_at': '2026-09-20T09:00:00Z',
+        'last_fetch_seq': '7',
+      }));
+    });
+
+    test('when the error class is one this build does not know', () async {
+      // A newer build's spelling is not a class this one may guess at: every
+      // class maps to a different thing for the owner to do.
+      await damaged(jsonEncode(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-21T09:00:00Z',
+        'last_fetch_error': 'DNS_POISONED',
+      }));
+    });
+
+    test('when the seq is not one the host could have rendered', () async {
+      await damaged(jsonEncode(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-20T09:00:00Z',
+        'last_fetch_success_at': '2026-09-20T09:00:00Z',
+        'last_fetch_seq': '007',
+      }));
+    });
+
+    test('when the file cannot be opened at all', () async {
+      // Deterministic everywhere — it needs no permission the runner might have.
+      final throwing = FileFetchDiagnosticsStore(
+        open: () async => throw const FileSystemException('no documents directory'),
+      );
+
+      expect(await throwing.read('pairing-a'), isA<DiagnosticsUnreadable>());
+    });
+
+    test('when opening it fails with something dart:io never raises', () async {
+      // **The case that makes `on Object` more than a style choice**, and the
+      // one every other test here is blind to: they all raise
+      // `FileSystemException`, so narrowing the catch to that type leaves them
+      // green while the real production path stays uncovered — `path_provider`
+      // raises `MissingPlatformDirectoryException`, which is not a
+      // `FileSystemException` and not caught by a catch written for one. An
+      // escaped exception would reach a caller holding a [DiagnosticsState] and
+      // reasonably treating its three cases as all of them.
+      final throwing = FileFetchDiagnosticsStore(
+        open: () async => throw const _NotAFileSystemException(),
+      );
+
+      expect(await throwing.read('pairing-a'), isA<DiagnosticsUnreadable>());
+    });
+
+    test('and when the app has lost permission to read it', () async {
+      await store.write(succeeded());
+      await Process.run('chmod', <String>['000', file.path]);
+      // Asserted rather than assumed: root can read a mode-000 file, and this
+      // test would then pass while exercising nothing.
+      var unreadable = true;
+      try {
+        await file.readAsString();
+        unreadable = false;
+      } on Object {
+        // As intended.
+      }
+      if (!unreadable) {
+        markTestSkipped('this runner can read a mode-000 file; nothing to exercise');
+        return;
+      }
+
+      expect(await file.exists(), isTrue, reason: 'the file is still there');
+      expect(await store.read('pairing-a'), isA<DiagnosticsUnreadable>());
+
+      await Process.run('chmod', <String>['600', file.path]);
+    });
+  });
+
+  group('a record with no pairing to scope it', () {
+    test('cannot be constructed, by either constructor', () {
+      // The scoping rule is enforced where a record is *made*, not where it is
+      // written, because an unscoped record has no meaning to hold in memory
+      // either: every fact in it is "under which pairing".
+      expect(() => succeeded(pairingId: ''), throwsA(isA<PayloadFormatException>()));
+      expect(() => failed(pairingId: ''), throwsA(isA<PayloadFormatException>()));
+    });
+  });
+
+  group('the write path commits nothing it could not read back', () {
+    test('and today that is a property of the round trip, not of a reachable throw', () async {
+      // `write` runs the bytes through `read`'s parser before touching the disk,
+      // the `23a` precedent. Here that guard is **unreachable by construction**:
+      // every invariant it checks is already enforced by the two constructors,
+      // so there is no [FetchDiagnostics] whose encoding the parser would
+      // refuse. Saying so beats a test that cannot fail — what is actually
+      // pinned is the equivalence the guard exists to keep true, that anything
+      // the encoder writes the parser reads back unchanged, and the drift it
+      // catches is a future field added to one side only.
+      final records = <FetchDiagnostics>[
+        succeeded(at: utc(20, 9), seq: '7'),
+        succeeded(at: utc(20, 9), seq: '10'),
+        failed(at: utc(21, 9), error: FetchFailureClass.transportError),
+        failed(
+          at: utc(21, 9),
+          error: FetchFailureClass.credentialRejected,
+          after: FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7')),
+        ),
+      ];
+
+      for (final record in records) {
+        await store.write(record);
+
+        expect(held(await store.read('pairing-a')), record);
+      }
+      expect(
+        directory.listSync().map((entry) => entry.uri.pathSegments.last),
+        <String>[FileFetchDiagnosticsStore.fileName],
+      );
+    });
+  });
+}
