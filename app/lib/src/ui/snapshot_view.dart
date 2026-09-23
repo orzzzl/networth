@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../l10n/generated/app_localizations.dart';
+import '../domain/clock_continuity.dart';
 import '../domain/copy_freshness.dart';
 import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
@@ -22,6 +23,7 @@ class SnapshotView extends StatelessWidget {
     required this.history,
     required this.recordingFailed,
     required this.deviceNow,
+    required this.continuity,
   });
 
   final PhonePayload payload;
@@ -35,6 +37,16 @@ class SnapshotView extends StatelessWidget {
   /// is: a caller that does not know cannot claim it is `false`, and `false` is
   /// the reassuring answer.
   final bool recordingFailed;
+
+  /// Whether this device's wall clock can be trusted to age the copy.
+  ///
+  /// Required for the same reason as [recordingFailed], and the reason is
+  /// sharper here: the only default that would not change a verdict is the one
+  /// asserting the clock is fine, and a caller that cannot measure that must
+  /// not be able to claim it. [ContinuityUnknown] renders as *"couldn't
+  /// check"*, which is the honest surface while the platform source task `22`
+  /// still owes is unbuilt.
+  final ClockContinuity continuity;
 
   /// Injected rather than read from the clock inside `build`, so the copy
   /// dimension is testable at a chosen instant and a widget test never depends
@@ -71,8 +83,8 @@ class SnapshotView extends StatelessWidget {
           _Dimension(
             icon: Icons.phone_iphone,
             label: l10n.thisCopyLabel,
-            detail: _copyText(l10n, payload, deviceNow),
-            isWarning: payload.copyFreshness(deviceNow) != CopyFreshness.fresh,
+            detail: _copyText(l10n, payload, deviceNow, continuity),
+            isWarning: payload.copyFreshness(deviceNow, continuity: continuity) != CopyFreshness.fresh,
           ),
           // Last, deliberately. The order on this screen is the order of the
           // claims: the number, its age, the two reasons it could be old, and
@@ -155,8 +167,13 @@ String _connectionText(AppLocalizations l10n, ConnectionDisplayState state) =>
       ConnectionDisplayState.actionNeeded => l10n.connectionActionNeeded,
     };
 
-String _copyText(AppLocalizations l10n, PhonePayload payload, DateTime deviceNow) =>
-    switch (payload.copyFreshness(deviceNow)) {
+String _copyText(
+  AppLocalizations l10n,
+  PhonePayload payload,
+  DateTime deviceNow,
+  ClockContinuity continuity,
+) =>
+    switch (payload.copyFreshness(deviceNow, continuity: continuity)) {
       CopyFreshness.fresh => l10n.copyFresh(formatInstantUtc(l10n, payload.publishedAt)),
       CopyFreshness.stale => l10n.copyStale(formatInstantUtc(l10n, payload.publishedAt)),
       CopyFreshness.unknown => l10n.copyUnknown,

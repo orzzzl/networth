@@ -4,6 +4,7 @@ import '../../l10n/generated/app_localizations.dart';
 import '../data/history_source.dart';
 import '../data/snapshot_source.dart';
 import '../debug_log.dart';
+import '../domain/clock_continuity.dart';
 import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
 import 'snapshot_view.dart';
@@ -21,6 +22,7 @@ class HomePage extends StatefulWidget {
     required this.source,
     required this.historySource,
     this.clock,
+    this.continuity,
   });
 
   /// Where the payload comes from — and, when it is a [RecordingStatus], the
@@ -40,9 +42,24 @@ class HomePage extends StatefulWidget {
   /// Overridable so a test can choose the instant the copy age is measured from.
   final DateTime Function()? clock;
 
+  /// Where the evidence about this device's clock comes from.
+  ///
+  /// Nullable, and the default is [ContinuityGap.noAnchor] — the *fail-closed*
+  /// value, never a claim of continuity. That distinction is the whole reason
+  /// this is allowed a default at all while [SnapshotView.continuity] is not:
+  /// absence of evidence is a real answer this app can render, and evidence is
+  /// not something a default may invent.
+  final ClockContinuity Function()? continuity;
+
   @override
   State<HomePage> createState() => _HomePageState();
 }
+
+/// The stand-in until task `22`'s platform monotonic source exists.
+///
+/// Named rather than inlined so that `grep` finds the one place this app
+/// currently declines to know, and so replacing it is a single edit.
+ClockContinuity _noContinuitySource() => const ContinuityUnknown(ContinuityGap.noAnchor);
 
 /// What one screenful needs: the payload, the series if it could be read, and
 /// whether this payload reached the record.
@@ -132,6 +149,13 @@ class _HomePageState extends State<HomePage> {
               history: history,
               recordingFailed: recordingFailed,
               deviceNow: (widget.clock ?? DateTime.now)(),
+              // **Fail-closed, and this is the placeholder, not the answer.**
+              // Task `22` still owes the platform monotonic source; until it
+              // lands this device cannot establish that its clock has run
+              // continuously, so it says so. The one default that would change
+              // a verdict is the one claiming continuity, which is why it is
+              // not the default.
+              continuity: (widget.continuity ?? _noContinuitySource)(),
             );
           },
         ),

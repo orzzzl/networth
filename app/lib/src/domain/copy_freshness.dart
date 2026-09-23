@@ -1,3 +1,4 @@
+import 'clock_continuity.dart';
 import 'fetch_diagnostics.dart';
 import 'seq_baseline.dart';
 
@@ -91,8 +92,17 @@ enum ClockDisagreement {
   /// `published_at > device_now + 5min`.
   payloadFromTheFuture,
 
-  /// `device_now` is earlier than an instant this device itself stamped.
+  /// `device_now` is earlier than an instant this device itself stamped, or
+  /// the wall clock has drifted from real elapsed time since the anchor.
   deviceClockMovedBackwards,
+
+  /// **Whether the clock can be trusted is itself unknown** — no anchor, an
+  /// unreadable one, no monotonic source, or a reading that cannot be proved to
+  /// come from the same unbroken run. Distinct from
+  /// [deviceClockMovedBackwards]: that one is a detected fault and this one is
+  /// the absence of evidence, and telling the owner they are the same thing
+  /// would be the confident answer §9.1 rule 1 forbids.
+  clockContinuityUnknown,
 }
 
 /// Why the copy is stale — §9.1's two reasons, which have different fixes.
@@ -200,34 +210,44 @@ CopyState evaluateCopyState({
   required DateTime deviceNow,
   required DiagnosticsState diagnostics,
   required BaselineState baseline,
+  required ClockContinuity continuity,
 }) {
   // Rule 1, both branches, before any age is computed.
   const tolerance = Duration(minutes: 5);
   if (publishedAt.isAfter(deviceNow.add(tolerance))) {
     return const CopyUnknown(ClockDisagreement.payloadFromTheFuture);
   }
+  // **Clock trust, before any age is computed from the wall clock.**
+  //
+  // An earlier version of this predicate argued that no monotonic source was
+  // needed: `last_fetch_attempt_at` is the latest reading this device's clock
+  // is known to have produced, so a `device_now` earlier than it proves a
+  // regression, and the undetected residue is bounded by the time since that
+  // attempt. **The bound is unbounded when there are no attempts** — nine days
+  // with the app closed, a correction landing anywhere after that stamp, and a
+  // nine-day-old copy rendered fresh. [ClockContinuity] carries the two
+  // arguments this app tried and why each failed in the case §9.1 exists for.
+  //
+  // So the order here is load-bearing: **an untrustworthy clock blocks host
+  // blame as well as freshness.** `HOST_NOT_PUBLISHING` accuses the host of
+  // having published nothing since a deadline this device computed, so a
+  // predicate that skipped this check for the stale branch would make exactly
+  // the misattribution §9.1 names, with more confidence rather than less.
+  switch (continuity) {
+    case ContinuityUnknown():
+      return const CopyUnknown(ClockDisagreement.clockContinuityUnknown);
+    case ContinuityHeld(isTrustworthy: false):
+      return const CopyUnknown(ClockDisagreement.deviceClockMovedBackwards);
+    case ContinuityHeld():
+      break;
+  }
   if (diagnostics case DiagnosticsHeld(diagnostics: final held)) {
-    // **The device clock moved backwards, established without a monotonic
-    // clock.** §9.1 names one mechanism for this branch — pairing each stored
-    // timestamp with a monotonic reading — and the mechanism is not the
-    // requirement. `last_fetch_attempt_at` was stamped by *this* device's clock
-    // on its last attempt, and [FetchDiagnostics] refuses a failed attempt at
-    // or before the last success, so it is the latest reading that clock is
-    // known to have produced. A `device_now` earlier than it is proof the clock
-    // went back, and it needs nothing this app cannot observe.
-    //
-    // What it does not catch is a regression smaller than the time since that
-    // attempt — and that residue is bounded by the same instant, tightens on
-    // every attempt including failed ones, and can only move a verdict for a
-    // copy already within that residue of its deadline, which is inside the six
-    // hours of `grace` §9.1 calls deliberate margin. Closing it would mean
-    // `SystemClock.elapsedRealtime()` over a platform channel — no package in
-    // `pubspec.yaml` offers it and `AGENTS.md` admits no new dependency without
-    // an OK written in the task spec, which `22` does not grant — and it would
-    // *still* miss a correction applied across a reboot, which is when the
-    // clock is most likely to be corrected. So this is not the cheap half of a
-    // deferred mechanism; it is the half that holds without one.
-    if (deviceNow.isBefore(held.lastAttemptAt)) {
+    // Kept alongside the anchor rather than replaced by it. This one is two of
+    // *this device's own stored readings* disagreeing, so it survives a restart
+    // that the anchor may not, and it holds even where the anchor's run cannot
+    // be identified. It is strictly weaker — it sees only regressions that
+    // cross a stamp — which is why it is second and not instead.
+    if (deviceNow.isBefore(held.lastAttemptAt) || held.clockMovedBackwards) {
       return const CopyUnknown(ClockDisagreement.deviceClockMovedBackwards);
     }
   }
@@ -321,12 +341,14 @@ CopyFreshness evaluateCopyFreshness({
   required Duration publishInterval,
   required Duration grace,
   required DateTime deviceNow,
+  required ClockContinuity continuity,
 }) =>
     evaluateCopyState(
       publishedAt: publishedAt,
       publishInterval: publishInterval,
       grace: grace,
       deviceNow: deviceNow,
+      continuity: continuity,
       diagnostics: const DiagnosticsAbsent(),
       baseline: const BaselineAbsent(),
     ).freshness;

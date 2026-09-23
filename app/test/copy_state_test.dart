@@ -1,8 +1,15 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:networth_app/src/domain/clock_continuity.dart';
 import 'package:networth_app/src/domain/copy_freshness.dart';
 import 'package:networth_app/src/domain/fetch_diagnostics.dart';
 import 'package:networth_app/src/domain/publication_seq.dart';
 import 'package:networth_app/src/domain/seq_baseline.dart';
+
+/// A clock this device has proved continuous: the same interval measured two
+/// ways, agreeing exactly. The neutral value for tests about *age*, which is a
+/// different question from whether the clock can be trusted at all.
+const ClockContinuity trustedClock =
+    ContinuityHeld(wallElapsed: Duration.zero, monotonicElapsed: Duration.zero);
 
 const String _pairing = 'pairing-a';
 const Duration _interval = Duration(seconds: 86400);
@@ -16,14 +23,17 @@ final PublicationSeq _held = PublicationSeq.parse('41');
 
 CopyState _evaluate({
   required DateTime deviceNow,
+  DateTime? publishedAt,
   DiagnosticsState diagnostics = const DiagnosticsAbsent(),
   BaselineState? baseline,
+  ClockContinuity continuity = trustedClock,
 }) =>
     evaluateCopyState(
-      publishedAt: _published,
+      publishedAt: publishedAt ?? _published,
       publishInterval: _interval,
       grace: _grace,
       deviceNow: deviceNow,
+      continuity: continuity,
       diagnostics: diagnostics,
       baseline: baseline ?? BaselineHeld(SeqBaseline(pairingId: _pairing, lastSeq: _held)),
     );
@@ -75,6 +85,7 @@ void main() {
       // this same clock, so a `device_now` before it is proof it went back.
       final state = _evaluate(
         deviceNow: DateTime.utc(2026, 9, 15, 12),
+        continuity: trustedClock,
         diagnostics: _succeededAt(DateTime.utc(2026, 9, 15, 18)),
       );
       expect((state as CopyUnknown).disagreement, ClockDisagreement.deviceClockMovedBackwards);
@@ -88,6 +99,7 @@ void main() {
     test('a failed attempt stamps the clock too, so it also catches the jump', () {
       final state = _evaluate(
         deviceNow: DateTime.utc(2026, 9, 15, 12),
+        continuity: trustedClock,
         diagnostics: _failedAt(DateTime.utc(2026, 9, 15, 18)),
       );
       expect((state as CopyUnknown).disagreement, ClockDisagreement.deviceClockMovedBackwards);
@@ -98,6 +110,7 @@ void main() {
       // copy is long past its deadline, and rule 2 would call it fresh.
       final state = _evaluate(
         deviceNow: DateTime.utc(2026, 9, 15, 12),
+        continuity: trustedClock,
         diagnostics: _succeededAt(DateTime.utc(2026, 9, 17, 9)),
       );
       expect(state, isA<CopyUnknown>());
@@ -117,6 +130,170 @@ void main() {
         );
       }
     });
+  });
+
+  group('DESIGN section 9.1 rule 1: clock continuity is evidence, not an assumption', () {
+    // Two arguments for skipping a monotonic source reached this file and both
+    // were wrong in the case the feature exists for. Each is pinned below by
+    // the counterexample that killed it, so neither can come back quietly.
+
+    test('a nine-day-old copy is not fresh because the clock was moved back', () {
+      // The original. Published and fetched Sep 1 12:00; nine days pass with the
+      // app closed, so there is no later attempt to compare against; the clock
+      // is then corrected backwards to Sep 1 13:00. Every wall-clock reading is
+      // self-consistent and the copy is nine days old.
+      final fetched = DateTime.utc(2026, 9, 1, 12);
+
+      final state = _evaluate(
+        publishedAt: fetched,
+        deviceNow: DateTime.utc(2026, 9, 1, 13),
+        diagnostics: _succeededAt(fetched),
+        continuity: const ContinuityHeld(
+          wallElapsed: Duration(hours: 1),
+          monotonicElapsed: Duration(days: 9, hours: 1),
+        ),
+      );
+
+      expect(state, isA<CopyUnknown>());
+      expect(
+        (state as CopyUnknown).disagreement,
+        ClockDisagreement.deviceClockMovedBackwards,
+      );
+    });
+
+    test('and a successful fetch of a frozen publication does not repair it', () {
+      // The second argument: *the host is a second clock, so a successful fetch
+      // corroborates ours*. `published_at` is the host's clock at PUBLICATION,
+      // not at this response — so a reachable host whose publisher has stopped
+      // serves the same old publication, and the fetch corroborates nothing.
+      // That is exactly the HOST_NOT_PUBLISHING case, which is why this failed
+      // precisely where it was needed.
+      final frozen = DateTime.utc(2026, 9, 1, 12);
+
+      final state = _evaluate(
+        publishedAt: frozen,
+        deviceNow: DateTime.utc(2026, 9, 1, 13),
+        // A fetch that SUCCEEDED, moments ago by the device's own clock,
+        // returning the same seq it already held.
+        diagnostics: _succeededAt(DateTime.utc(2026, 9, 1, 12, 59), seq: _held),
+        continuity: const ContinuityHeld(
+          wallElapsed: Duration(minutes: 1),
+          monotonicElapsed: Duration(days: 9, minutes: 1),
+        ),
+        baseline: BaselineHeld(SeqBaseline(pairingId: _pairing, lastSeq: _held)),
+      );
+
+      expect(state, isA<CopyUnknown>(), reason: 'the frozen publication is not host NOW');
+    });
+
+    test('an unadjusted clock is trusted, which is what makes the above mean anything',
+        () {
+      // The control. Same shape, drift zero: this must still answer FRESH, or
+      // the two tests above would pass against a predicate that simply never
+      // says fresh.
+      final fetched = DateTime.utc(2026, 9, 15, 6);
+
+      expect(
+        _evaluate(
+          deviceNow: DateTime.utc(2026, 9, 15, 12),
+          diagnostics: _succeededAt(fetched),
+          continuity: const ContinuityHeld(
+            wallElapsed: Duration(hours: 6),
+            monotonicElapsed: Duration(hours: 6),
+          ),
+        ),
+        isA<CopyFresh>(),
+      );
+    });
+
+    test('time the device spent suspended still ages the copy', () {
+      // The monotonic source must count suspended time. A source that stopped
+      // while the phone slept would report a small elapsed interval and read a
+      // week of sleep as a backwards clock — so this pins the agreeing case,
+      // where wall and monotonic both say a week, and the answer is STALE
+      // rather than UNKNOWN.
+      final state = _evaluate(
+        deviceNow: DateTime.utc(2026, 9, 22),
+        diagnostics: _succeededAt(DateTime.utc(2026, 9, 15)),
+        continuity: const ContinuityHeld(
+          wallElapsed: Duration(days: 7),
+          monotonicElapsed: Duration(days: 7),
+        ),
+      );
+
+      expect(state, isA<CopyStale>());
+    });
+
+    test('drift within the sampling tolerance is not an adjustment', () {
+      expect(
+        _evaluate(
+          deviceNow: DateTime.utc(2026, 9, 15, 12),
+          diagnostics: _succeededAt(DateTime.utc(2026, 9, 15, 6)),
+          continuity: const ContinuityHeld(
+            wallElapsed: Duration(hours: 6),
+            monotonicElapsed: Duration(hours: 6, seconds: 2),
+          ),
+        ),
+        isA<CopyFresh>(),
+        reason: 'the two readings are taken at different points in one call',
+      );
+      expect(
+        _evaluate(
+          deviceNow: DateTime.utc(2026, 9, 15, 12),
+          diagnostics: _succeededAt(DateTime.utc(2026, 9, 15, 6)),
+          continuity: const ContinuityHeld(
+            wallElapsed: Duration(hours: 6),
+            monotonicElapsed: Duration(hours: 6, seconds: 3),
+          ),
+        ),
+        isA<CopyUnknown>(),
+      );
+    });
+
+    test('a clock moved FORWARDS is also unknown, not conservatively stale', () {
+      // The forward direction only over-reports staleness, so it is tempting to
+      // let it through. Rule 1 asks whether the clock can be trusted, not
+      // whether this particular error happens to land safely — a phone that has
+      // been silently re-timed does not know the age of what it holds.
+      expect(
+        _evaluate(
+          deviceNow: DateTime.utc(2026, 9, 22),
+          diagnostics: _succeededAt(DateTime.utc(2026, 9, 15)),
+          continuity: const ContinuityHeld(
+            wallElapsed: Duration(days: 7),
+            monotonicElapsed: Duration(minutes: 5),
+          ),
+        ),
+        isA<CopyUnknown>(),
+      );
+    });
+
+    for (final gap in ContinuityGap.values) {
+      test('no verdict rests on a clock whose continuity is $gap', () {
+        // Fail-closed, and **it blocks host blame as well as freshness**. A
+        // predicate that skipped this for the stale branch would still accuse
+        // the host of not publishing, on a deadline it computed with a clock it
+        // could not vouch for — the misattribution 9.1 exists to prevent, made
+        // with more confidence rather than less.
+        for (final deviceNow in <DateTime>[
+          DateTime.utc(2026, 9, 15, 12), // would be FRESH
+          DateTime.utc(2026, 9, 20), // would be STALE, HOST_NOT_PUBLISHING
+        ]) {
+          final state = _evaluate(
+            deviceNow: deviceNow,
+            diagnostics: _succeededAt(DateTime.utc(2026, 9, 19)),
+            continuity: ContinuityUnknown(gap),
+          );
+
+          expect(state, isA<CopyUnknown>(), reason: '$gap at $deviceNow');
+          expect(
+            (state as CopyUnknown).disagreement,
+            ClockDisagreement.clockContinuityUnknown,
+            reason: 'absence of evidence is its own answer, not a detected fault',
+          );
+        }
+      });
+    }
   });
 
   group('DESIGN section 9.1 rule 2: the deadline', () {
@@ -154,6 +331,7 @@ void main() {
       // it cannot be evidence that the host has stopped.
       final state = _evaluate(
         deviceNow: now,
+        continuity: trustedClock,
         diagnostics: _succeededAt(_deadline.subtract(const Duration(seconds: 1))),
       );
       expect(_cannotCheck(state), isA<NotCheckedSinceDue>());
@@ -174,6 +352,7 @@ void main() {
       for (final error in FetchFailureClass.values) {
         final state = _evaluate(
           deviceNow: now,
+          continuity: trustedClock,
           diagnostics: _failedAt(now, error: error, afterSuccessAt: afterDue),
         );
         final cause = _cannotCheck(state) as FetchFailed;
@@ -193,6 +372,7 @@ void main() {
     test('conjunct 3: what it served last is not what we hold', () {
       final state = _evaluate(
         deviceNow: now,
+        continuity: trustedClock,
         diagnostics: _succeededAt(afterDue, seq: PublicationSeq.parse('42')),
       );
       expect(_cannotCheck(state), isA<ServedPayloadNotHeld>());
@@ -207,6 +387,7 @@ void main() {
         publishInterval: _interval,
         grace: _grace,
         deviceNow: now,
+        continuity: trustedClock,
         diagnostics: _succeededAt(afterDue, seq: PublicationSeq.parse('10')),
         baseline: BaselineHeld(
           SeqBaseline(pairingId: _pairing, lastSeq: PublicationSeq.parse('10')),
@@ -226,6 +407,7 @@ void main() {
       // fetched" — that would be a claim with nothing behind it.
       final state = _evaluate(
         deviceNow: now,
+        continuity: trustedClock,
         diagnostics: const DiagnosticsUnreadable('stored fetch diagnostics are not JSON'),
       );
       final cause = _cannotCheck(state) as RecordsUnusable;
@@ -241,6 +423,7 @@ void main() {
       ]) {
         final state = _evaluate(
           deviceNow: now,
+          continuity: trustedClock,
           diagnostics: _succeededAt(afterDue),
           baseline: baseline,
         );
@@ -257,6 +440,7 @@ void main() {
           publishInterval: _interval,
           grace: _grace,
           deviceNow: DateTime.utc(2026, 9, 15, 12),
+          continuity: trustedClock,
         ),
         CopyFreshness.fresh,
       );
@@ -266,6 +450,7 @@ void main() {
           publishInterval: _interval,
           grace: _grace,
           deviceNow: DateTime.utc(2026, 9, 17),
+          continuity: trustedClock,
         ),
         CopyFreshness.stale,
       );
@@ -275,6 +460,7 @@ void main() {
           publishInterval: _interval,
           grace: _grace,
           deviceNow: _published.subtract(const Duration(hours: 1)),
+          continuity: trustedClock,
         ),
         CopyFreshness.unknown,
       );
