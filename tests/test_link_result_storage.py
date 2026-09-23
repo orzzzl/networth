@@ -99,7 +99,7 @@ def test_backfill_preserves_legacy_state_identity_clocks_and_attempts(state: str
         [(1, "synthetic-request-1"), (2, "synthetic-request-2")],
     )
     db.commit()
-    assert migrate(db) == (6, 7)
+    assert migrate(db) == (6, 7, 8)
     assert migrate(db) == ()
     assert db.execute("SELECT state FROM link_flow").fetchone() == (state,)
     assert db.execute("SELECT secret_ref, legacy_link_flow_id FROM link_request").fetchone() == (

@@ -447,7 +447,7 @@ def test_migration_preserves_prior_adjudication_when_reopening(tmp_path: Path) -
         (AUDIT, FLOW, STAMP, STAMP),
     )
     db.commit()
-    assert migrate(db) == (7,)
+    assert migrate(db) == (7, 8)
     assert (
         db.execute("SELECT resolution_note FROM link_observation_adjudication").fetchone()[0]
         == "Synthetic prior review"
@@ -564,3 +564,30 @@ def test_unidentified_success_is_held_even_when_the_reply_counts_no_results(
     ).fetchone() == ("MISSING_SESSION_ID", 1)
     with pytest.raises(ItemBudgetError, match="adjudication"):
         read_item_budget(db)
+
+
+def test_tokenless_success_reopens_a_resolved_observation_in_another_session(
+    setup: tuple[sqlite3.Connection, TokenStore],
+) -> None:
+    db, _ = setup
+    old = ingest(setup, session(None, tokens=(), count=1)).observation_ids[0]
+    resolve(db, old)
+    # A different session creates a different hold. Only the top-level reopen
+    # predicate can reopen the earlier observation; _hold's upsert cannot.
+    ingest(setup, session("later-tokenless-session", tokens=(), count=1))
+    assert db.execute(
+        "SELECT resolved_at FROM link_success_observation WHERE observation_id = ?", (old,)
+    ).fetchone() == (None,)
+
+
+@pytest.mark.parametrize("reviewed", [False, None, 1, "yes"])
+def test_direct_observation_adjudication_requires_literal_confirmation(
+    setup: tuple[sqlite3.Connection, TokenStore], reviewed: Any
+) -> None:
+    db, _ = setup
+    old = ingest(setup, session(None)).observation_ids[0]
+    with pytest.raises(ObservationError, match="explicit reviewed"):
+        adjudicate_observation(
+            db, observation_id=old, additional_slots=0, audit_id=AUDIT, now=NOW, reviewed=reviewed
+        )
+    assert db.execute("SELECT count(*) FROM link_observation_adjudication").fetchone() == (0,)
