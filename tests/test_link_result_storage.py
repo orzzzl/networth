@@ -99,7 +99,7 @@ def test_backfill_preserves_legacy_state_identity_clocks_and_attempts(state: str
         [(1, "synthetic-request-1"), (2, "synthetic-request-2")],
     )
     db.commit()
-    assert migrate(db) == (6,)
+    assert migrate(db) == (6, 7)
     assert migrate(db) == ()
     assert db.execute("SELECT state FROM link_flow").fetchone() == (state,)
     assert db.execute("SELECT secret_ref, legacy_link_flow_id FROM link_request").fetchone() == (
@@ -356,7 +356,8 @@ def test_adjudicated_duplicate_adds_no_slot_and_keeps_audit(db: sqlite3.Connecti
     request(db)
     result(db, 1)
     db.execute(
-        "INSERT INTO link_success_observation VALUES "
+        "INSERT INTO link_success_observation(observation_id, flow_id, link_session_id, "
+        "reason, observed_at, resolved_at, resolution_note, additional_slots) VALUES "
         "('observation', 'request-a', NULL, 'DIGEST_KEY_UNAVAILABLE', ?, ?, ?, 0)",
         (NOW, LATER, "Synthetic adjudication: already counted by result one"),
     )
