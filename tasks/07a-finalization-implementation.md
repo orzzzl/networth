@@ -61,7 +61,11 @@ pending-file material are exercised. The metadata-only client interface has no
 exchange method. Other tests cover rollback at the result transition,
 concurrent attribution changes, legacy mapping, absent/unverified/wrong
 material, duplicate and distinct Items, SDK serialization, malformed metadata,
-and redaction of sentinel institution and credential values.
+and redaction of sentinel institution and credential values. Direct tests of the
+metadata Protocol boundary also pin timestamp awareness, access-token reference
+kind, conflicting captured references, absent material identity, incomplete
+EXCHANGED identity, and malformed or credential-echoing metadata. Each guard is
+checked by a targeted deletion mutation, with a no-op control.
 
 These tests validate the finalization component, not the full automatic worker,
 Production, or the completed 06a measurement flows.

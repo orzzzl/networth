@@ -94,6 +94,8 @@ def finalize_durable_result(
         item = connection.execute(
             "SELECT id FROM item WHERE plaid_item_id = ?", (item_id,)
         ).fetchone()
+        # Non-NULL identity mismatches were refused above; these comparisons
+        # also require both identities to have been captured before idempotent success.
         if item is None or captured_item_id != item_id or captured_ref != secret_ref:
             raise FinalizationError("exchanged result is missing its committed Item or reference")
         return int(item[0])
