@@ -75,4 +75,5 @@ returned token handle is not exchange permission. The worker must inspect all
 persisted holds and credential candidates, respect each observed deadline, and
 conditionally claim the result before sending. The reaper must share ingestion's
 SQLite write lock when removing a request's digest key; a late poll after reaping
-still records a hold. No 06a flow is rerun and its heartbeat remains PAUSED.
+still records a hold. The worker must not poll a request whose polling is closed
+or whose material has been reaped. No 06a flow is rerun and its heartbeat remains PAUSED.

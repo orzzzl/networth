@@ -22,7 +22,7 @@ from networth.link_observations import (
 from networth.plaid.client import LinkSessionPoll, LinkSessionRecord, LinkSessionShape
 from networth.plaid.environment import Paths
 from networth.storage import migrate
-from networth.tokenstore import SecretKind, TokenStore, UnverifiedMaterial
+from networth.tokenstore import InvalidSecretRef, SecretKind, TokenStore, UnverifiedMaterial
 
 FLOW = "1" * 32
 AUDIT = "2" * 32
@@ -504,3 +504,63 @@ def test_unallowlisted_poll_fields_never_reach_storage(
     text = "\n".join(setup[0].iterdump()) + output.out + output.err + caplog.text + repr(outcome)
     for sentinel in (candidate.accounts, candidate.institution, TOKEN, KEY):
         assert sentinel not in text
+
+
+# "2" * 32 has no uppercase form, so the case arm needs a hex id that has letters.
+MALFORMED = ("synthetic free-form review note", "", ("ab" * 16).upper(), AUDIT + "0")
+
+
+def test_adjudication_refuses_free_form_audit_and_observation_identifiers(
+    setup: tuple[sqlite3.Connection, TokenStore],
+) -> None:
+    """`audit_id` names a private record by minted UUID; it is not an evidence field.
+
+    Without the refusal the operator's argument is concatenated straight into
+    `resolution_note`, which is how free-form text — a pasted credential among
+    it — reaches SQLite through a command whose whole contract is that it
+    carries none.
+    """
+    db, _ = setup
+    oid = ingest(setup, session(None)).observation_ids[0]
+    for audit in MALFORMED:
+        with pytest.raises((ObservationError, InvalidSecretRef)):
+            adjudicate_observation(
+                db,
+                observation_id=oid,
+                additional_slots=0,
+                audit_id=audit,
+                now=NOW,
+                reviewed=True,
+            )
+    for observation in MALFORMED:
+        with pytest.raises((ObservationError, InvalidSecretRef)):
+            adjudicate_observation(
+                db,
+                observation_id=observation,
+                additional_slots=0,
+                audit_id=AUDIT,
+                now=NOW,
+                reviewed=True,
+            )
+    assert db.execute("SELECT resolved_at FROM link_success_observation").fetchone()[0] is None
+    assert db.execute("SELECT count(*) FROM link_observation_adjudication").fetchone()[0] == 0
+
+
+def test_unidentified_success_is_held_even_when_the_reply_counts_no_results(
+    setup: tuple[sqlite3.Connection, TokenStore],
+) -> None:
+    """A token with no session id is spent capacity whatever `item_add_results` says.
+
+    The reply is not trusted to be self-consistent anywhere else in this module
+    (`tokens_missing` exists for the other direction), so a carried token must
+    not be erasable by a zero count: that reads as unused capacity.
+    """
+    db, _ = setup
+    observed = ingest(setup, session(None, count=0))
+    assert observed.tokens == ()
+    assert len(observed.observation_ids) == 1
+    assert db.execute(
+        "SELECT reason, max_reported_results FROM link_success_observation"
+    ).fetchone() == ("MISSING_SESSION_ID", 1)
+    with pytest.raises(ItemBudgetError, match="adjudication"):
+        read_item_budget(db)

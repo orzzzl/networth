@@ -289,7 +289,6 @@ def adjudicate_observation(
         raise ObservationError("adjudication requires no active transaction")
     if reviewed is not True:
         raise ObservationError("explicit reviewed slot adjudication is required")
-    secret_ref_for(SecretKind.LINK_TOKEN, observation_id)
     secret_ref_for(SecretKind.LINK_TOKEN, audit_id)
     if type(additional_slots) is not int or additional_slots < 0:
         raise ObservationError("additional slots must be a nonnegative integer")
