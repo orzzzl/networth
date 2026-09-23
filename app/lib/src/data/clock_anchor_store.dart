@@ -120,30 +120,23 @@ class FileClockAnchorStore implements ClockAnchorStore {
     // relied upon. A guard that lives only in the caller is a guard the caller
     // can forget, and this one is invisible when it is missing: the wrong
     // anchor produces a confident, wrong verdict rather than an error.
-    final AnchorTrust trust;
-    switch (await read(anchor.pairingId)) {
-      case AnchorHeld(anchor: final stored):
-        if (!(anchor.seq > stored.seq)) {
-          throw AnchorNotAdvanced(stored: stored.seq, offered: anchor.seq);
-        }
-        trust = _inherited(stored, anchor);
-      case AnchorAbsent():
-        // First-anchor establishment, and **it starts unproven**. There is no
-        // previous instant to preserve — but that is an argument for *having no
-        // evidence*, not for minting some. The record this writes is a pair of
-        // readings taken a moment apart, which agree with each other no matter
-        // how wrong the wall clock is. This is also the recovery path, after a
-        // lost or foreign anchor, and it starts unproven for the same reason.
-        trust = _offered(anchor);
-      case AnchorUnreadable():
-        // Damage must not block recovery. Refusing here would leave a phone
-        // whose anchor file was corrupted permanently unable to date any copy,
-        // and the record being replaced is one nothing can read anyway. What it
-        // must not do is come back *trusted*: the damaged record may have been
-        // the one holding the evidence of a broken clock, so recovery restores
-        // the ability to anchor and not the right to be believed.
-        trust = _offered(anchor);
+    //
+    // Damage must not block recovery, so an unreadable record is replaced rather
+    // than refused: a phone whose anchor file was corrupted would otherwise be
+    // permanently unable to date any copy, and the record being replaced is one
+    // nothing can read anyway. What recovery must not do is come back *trusted* —
+    // the damaged record may have been the one holding the evidence of a broken
+    // clock — and it does not, because [_offered] below is the only source of
+    // trust and a recovering caller has nothing new to offer.
+    if (await read(anchor.pairingId) case AnchorHeld(anchor: final stored)) {
+      if (!(anchor.seq > stored.seq)) {
+        throw AnchorNotAdvanced(stored: stored.seq, offered: anchor.seq);
+      }
     }
+    // **Trust is what this stamp can prove about itself, and nothing else.** See
+    // [_offered]: an advance that cannot corroborate its own reading writes
+    // `unproven`, whatever the record it replaces was worth.
+    final trust = _offered(anchor);
     final file = await open();
     final bytes = jsonEncode(_json(anchor, trust));
     // Writability and readability are one predicate, not two that can drift —
@@ -162,56 +155,42 @@ class FileClockAnchorStore implements ClockAnchorStore {
   /// What the caller brought, which today is always [AnchorTrust.unproven]
   /// because nothing in this app can construct the other value.
   ///
-  /// Named rather than inlined so the three call sites read as one rule: trust
-  /// is only ever *carried in* or *inherited*, and is never a consequence of
-  /// having written a record.
+  /// **This is the only source of trust in the store**, and the single call site
+  /// is the rule: an anchor is worth what its own stamp can prove, never what
+  /// the record it replaces was worth.
+  ///
+  /// That was not the first answer here, and the reason it is the answer now is
+  /// worth keeping. A previous revision let an advance *inherit* `corroborated`
+  /// when the interval since the stored anchor survived the same
+  /// [ContinuityHeld] test the reader applies. It closed the nine-day rollback —
+  /// but the reference it measured against was the immediately previous anchor,
+  /// which `establish` then replaced, so **the tolerance was re-granted at every
+  /// advance instead of bounding error since the last actual corroboration.**
+  /// Reproduced with the real store: corroborate seq 41, then advance 42/43/44 a
+  /// minute apart, each offering a wall reading one second short. Every step is
+  /// inside [ContinuityHeld.tolerance], every step inherits, the reader reports
+  /// *zero* drift, and a device three seconds slow calls a copy past its
+  /// deadline `COPY_FRESH`. Repeating advances grows the lost error without
+  /// bound; three steps are just the smallest deterministic case.
+  ///
+  /// **Why failing closed rather than preserving the last corroborated
+  /// reference.** Preservation is the other repair, and it would mean storing
+  /// the readings from the last real corroboration and measuring every later
+  /// advance against those. It is not built, because it would be machinery for a
+  /// producer that does not exist yet: nothing in this app can construct
+  /// [AnchorTrust.corroborated] at all, and the proof that eventually will —
+  /// the transport's two fetches from one monotonic run with a rising `seq` — is
+  /// owed by this same task. Its shape decides what a preserved reference would
+  /// even hold, so building the preserving half first would be guessing at it.
+  ///
+  /// And inheritance turns out to buy nothing that proof will not supply
+  /// directly. Inheriting required the stored anchor to share this one's run id;
+  /// a stored anchor from *this* run was established by an earlier successful
+  /// fetch in it, so an advance over it is by construction the second fetch of
+  /// exactly the pair that corroborates. Where inheritance could apply, direct
+  /// corroboration applies too — and where it cannot, `unproven` is the honest
+  /// answer rather than a cheaper one.
   AnchorTrust _offered(ClockAnchor anchor) => anchor.trust;
-
-  /// Trust after an accepted advance: **the previous anchor's, and only if the
-  /// interval since it survives the same test the predicate applies.**
-  ///
-  /// This is the fix for the hole the `seq` guard did not close. That guard
-  /// stops the anchor being *re-taken on a copy we already hold*; an advance is
-  /// a different event and used to re-stamp both readings unconditionally. The
-  /// nine-day case, reproduced against the real store: a phone rolled back nine
-  /// days correctly reports `COPY_UNKNOWN`, then fetches a `seq` the host
-  /// published before it stopped, and the fresh pair of readings — taken a
-  /// moment apart and therefore in perfect agreement — renders that
-  /// nine-day-old publication `COPY_FRESH`. The measurement was not contradicted
-  /// by anything; it was overwritten.
-  ///
-  /// So the interval from the stored anchor to this one is evaluated with the
-  /// **same** [ContinuityHeld] the reader uses — same `drift`, same
-  /// [ContinuityHeld.tolerance] — rather than a second copy of the rule that can
-  /// drift away from it. A discontinuity, a backwards counter or a drift past
-  /// tolerance all land in the same place: whatever the old anchor was worth,
-  /// this one is worth nothing.
-  AnchorTrust _inherited(ClockAnchor stored, ClockAnchor offered) {
-    if (_offered(offered) == AnchorTrust.corroborated) {
-      // Fresh proof outranks history: a caller that can corroborate *this*
-      // stamp does not need the old one to have been sound.
-      return AnchorTrust.corroborated;
-    }
-    if (stored.trust != AnchorTrust.corroborated) {
-      return AnchorTrust.unproven;
-    }
-    if (stored.reading.runId != offered.reading.runId) {
-      return AnchorTrust.unproven;
-    }
-    final monotonic = offered.reading.elapsed - stored.reading.elapsed;
-    if (monotonic.isNegative) {
-      // Same run id, smaller reading: one of the two is wrong and there is no
-      // way to tell which, so the run identity has stopped meaning anything.
-      return AnchorTrust.unproven;
-    }
-    final continuity = AnchoredClockEvidence(
-      anchoredAt: stored.anchoredAt,
-      monotonicElapsed: monotonic,
-    ).at(offered.anchoredAt);
-    return continuity is ContinuityHeld && continuity.isTrustworthy
-        ? AnchorTrust.corroborated
-        : AnchorTrust.unproven;
-  }
 
   Map<String, Object?> _json(ClockAnchor anchor, AnchorTrust trust) => <String, Object?>{
         'pairing_id': anchor.pairingId,

@@ -484,17 +484,37 @@ void main() {
       final deviceNow = publishedAt.add(const Duration(hours: 1));
       expect(await verdict(source: source, deviceNow: deviceNow), isA<CopyFresh>());
 
-      // And it survives an advance whose interval holds, so the preservation
-      // rule is not write-only.
+      // And it survives an advance that corroborates itself, so the rule is not
+      // write-only. **The advance has to carry `corroborated`**, which is the
+      // repair to the finding on this component: an advance used to inherit the
+      // stored trust whenever the interval since the previous anchor held, and
+      // because `establish` then replaced that anchor, the allowance was handed
+      // out afresh at every publication instead of bounding error since the last
+      // real corroboration. Small drifts accumulated unseen.
       await anchorAt(
         at: deviceNow,
         runId: 'boot-1',
         elapsed: const Duration(hours: 1),
         seq: '42',
+        trust: AnchorTrust.corroborated,
       );
       expect(
         await verdict(source: source, published: deviceNow, deviceNow: deviceNow),
         isA<CopyFresh>(),
+      );
+
+      // The same advance without that proof is `COPY_UNKNOWN`, and this is the
+      // half of the control that would have caught the finding: it is exactly
+      // the step the old rule waved through.
+      await anchorAt(
+        at: deviceNow,
+        runId: 'boot-1',
+        elapsed: const Duration(hours: 1),
+        seq: '43',
+      );
+      expect(
+        await verdict(source: source, published: deviceNow, deviceNow: deviceNow),
+        isA<CopyUnknown>(),
       );
     });
   });

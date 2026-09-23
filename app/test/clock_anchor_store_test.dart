@@ -118,8 +118,9 @@ void main() {
       // invisible to any round trip through it.
       await store.establish(anchor(seq: '41', trust: AnchorTrust.corroborated));
       expect((jsonDecode(await file.readAsString()) as Map)['trust'], 'corroborated');
-      // A fresh start rather than a second establish, which would *inherit* the
-      // corroborated value over an interval both clocks agree on.
+      // A fresh start rather than a second establish, so that what is asserted
+      // is the *spelling* of `unproven` and not the advance rule that would also
+      // produce it.
       await file.delete();
       await store.establish(anchor(seq: '41'));
       expect((jsonDecode(await file.readAsString()) as Map)['trust'], 'unproven');
@@ -388,7 +389,13 @@ void main() {
       );
     });
 
-    test('an advance over a corroborated anchor keeps it when the interval holds', () async {
+    test('an advance a corroborated anchor cannot vouch for loses the trust', () async {
+      // **The behaviour change**, stated as its own case rather than left to be
+      // inferred from the drift regression below. A previous revision kept
+      // `corroborated` here, because two hours by both clocks is a perfect
+      // interval. It is still perfect and the answer is still no: the interval
+      // was measured against a reference this call is about to overwrite, so
+      // believing it is what let the error below accumulate.
       expect(
         await trustAfter(<ClockAnchor>[
           anchor(
@@ -398,6 +405,82 @@ void main() {
             trust: AnchorTrust.corroborated,
           ),
           anchor(at: utc(20, 11), elapsed: const Duration(hours: 2), seq: '42'),
+        ]),
+        AnchorTrust.unproven,
+      );
+    });
+
+    test('repeated advances inside tolerance cannot accumulate undetected drift', () async {
+      // The review finding, at this layer. Each step loses one second against a
+      // monotonic minute — comfortably inside `ContinuityHeld.tolerance` — so
+      // under the inheriting rule every one of them was believed, while the
+      // device quietly fell three seconds behind the only corroboration it ever
+      // had. The reference moved with the anchor, so the allowance was re-granted
+      // per publication instead of bounding error since that corroboration.
+      //
+      // **Three steps are the smallest deterministic case, not the limit**: the
+      // lost error grows with the number of advances, which is why the repair is
+      // to stop inheriting rather than to widen anything.
+      expect(
+        await trustAfter(<ClockAnchor>[
+          anchor(
+            at: utc(20, 12),
+            elapsed: Duration.zero,
+            seq: '41',
+            trust: AnchorTrust.corroborated,
+          ),
+          anchor(
+            at: utc(20, 12).add(const Duration(seconds: 59)),
+            elapsed: const Duration(seconds: 60),
+            seq: '42',
+          ),
+          anchor(
+            at: utc(20, 12).add(const Duration(seconds: 118)),
+            elapsed: const Duration(seconds: 120),
+            seq: '43',
+          ),
+          anchor(
+            at: utc(20, 12).add(const Duration(seconds: 177)),
+            elapsed: const Duration(seconds: 180),
+            seq: '44',
+          ),
+        ]),
+        AnchorTrust.unproven,
+      );
+    });
+
+    test('an advance that corroborates itself keeps trust however often it repeats', () async {
+      // The control, and it is the one that has to exist: a repair that returns
+      // `unproven` unconditionally passes every case above, so something must
+      // fail when trust is hardcoded away. The same four publications as the
+      // regression, the same imperfect wall readings — and each advance carries
+      // its own proof, which is what the transport will supply.
+      expect(
+        await trustAfter(<ClockAnchor>[
+          anchor(
+            at: utc(20, 12),
+            elapsed: Duration.zero,
+            seq: '41',
+            trust: AnchorTrust.corroborated,
+          ),
+          anchor(
+            at: utc(20, 12).add(const Duration(seconds: 59)),
+            elapsed: const Duration(seconds: 60),
+            seq: '42',
+            trust: AnchorTrust.corroborated,
+          ),
+          anchor(
+            at: utc(20, 12).add(const Duration(seconds: 118)),
+            elapsed: const Duration(seconds: 120),
+            seq: '43',
+            trust: AnchorTrust.corroborated,
+          ),
+          anchor(
+            at: utc(20, 12).add(const Duration(seconds: 177)),
+            elapsed: const Duration(seconds: 180),
+            seq: '44',
+            trust: AnchorTrust.corroborated,
+          ),
         ]),
         AnchorTrust.corroborated,
       );
@@ -424,54 +507,15 @@ void main() {
       );
     });
 
-    test('an advance from a different run cannot inherit anything', () async {
-      // A counter that reset. The two readings are both valid and entirely
-      // incomparable, so the interval between them was never measured.
-      expect(
-        await trustAfter(<ClockAnchor>[
-          anchor(
-            at: utc(20, 9),
-            runId: 'run-1',
-            elapsed: Duration.zero,
-            seq: '41',
-            trust: AnchorTrust.corroborated,
-          ),
-          anchor(at: utc(20, 11), runId: 'run-2', elapsed: const Duration(hours: 2), seq: '42'),
-        ]),
-        AnchorTrust.unproven,
-      );
-    });
-
-    test('a counter that went backwards under one run id inherits nothing', () async {
-      // Same run, smaller reading: one of the two is wrong and there is no way
-      // to tell which, so the run identity has stopped meaning anything.
-      //
-      // **The two readings must very nearly cancel**, and that is the whole
-      // point of the case. Deleting the guard and letting a negative monotonic
-      // delta through leaves `drift = wall - monotonic`, which for a backwards
-      // counter *grows* — so any ordinary scenario is caught by the drift check
-      // anyway and cannot tell whether this guard exists. Written first with
-      // three hours of each, it passed against the mutant. One second of wall
-      // and two of counter leaves a drift of one second, inside
-      // `ContinuityHeld.tolerance`, and the mutant hands back corroborated on
-      // two readings that flatly contradict each other.
-      expect(
-        await trustAfter(<ClockAnchor>[
-          anchor(
-            at: DateTime.utc(2026, 9, 20, 9),
-            elapsed: const Duration(hours: 5),
-            seq: '41',
-            trust: AnchorTrust.corroborated,
-          ),
-          anchor(
-            at: DateTime.utc(2026, 9, 20, 8, 59, 59),
-            elapsed: const Duration(hours: 4, minutes: 59, seconds: 58),
-            seq: '42',
-          ),
-        ]),
-        AnchorTrust.unproven,
-      );
-    });
+    // **Two cases were deleted here rather than kept, and that is deliberate.**
+    // `an advance from a different run cannot inherit anything` and `a counter
+    // that went backwards under one run id inherits nothing` both pinned parts
+    // of the inheriting rule — the run-id comparison and the negative-delta
+    // guard — and the repair removes that rule entirely. Left in place they
+    // would still pass, for the same reason every case in this group now passes:
+    // an advance without its own proof is `unproven` whatever its readings say.
+    // An assertion that cannot fail is worse than no assertion, because it reads
+    // as coverage of a mechanism that is no longer there.
 
     test('a caller that corroborates this stamp does not need the old one', () async {
       // Fresh proof outranks history — otherwise a phone whose clock was once
