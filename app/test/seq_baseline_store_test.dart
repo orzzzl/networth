@@ -241,6 +241,47 @@ void main() {
       await Process.run('chmod', <String>['600', file.path]);
     });
 
+    test('and so is anything at the path that is not a readable file', () async {
+      // §9.3's accept-on-trust is for a baseline that never existed. Each shape
+      // below answers `exists() == false` while being something other than
+      // absence, and reading any of them as [BaselineAbsent] would re-baseline
+      // I6 on whatever the next payload claims — corruption as the bypass for
+      // the one check that survives a valid ciphertext.
+      Directory(file.path).createSync();
+      expect(await store.read('pairing-a'), isA<BaselineUnreadable>(),
+          reason: 'a directory standing at the path');
+      Directory(file.path).deleteSync();
+
+      Link(file.path).createSync('${directory.path}/no-such-target');
+      expect(await store.read('pairing-a'), isA<BaselineUnreadable>(),
+          reason: 'a dangling symlink, which fails with a missing file\'s own errno');
+      Link(file.path).deleteSync();
+
+      final locked = Directory('${directory.path}/locked')..createSync();
+      // Registered before the mode changes, so a failure below cannot leave the
+      // temp tree undeletable and mask this test behind a tearDown error.
+      addTearDown(() => Process.run('chmod', <String>['-R', '755', directory.path]));
+      final behind = FileSeqBaselineStore(
+        open: () async => File('${locked.path}/${FileSeqBaselineStore.fileName}'),
+      );
+      await behind.write(baseline(lastSeq: '7'));
+      await Process.run('chmod', <String>['000', locked.path]);
+      var enforced = true;
+      try {
+        await File('${locked.path}/${FileSeqBaselineStore.fileName}').readAsString();
+        enforced = false;
+      } on Object {
+        // As intended.
+      }
+      if (enforced) {
+        expect(await behind.read('pairing-a'), isA<BaselineUnreadable>(),
+            reason: 'a perfectly good baseline behind a parent it cannot search');
+      } else {
+        markTestSkipped('this runner can search a mode-000 directory');
+      }
+      await Process.run('chmod', <String>['755', locked.path]);
+    });
+
     test('even when the damaged record names another pairing', () async {
       // The scoping check runs before the rest of the record is read, so a
       // foreign pairing is absent — but a file whose `pairing_id` cannot be read

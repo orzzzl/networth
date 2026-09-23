@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import '../domain/fetch_diagnostics.dart';
 import '../domain/payload_format_exception.dart';
 import '../domain/publication_seq.dart';
+import 'stored_file.dart';
 
 /// Where the phone's own fetch history lives.
 abstract interface class FetchDiagnosticsStore {
@@ -47,24 +48,18 @@ class FileFetchDiagnosticsStore implements FetchDiagnosticsStore {
 
   @override
   Future<DiagnosticsState> read(String pairingId) async {
+    // Same proof as the baseline store, for a weaker reason that is still worth
+    // having: nothing here can be bypassed by damage, but "never fetched" and
+    // "cannot read what I recorded" are different things to tell the owner, and
+    // an unreadable record must not be able to spell itself as the former.
     final String bytes;
-    try {
-      final file = await open();
-      if (!await file.exists()) {
+    switch (await readStoredFile(open)) {
+      case StoredBytes(bytes: final read):
+        bytes = read;
+      case StoredAbsent():
         return const DiagnosticsAbsent();
-      }
-      bytes = await file.readAsString();
-    } on Object catch (error) {
-      // `exists()` answering false is the only thing that may mean absent —
-      // everything else between "where is the file" and "here are its bytes" is
-      // a record this phone has and cannot read. Caught as `Object` because the
-      // types this path can raise are the union of `dart:io`'s and whatever
-      // `open` reaches for: `path_provider` raises
-      // `MissingPlatformDirectoryException`, which is not a
-      // `FileSystemException`, and a type this catch had not heard of would
-      // surface to a caller that is holding a [DiagnosticsState] and reasonably
-      // assuming its three cases are all of them.
-      return DiagnosticsUnreadable('fetch diagnostics could not be read: $error');
+      case StoredUnreadable(reason: final reason):
+        return DiagnosticsUnreadable('fetch diagnostics could not be read: $reason');
     }
     try {
       return DiagnosticsHeld(_parse(bytes, pairingId: pairingId));

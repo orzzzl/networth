@@ -185,21 +185,37 @@ void main() {
       }
     });
 
-    test('cannot be recorded at or before the last success it follows', () async {
-      // The one state conjunct 2 cannot describe honestly: the timestamps would
-      // read "nothing has failed since" while an error is held, and the phone
-      // would announce `HOST_NOT_PUBLISHING` on a fetch it knows failed.
+    test('survives a stamp at or before the success it follows', () async {
+      // Attempt order is not wall-clock order. This store used to refuse such a
+      // record, which kept the older *success* on disk — so conjunct 2 saw no
+      // held error and the phone reported `HOST_NOT_PUBLISHING` about a host it
+      // had just failed to reach. Refusing discarded the newer, worse news.
       final success = FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7'));
 
-      expect(
-        () => failed(at: utc(20, 9), after: success),
-        throwsA(isA<PayloadFormatException>()),
-      );
-      expect(
-        () => failed(at: utc(19, 9), after: success),
-        throwsA(isA<PayloadFormatException>()),
-      );
-      expect(() => failed(at: utc(20, 10), after: success), returnsNormally);
+      for (final at in <DateTime>[utc(19, 9), utc(20, 9), utc(20, 10)]) {
+        await store.write(failed(at: at, after: success));
+
+        final stored = held(await store.read('pairing-a'));
+        expect(stored.lastError, FetchFailureClass.offline);
+        expect(stored.lastAttemptAt.isAtSameMomentAs(at), isTrue);
+        expect(stored.lastSuccess, success, reason: 'the success it followed is kept');
+      }
+    });
+
+    test('and an out-of-order stamp is this record\'s own clock evidence', () {
+      // Two readings of this device's own clock disagreeing. It survives a
+      // restart, unlike any claim about "now" — but it does not bound how far
+      // back the clock went, and it cannot see a correction applied while no
+      // attempt was made at all.
+      final success = FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7'));
+
+      expect(failed(at: utc(19, 9), after: success).clockMovedBackwards, isTrue);
+      expect(failed(at: utc(20, 9), after: success).clockMovedBackwards, isTrue);
+      expect(failed(at: utc(20, 10), after: success).clockMovedBackwards, isFalse);
+      expect(failed(at: utc(19, 9)).clockMovedBackwards, isFalse,
+          reason: 'no success to disagree with');
+      expect(succeeded(at: utc(20, 9), seq: '7').clockMovedBackwards, isFalse,
+          reason: 'the success path makes the two instants one value');
     });
   });
 
@@ -249,6 +265,26 @@ void main() {
     });
 
     test('when it records no attempt', () => damaged('{"pairing_id": "pairing-a"}'));
+
+    test('when the path holds something that is not a readable file', () async {
+      // Nothing here can be bypassed by damage — no facts means no conjunct,
+      // and the predicate falls to `CANNOT_CHECK`, which blames nobody. But
+      // "this phone has never fetched" and "this phone cannot read what it
+      // recorded" are different things to tell the owner, and every shape below
+      // answers `exists() == false` while being neither absence nor a file.
+      Directory(file.path).createSync();
+      expect(await store.read('pairing-a'), isA<DiagnosticsUnreadable>(),
+          reason: 'a directory standing at the path');
+      Directory(file.path).deleteSync();
+
+      Link(file.path).createSync('${directory.path}/no-such-target');
+      expect(await store.read('pairing-a'), isA<DiagnosticsUnreadable>(),
+          reason: 'a dangling symlink, which fails with a missing file\'s own errno');
+      Link(file.path).deleteSync();
+
+      expect(await store.read('pairing-a'), isA<DiagnosticsAbsent>(),
+          reason: 'and with the path genuinely clear again, absence is still absence');
+    });
 
     test('when an instant carries no timezone', () async {
       // The case this check exists for: `DateTime.parse` would read it as local

@@ -102,22 +102,6 @@ class FetchDiagnostics {
         lastError = error,
         lastSuccess = after {
     _checkPairing(pairingId);
-    if (after != null && !after.at.isBefore(at)) {
-      // **The one state §9.1's second conjunct cannot describe honestly.** It
-      // reads `last_fetch_attempt_at == last_fetch_success_at` as "and nothing
-      // has failed since", so a failure recorded at or before the instant of the
-      // last success makes that conjunct true while an error is held — the
-      // phone would announce `HOST_NOT_PUBLISHING` on the strength of a fetch it
-      // knows failed. Refusing is the conservative direction: the record keeps
-      // its previous contents and the predicate falls to `CANNOT_CHECK`, which
-      // blames nobody. Unreachable from the transport, where attempts are
-      // sequential and a round trip cannot complete inside one microsecond, so
-      // this guards the bytes on disk and a future caller, not today's.
-      throw PayloadFormatException(
-        'a failed attempt at $at cannot be recorded at or before the last '
-        'success at ${after.at}',
-      );
-    }
   }
 
   /// The pairing every fact below was observed under.
@@ -134,6 +118,31 @@ class FetchDiagnostics {
   /// `last_fetch_success_at` + `last_fetch_seq`, or `null` if no fetch under
   /// this pairing has ever returned a payload.
   final FetchSuccess? lastSuccess;
+
+  /// This record's own proof that the device clock moved backwards.
+  ///
+  /// A failed attempt stamped at or before the success it followed can only
+  /// happen one way: the two stamps came from a clock that was corrected
+  /// backwards between them. **Attempt order is not wall-clock order**, and an
+  /// earlier version of this class refused to record such a failure at all —
+  /// which meant that after a backwards correction the phone kept the older
+  /// *success* on disk, and §9.1's second conjunct, reading no held error, went
+  /// on to report `HOST_NOT_PUBLISHING` about a host it had just failed to
+  /// reach. Refusing looked like the conservative direction and was the opposite
+  /// of it: the refusal discarded the newer, worse news.
+  ///
+  /// Nothing about the second conjunct needed the ordering. It is read from
+  /// [lastError] — the outcome the attempt actually had — and never from a
+  /// comparison of the two instants, so recording the failure is all that was
+  /// ever required. What the ordering is good for is this: it is the only
+  /// evidence of a backwards correction that survives a restart, since it is
+  /// two of this device's own readings disagreeing rather than a claim about
+  /// now. It does **not** bound how far back the clock went, and it cannot see a
+  /// correction applied while no attempt was made at all.
+  bool get clockMovedBackwards {
+    final success = lastSuccess;
+    return lastError != null && success != null && !success.at.isBefore(lastAttemptAt);
+  }
 
   static void _checkPairing(String pairingId) {
     if (pairingId.isEmpty) {

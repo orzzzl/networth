@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import '../domain/payload_format_exception.dart';
 import '../domain/publication_seq.dart';
 import '../domain/seq_baseline.dart';
+import 'stored_file.dart';
 
 /// Where I6's baseline lives.
 abstract interface class SeqBaselineStore {
@@ -50,27 +51,21 @@ class FileSeqBaselineStore implements SeqBaselineStore {
 
   @override
   Future<BaselineState> read(String pairingId) async {
+    // Absence is [readStoredFile]'s to prove, and it must be: a baseline that
+    // reads as absent takes §9.3's accept-on-trust path, so anything that
+    // answers "absent" without proof is I6's bypass. The first version of this
+    // asserted that `File.exists()` answering false was the only thing that
+    // could mean absent; review measured three ways for that to be false, one
+    // of them a perfectly good baseline behind a directory the app had lost
+    // permission to search.
     final String bytes;
-    try {
-      final file = await open();
-      if (!await file.exists()) {
+    switch (await readStoredFile(open)) {
+      case StoredBytes(bytes: final read):
+        bytes = read;
+      case StoredAbsent():
         return const BaselineAbsent();
-      }
-      bytes = await file.readAsString();
-    } on Object catch (error) {
-      // **`exists()` answering false is the only thing that may mean absent.**
-      // Everything else that can go wrong between "where is the file" and "here
-      // are its bytes" is a baseline this phone has and cannot read, which is
-      // the [BaselineUnreadable] case — a permission the app lost, a directory
-      // the platform could not resolve, a read that failed mid-file. Caught as
-      // `Object` rather than as `FileSystemException` deliberately: the set of
-      // exception types this path can raise is the union of `dart:io`'s and
-      // whatever `open` reaches for (`path_provider` raises its own
-      // `MissingPlatformDirectoryException`, which is not a `FileSystemException`),
-      // and a type this catch has not heard of would otherwise propagate to a
-      // caller that is looking at a `BaselineState` and reasonably assuming the
-      // three cases are all of them.
-      return BaselineUnreadable('baseline could not be read: $error');
+      case StoredUnreadable(reason: final reason):
+        return BaselineUnreadable('baseline could not be read: $reason');
     }
     try {
       return BaselineHeld(_parse(bytes, pairingId: pairingId));
