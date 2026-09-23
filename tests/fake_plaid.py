@@ -203,6 +203,9 @@ class FakeSandboxApi:
         # call is how a test stops testing what its name says.
         raise AssertionError("the Link rehearsal must not call /item/get")
 
+    def institutions_get_by_id(self, request: Any) -> Any:
+        raise AssertionError("this test must not call /institutions/get_by_id")
+
     def institutions_get(self, institutions_get_request: Any) -> Any:
         return self._answer(
             "institutions_get",

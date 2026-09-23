@@ -46,6 +46,7 @@ from plaid.exceptions import ApiException
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
+from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
 from plaid.model.institutions_get_request import InstitutionsGetRequest
 from plaid.model.institutions_get_request_options import InstitutionsGetRequestOptions
 from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
@@ -174,6 +175,7 @@ class _PlaidApi(Protocol):
 
     def item_get(self, item_get_request: ItemGetRequest) -> Any: ...
     def institutions_get(self, institutions_get_request: InstitutionsGetRequest) -> Any: ...
+    def institutions_get_by_id(self, request: InstitutionsGetByIdRequest) -> Any: ...
     def sandbox_public_token_create(
         self, sandbox_public_token_create_request: SandboxPublicTokenCreateRequest
     ) -> Any: ...
@@ -231,6 +233,23 @@ class ExchangedItem:
             "ExchangedItem(access_token=<redacted>, item_id=<redacted>, "
             f"request_id={self.request_id!r})"
         )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ItemInstitution:
+    """Verified runtime metadata for finalizing a durable Link result.
+
+    Only the identifiers, display name and OAuth capability leave the SDK seam.
+    None are rendered, including on a failed finalization.
+    """
+
+    item_id: str
+    institution_id: str
+    name: str
+    is_oauth: bool
+
+    def __repr__(self) -> str:
+        return "ItemInstitution(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -956,6 +975,41 @@ class PlaidClient:
             investments_status_observed=investments_observed,
             investments_last_successful_update=investments_update,
         )
+
+    def item_institution(
+        self, access_token: str, *, expected_item_id: str, country_codes: Sequence[str]
+    ) -> ItemInstitution:
+        """Read an Item's institution after its credential is durable (07a, A).
+
+        Refuse missing/mismatched identity rather than inventing an institution.
+        Use the authenticated Item read, never institution/accounts metadata from
+        a Link poll. These reads cannot create an Item or exchange a token.
+        """
+        step = "item/get metadata"
+        response = self._call(
+            "item/get", self._api.item_get, ItemGetRequest(access_token=access_token)
+        )
+        item = getattr(response, "item", None)
+        item_id = _required_text(item, "item_id", step=step)
+        institution_id = _required_text(item, "institution_id", step=step)
+        if item_id != expected_item_id or access_token in (item_id, institution_id):
+            raise PlaidCallError("item/get metadata identity mismatch")
+        response = self._call(
+            "institutions/get_by_id",
+            self._api.institutions_get_by_id,
+            InstitutionsGetByIdRequest(
+                institution_id=institution_id,
+                country_codes=[CountryCode(code) for code in country_codes],
+            ),
+        )
+        institution = getattr(response, "institution", None)
+        step = "institutions/get_by_id"
+        returned_id = _required_text(institution, "institution_id", step=step)
+        name = _required_text(institution, "name", step=step)
+        oauth = getattr(institution, "oauth", None)
+        if returned_id != institution_id or name == access_token or type(oauth) is not bool:
+            raise PlaidCallError("institutions/get_by_id returned invalid metadata")
+        return ItemInstitution(item_id, institution_id, name, oauth)
 
     def first_institution_supporting(
         self, *, products: Sequence[str], country_codes: Sequence[str]

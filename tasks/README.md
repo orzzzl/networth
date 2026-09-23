@@ -81,7 +81,7 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **WIP** (07a contract review; implementation pending) |
+| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **WIP** (storage merged; durable finalization in review) |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
@@ -1474,6 +1474,8 @@ Preserve the session and its observed timestamps while waiting for a token.
 **Approved implementation contract:** [07a flow contract](07a-flow-contract.md),
 reviewed and merged in PR #88. The first implementation step and the approved
 Item-finalization decision are in [07a storage implementation](07a-storage-implementation.md).
+The post-storage component and remaining worker obligations are described in
+[07a durable finalization](07a-finalization-implementation.md).
 The existing one-row-per-URL schema cannot retain every session identifier or
 represent multiple successful results. The approved request/session/result split
 is the implementation boundary. Remaining decisions are agent review dependencies;
