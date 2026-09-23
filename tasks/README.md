@@ -1471,20 +1471,26 @@ Preserve the session and its observed timestamps while waiting for a token.
 - [ ] Test both measured shapes and the other not-ready forms: absent/null/empty
       session lists and unfinished sessions. No token yet must not imply no session.
 
-**Implementation contract under review:** [07a flow contract](07a-flow-contract.md).
+**Approved implementation contract:** [07a flow contract](07a-flow-contract.md),
+reviewed and merged in PR #88. The first implementation step and the approved
+Item-finalization decision are in [07a storage implementation](07a-storage-implementation.md).
 The existing one-row-per-URL schema cannot retain every session identifier or
-represent multiple successful results. Resolve the proposed storage and budget
-boundary there with Claude before implementing that behavior. This is an agent
-review dependency; it does not reopen `06a` or require an owner measurement.
+represent multiple successful results. The approved request/session/result split
+is the implementation boundary. Remaining decisions are agent review dependencies;
+they do not reopen `06a` or require an owner measurement.
 
 **Acceptance:**
 
 - [ ] Ten `link_flow` states, response-driven: `started_at`/`finished_at` are **observed
       from the API**, never stamped at mint time. Both deadlines derive from `finished_at`
       and are `NULL` — *unknown*, never *passed* — until the session finishes.
-- [ ] **Only `TOKEN_EXPIRED` and `EXCHANGE_UNCERTAIN` count against the Item budget.** A
-      URL never opened, or a session exited, spends **no slot** (**F2a**) and must not be
-      reported as one. `URL_EXPIRED` is a distinct, no-slot-spent fact.
+- [ ] `TOKEN_EXPIRED` and `EXCHANGE_UNCERTAIN` are stranded slots; pending/exchanging
+      successes and stored Items also count, reconciled by Item identity under the
+      approved contract. A URL never opened, or a session exited, spends **no slot**
+      (**F2a**) and must not be reported as one. `URL_EXPIRED` is a distinct,
+      no-slot-spent fact; parent state never suppresses child success evidence.
+- [ ] The change that first writes a success observation must include an authorized
+      adjudication command in the same PR, so every budget hold has an operator exit.
 - [ ] `ABANDONED` has a reachable definition, and a test reaches it.
 - [ ] Entry to `EXCHANGING` is a **conditional** `UPDATE … WHERE
       state='SUCCESS_PENDING_EXCHANGE'`; a worker changing **0 rows does not call Plaid**.
@@ -1497,6 +1503,11 @@ review dependency; it does not reopen `06a` or require an owner measurement.
 - [ ] `EXCHANGE_UNCERTAIN` is a real terminal outcome, not a retry loop against a
       single-use token.
 - [ ] The `access_token` is written through `TokenStore` **before** the `item` row.
+- [ ] Institution metadata is resolved after credential durability; set `EXCHANGED`
+      only in the transaction committing the `item` row. A metadata outage leaves
+      `EXCHANGING`; a restart test proves reconciliation finds the material and
+      retries metadata without another exchange. Sentinel institution values must
+      appear in neither logs nor exception text.
 - [ ] **`item_id` is asserted not to be the material before `put` is called** — issue
       **#42**, deferred here from `05a` by owner adjudication (issue #28) and tagged **must
       close before the first Production Link**. `TokenStore` cannot tell the two apart by

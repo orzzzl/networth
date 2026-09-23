@@ -135,8 +135,8 @@ def _insert_link_flow(
 def test_migrations_run_from_empty_and_are_idempotent() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        assert migrate(connection) == (1, 2, 3, 4, 5)
-        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+        assert migrate(connection) == (1, 2, 3, 4, 5, 6)
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
         assert connection.execute("PRAGMA busy_timeout").fetchone() == (5000,)
         before = connection.execute(
@@ -173,8 +173,8 @@ def test_item_health_migration_upgrades_v1_without_rewriting_items() -> None:
         )
         connection.commit()
 
-        assert migrate(connection) == (2, 3, 4, 5)
-        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+        assert migrate(connection) == (2, 3, 4, 5, 6)
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
         assert connection.execute(
             """
             SELECT plaid_item_id, status, last_health_poll_at,
@@ -224,7 +224,7 @@ def test_success_only_migration_preserves_every_envelope_and_sequence_trigger() 
         )
         connection.commit()
 
-        assert migrate(connection) == (5,)
+        assert migrate(connection) == (5, 6)
 
         assert _columns(connection, "publication") == (
             "id",
@@ -314,7 +314,7 @@ def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
     database_path = tmp_path / "networth.db"
     connection = sqlite3.connect(database_path)
     try:
-        assert migrate(connection) == (1, 2, 3, 4, 5)
+        assert migrate(connection) == (1, 2, 3, 4, 5, 6)
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
     finally:
         connection.close()
@@ -329,10 +329,10 @@ def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
 def test_migration_refuses_a_database_from_the_future() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        connection.execute("PRAGMA user_version = 6")
+        connection.execute("PRAGMA user_version = 7")
         with pytest.raises(SchemaTooNewError, match="newer than supported"):
             migrate(connection)
-        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (7,)
     finally:
         connection.close()
 
@@ -514,6 +514,53 @@ def test_schema_has_exactly_the_required_tables_and_columns(db: sqlite3.Connecti
         ),
         "link_exchange_attempt": ("link_flow_id", "attempt_number", "request_id"),
     }
+    expected.update(
+        {
+            "link_request": (
+                "flow_id",
+                "legacy_link_flow_id",
+                "secret_ref",
+                "minted_at",
+                "hosted_url_expires_at",
+                "second_copy_verified_at",
+                "second_copy_holder",
+                "state",
+                "last_poll_at",
+                "poll_error",
+                "polling_closed_at",
+                "material_reaped_at",
+                "secret_ref_cleared_at",
+            ),
+            "link_session": ("flow_id", "link_session_id", "state", "started_at", "finished_at"),
+            "link_result": (
+                "result_id",
+                "flow_id",
+                "link_session_id",
+                "legacy_link_flow_id",
+                "token_digest",
+                "state",
+                "finished_at",
+                "token_exchange_expires_at",
+                "session_retention_expires_at",
+                "item_id",
+                "secret_ref",
+                "exchange_claimed_at",
+                "exchange_claim_owner",
+                "exchange_attempts",
+            ),
+            "link_result_attempt": ("result_id", "attempt_number", "request_id"),
+            "link_success_observation": (
+                "observation_id",
+                "flow_id",
+                "link_session_id",
+                "reason",
+                "observed_at",
+                "resolved_at",
+                "resolution_note",
+                "additional_slots",
+            ),
+        }
+    )
     actual_tables = {
         str(row[0])
         for row in db.execute(
