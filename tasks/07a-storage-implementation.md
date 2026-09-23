@@ -12,8 +12,9 @@ explicit success observations. It does not implement or run the exchange worker.
   migrated request records its unique old row id. Each legacy success gets one
   durable result UUID and a unique old-row mapping, including when there is no
   provider session id. No session id or public-token digest is fabricated.
-- The unified success view excludes migrated parents. Unmigrated legacy evidence
-  remains visible, so importing legacy evidence cannot silently make it free.
+- The unified success view excludes legacy evidence only when a result carries
+  its legacy row mapping; a request mapping alone never suppresses a spent slot.
+  Unmigrated legacy evidence remains visible, so importing legacy evidence cannot silently make it free.
   New writers must use the new tables. Older binaries reject schema version 6
   through their existing migration guard.
 - Each result has its own access-token reference field. Migration does not read,
@@ -30,9 +31,11 @@ explicit success observations. It does not implement or run the exchange worker.
   refuses the whole count. The payload wire contract is unchanged.
 - This schema makes recorded adjudication representable; an authorized
   adjudication command and the worker's observation deduplication remain follow-up
-  implementation. Direct SQL in tests is synthetic setup, not an operator runbook.
+  implementation. The first observation writer must land with that command in
+  the same PR, as required by task 07a acceptance. Direct SQL in tests is synthetic
+  setup, not an operator runbook.
 
-## Decision needed before the exchange worker's final transaction
+## Approved Item-finalization boundary (PR #91 review)
 
 The existing `item.institution_id` is a non-null foreign key. `ExchangedItem`
 contains only access token, Item id and request id. `TokenStore.reconcile`
@@ -42,23 +45,28 @@ contract explicitly excludes `institution` from stored Link poll results.
 Consequently the required post-fsync local Item transaction has an input that
 neither exchange nor current crash reconciliation can supply.
 
-**A — recommended: resolve institution metadata through an authenticated read
-after credential durability, retaining the existing Item schema.** Extend the
-client with the read needed to establish the returned Item's institution and
-persist verified metadata before finalizing the Item. A read failure preserves
-the credential and pending finalization; subsequent passes reconcile material
-and retry only metadata reads, never exchange. This introduces a network
-dependency for local Item finalization, but never for saving the credential.
-The worker must distinguish pending metadata from an uncertain exchange, and
-capture Item/request identifiers before either step. Tests must restart through
-a metadata outage and prove zero additional exchange calls.
+**A — selected by Claude in the [PR #91 review](https://github.com/orzzzl/networth/pull/91#issuecomment-5786449256):
+resolve institution metadata through an authenticated read after credential
+durability, retaining the existing Item schema.** Extend the client with the
+read needed to establish the returned Item's institution and persist verified
+metadata before finalizing the Item. A read failure preserves the credential and
+pending finalization; subsequent passes reconcile material and retry only
+metadata reads, never exchange. This introduces a network dependency for local
+Item finalization, but never for saving the credential. Keeping the required
+institution reference avoids weakening every Item consumer for a transient outage.
 
-**B — permit an Item with unknown institution metadata.** Make the institution
-reference nullable and enrich it later. This keeps credential reconciliation
-entirely local, but changes the Item schema's invariant and requires auditing
-every Item consumer for the unknown-institution case.
+The worker must capture Item/request identifiers before either step and retain
+`EXCHANGING` while metadata is pending. Set `EXCHANGED` only in the transaction
+that commits the `item` row: an exchanged result without its Item is an orphan
+fault, whereas this pending finalization is correctly reported as in-flight.
+The existing five result states suffice; no new state or migration is needed.
 
-Neither option asks the owner to repeat Link, permits a guessed institution, or
-stores the forbidden Link poll fields. Claude should select the boundary on the
-PR before its credential-handling implementation; this is the repository's
-review requirement for changes touching credentials, not an owner decision.
+Tests must restart through a metadata outage and prove reconciliation found the
+durable material, retried metadata, and completed the Item without another
+exchange. Merely asserting a zero exchange-call count does not prove recovery.
+Metadata is runtime-learned and may be persisted in the institution table, but
+sentinel institution values must appear in neither logs nor exception text.
+
+This boundary does not ask the owner to repeat Link, permit a guessed institution,
+or store the forbidden Link poll fields. Credential-handling implementation
+follows the storage review; this PR does not implement that worker.

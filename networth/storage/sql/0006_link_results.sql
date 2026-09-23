@@ -132,7 +132,7 @@ WHERE f.state IN (
     'SUCCESS_PENDING_EXCHANGE', 'EXCHANGING', 'EXCHANGED',
     'TOKEN_EXPIRED', 'EXCHANGE_UNCERTAIN'
 )
-AND NOT EXISTS (SELECT 1 FROM link_request AS q WHERE q.legacy_link_flow_id = f.id);
+AND NOT EXISTS (SELECT 1 FROM link_result AS r WHERE r.legacy_link_flow_id = f.id);
 
 DROP VIEW stranded_link_flow;
 CREATE VIEW stranded_link_flow AS

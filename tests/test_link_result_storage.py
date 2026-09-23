@@ -132,6 +132,31 @@ def test_backfill_preserves_legacy_state_identity_clocks_and_attempts(state: str
     db.close()
 
 
+@pytest.mark.parametrize("state", _RESULT_STATES)
+def test_imported_legacy_success_counts_until_a_result_carries_its_slot(
+    db: sqlite3.Connection, state: str
+) -> None:
+    legacy_id = db.execute(
+        "INSERT INTO link_flow(flow_id, minted_at, hosted_url_expires_at, state) "
+        "VALUES ('legacy', ?, ?, ?) RETURNING id",
+        (NOW, LATER, state),
+    ).fetchone()[0]
+    request(db, "legacy")
+    db.execute("UPDATE link_request SET legacy_link_flow_id = ?", (legacy_id,))
+    assert read_item_budget(db).spent_count == 1
+    assert read_item_budget(db).remaining == 9
+    assert db.execute("SELECT result_id FROM link_success_evidence").fetchall() == [(None,)]
+
+    result_id = result(db, 1, flow_id="legacy", state=state)
+    db.execute("UPDATE link_result SET legacy_link_flow_id = ?", (legacy_id,))
+    assert read_item_budget(db).spent_count == 1
+    assert db.execute("SELECT result_id FROM link_success_evidence").fetchall() == [(result_id,)]
+
+    db.execute("DELETE FROM link_result WHERE result_id = ?", (result_id,))
+    assert read_item_budget(db).spent_count == 1
+    assert db.execute("SELECT result_id FROM link_success_evidence").fetchall() == [(None,)]
+
+
 def test_legacy_missing_session_is_not_fabricated_and_mapping_survives_reentry() -> None:
     db = old_database()
     db.execute(
@@ -288,10 +313,12 @@ def test_digest_identity_is_request_scoped_and_duplicates_cannot_create_results(
     ],
 )
 @pytest.mark.parametrize("state", _REQUEST_STATES)
+@pytest.mark.parametrize("additional_slots", [0, 1, 2])
 def test_zero_result_success_hold_refuses_until_explicit_accounting(
     db: sqlite3.Connection,
     reason: str,
     state: str,
+    additional_slots: int,
 ) -> None:
     request(db, state=state)
     db.execute(
@@ -307,14 +334,15 @@ def test_zero_result_success_hold_refuses_until_explicit_accounting(
         db.execute("UPDATE link_success_observation SET resolved_at = ?", (LATER,))
     db.execute(
         "UPDATE link_success_observation SET resolved_at = ?, "
-        "resolution_note = ?, additional_slots = 1",
-        (LATER, "Synthetic adjudication establishes one additional lifetime slot"),
+        "resolution_note = ?, additional_slots = ?",
+        (LATER, "Synthetic adjudication establishes additional lifetime slots", additional_slots),
     )
     budget = read_item_budget(db)
-    assert budget.remaining == 9
-    assert len(budget.stranded) == 1
-    assert budget.stranded[0].evidence is SlotEvidence.ADJUDICATED_OBSERVATION
-    assert budget.stranded[0].state is None and budget.stranded[0].result_id is None
+    assert budget.remaining == 10 - additional_slots
+    assert len(budget.stranded) == additional_slots
+    for slot in budget.stranded:
+        assert slot.evidence is SlotEvidence.ADJUDICATED_OBSERVATION
+        assert slot.state is None and slot.result_id is None
     db.execute(
         "INSERT INTO link_success_observation(observation_id, flow_id, reason, observed_at) "
         "VALUES ('another', 'request-a', ?, ?)",
