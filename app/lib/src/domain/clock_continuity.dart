@@ -130,3 +130,60 @@ final class ContinuityHeld extends ClockContinuity {
   String toString() =>
       'ContinuityHeld(wall: $wallElapsed, monotonic: $monotonicElapsed, drift: $drift)';
 }
+
+/// Everything about the clock that is observed **before** the wall clock is
+/// read, with the reading itself left to [at].
+///
+/// This split exists to make an ordering hazard unrepresentable rather than
+/// documented. Continuity is `device_now - anchor.anchoredAt` against the
+/// monotonic delta, and `evaluateCopyState` compares the same `device_now`
+/// against instants the diagnostics carry. If `device_now` is captured first
+/// and a fetch then lands a *newer* anchor, the subtraction goes negative and
+/// an ordinary race renders as a clock that moved backwards — the phone would
+/// report a fault to the owner on the strength of its own argument order. The
+/// predicate's doc comment states the rule for the records; this type enforces
+/// it for the anchor, because the anchor read is the one that happens inside a
+/// helper where a caller cannot see the order.
+///
+/// The residue is the gap between observing and reading, which is a few lines
+/// of the same call: that is precisely what [ContinuityHeld.tolerance] is for,
+/// and it is why that tolerance is sampling slop rather than a claim about
+/// clocks.
+sealed class ClockEvidence {
+  const ClockEvidence();
+
+  /// The verdict, given a wall-clock reading taken **after** this evidence.
+  ClockContinuity at(DateTime deviceNow);
+}
+
+/// No usable evidence, and [gap] says which kind of nothing it was.
+@immutable
+final class NoClockEvidence extends ClockEvidence {
+  const NoClockEvidence(this.gap);
+
+  final ContinuityGap gap;
+
+  @override
+  ClockContinuity at(DateTime deviceNow) => ContinuityUnknown(gap);
+}
+
+/// An anchor and a comparable reading from the same run.
+@immutable
+final class AnchoredClockEvidence extends ClockEvidence {
+  const AnchoredClockEvidence({
+    required this.anchoredAt,
+    required this.monotonicElapsed,
+  });
+
+  /// The wall clock's reading when the held copy arrived.
+  final DateTime anchoredAt;
+
+  /// Real time since then, as the monotonic source counts it.
+  final Duration monotonicElapsed;
+
+  @override
+  ClockContinuity at(DateTime deviceNow) => ContinuityHeld(
+        wallElapsed: deviceNow.difference(anchoredAt),
+        monotonicElapsed: monotonicElapsed,
+      );
+}
