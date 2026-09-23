@@ -116,6 +116,9 @@ class FakeApi:
             raise self.outcome
         return self.outcome
 
+    def institutions_get_by_id(self, request: Any) -> Any:
+        raise AssertionError("this test must not call /institutions/get_by_id")
+
     def institutions_get(self, institutions_get_request: Any) -> Any:
         raise AssertionError("an item-status test must not call /institutions/get")
 
