@@ -297,6 +297,15 @@ def read_item_budget(connection: sqlite3.Connection) -> ItemBudget:
     if not isinstance(connection, sqlite3.Connection):
         raise TypeError("connection must be a sqlite3.Connection")
 
+    hold = connection.execute(
+        "SELECT hold_id FROM link_material_hold WHERE resolved_at IS NULL LIMIT 1"
+    ).fetchone()
+    if hold is not None:
+        raise ItemBudgetError(
+            f"material hold {hold[0]!r} requires recorded credential attribution "
+            "and slot review before Link can mint"
+        )
+
     spent: list[SpentSlot] = []
     known_item_ids: set[str] = set()
 
