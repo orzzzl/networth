@@ -5,9 +5,9 @@ import '../domain/clock_continuity.dart';
 import '../domain/copy_freshness.dart';
 import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
+import 'copy_text.dart';
 import 'headline.dart';
 import 'history_curve.dart';
-import 'instant.dart';
 
 /// One published snapshot, with both staleness dimensions kept apart.
 ///
@@ -56,6 +56,14 @@ class SnapshotView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
+    // **The whole verdict, evaluated once.** Both rows read it — the copy row for
+    // its own claim and the connection row to decide whether its state is
+    // historical — and evaluating it twice would let them disagree about the same
+    // instant. It is the `CopyState` and not the [CopyFreshness] enum because the
+    // enum is the indicator only: the reason travels beside it, and dropping it
+    // here is what made the copy row assert `HOST_NOT_PUBLISHING` over every
+    // stale copy (see `copyStale`'s note in the ARB).
+    final copy = payload.copyState(deviceNow, continuity: continuity);
     // **Scrollable, because this screen's height is not ours to choose.** The
     // curve made the content taller than a 640x360 landscape viewport and the
     // `Column` rendered overflow stripes — and the same arithmetic fails in
@@ -77,14 +85,20 @@ class SnapshotView extends StatelessWidget {
             icon: _connectionIcon(payload.connectionState),
             label: l10n.accountsLabel,
             detail: _connectionText(l10n, payload.connectionState),
+            // §9.2 rule 3: this state came out of the payload, so over a copy
+            // that is not current it describes then and not now. Shown only in
+            // that case — over a fresh copy the qualifier is noise, and the rule
+            // exists for the case where the two actually differ.
+            reason: copy is CopyFresh ? null : l10n.connectionAsOfCopy,
             isWarning: payload.connectionState != ConnectionDisplayState.ok,
           ),
           const SizedBox(height: 12),
           _Dimension(
             icon: Icons.phone_iphone,
             label: l10n.thisCopyLabel,
-            detail: _copyText(l10n, payload, deviceNow, continuity),
-            isWarning: payload.copyFreshness(deviceNow, continuity: continuity) != CopyFreshness.fresh,
+            detail: copyDetailText(l10n, copy, payload.publishedAt),
+            reason: copyReasonText(l10n, copy),
+            isWarning: copy is! CopyFresh,
           ),
           // Last, deliberately. The order on this screen is the order of the
           // claims: the number, its age, the two reasons it could be old, and
@@ -112,12 +126,23 @@ class _Dimension extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.detail,
+    required this.reason,
     required this.isWarning,
   });
 
   final IconData icon;
   final String label;
   final String detail;
+
+  /// The second line, or `null` when there is nothing further to say.
+  ///
+  /// **Required rather than defaulted to `null`**, for the reason the two seams
+  /// on [SnapshotView] are: a row whose cause is the point of the row is a row a
+  /// caller must not be able to build without deciding about it. Omitting the
+  /// argument is how the reason gets computed and then dropped, which is the
+  /// defect this change exists to fix.
+  final String? reason;
+
   final bool isWarning;
 
   @override
@@ -135,6 +160,17 @@ class _Dimension extends StatelessWidget {
             children: [
               Text(label, style: theme.textTheme.labelMedium),
               Text(detail, style: theme.textTheme.bodySmall?.copyWith(color: colour)),
+              // Its own `Text`, never concatenated into the line above: the
+              // claim and its cause are two facts, they wrap independently at
+              // large system text sizes, and a screen reader announces them as
+              // two things to weigh rather than one long sentence.
+              if (reason case final String text)
+                Text(
+                  text,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
             ],
           ),
         ),
@@ -165,16 +201,4 @@ String _connectionText(AppLocalizations l10n, ConnectionDisplayState state) =>
       ConnectionDisplayState.ok => l10n.connectionOk,
       ConnectionDisplayState.waiting => l10n.connectionWaiting,
       ConnectionDisplayState.actionNeeded => l10n.connectionActionNeeded,
-    };
-
-String _copyText(
-  AppLocalizations l10n,
-  PhonePayload payload,
-  DateTime deviceNow,
-  ClockContinuity continuity,
-) =>
-    switch (payload.copyFreshness(deviceNow, continuity: continuity)) {
-      CopyFreshness.fresh => l10n.copyFresh(formatInstantUtc(l10n, payload.publishedAt)),
-      CopyFreshness.stale => l10n.copyStale(formatInstantUtc(l10n, payload.publishedAt)),
-      CopyFreshness.unknown => l10n.copyUnknown,
     };
