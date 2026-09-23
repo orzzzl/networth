@@ -91,6 +91,14 @@ class ClockEvidenceReader {
       case AnchorHeld(anchor: final held):
         anchor = held;
     }
+    // Read before the source is even consulted, because it is a property of the
+    // stored record and no reading can repair it. An anchor whose own stamp was
+    // never corroborated cannot date a copy however unbroken the run since it
+    // has been — continuity proves the clock was not *adjusted*, and §9.1
+    // compares `device_now` against a deadline built from the *host's* clock.
+    if (anchor.trust != AnchorTrust.corroborated) {
+      return const NoClockEvidence(ContinuityGap.anchorUnproven);
+    }
 
     final MonotonicReading? now;
     try {

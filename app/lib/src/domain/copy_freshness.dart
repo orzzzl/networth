@@ -97,8 +97,9 @@ enum ClockDisagreement {
   deviceClockMovedBackwards,
 
   /// **Whether the clock can be trusted is itself unknown** — no anchor, an
-  /// unreadable one, no monotonic source, or a reading that cannot be proved to
-  /// come from the same unbroken run. Distinct from
+  /// unreadable one, an anchor nothing ever corroborated, no monotonic source,
+  /// or a reading that cannot be proved to come from the same unbroken run.
+  /// Distinct from
   /// [deviceClockMovedBackwards]: that one is a detected fault and this one is
   /// the absence of evidence, and telling the owner they are the same thing
   /// would be the confident answer §9.1 rule 1 forbids.
@@ -291,11 +292,19 @@ StaleReason _staleReason({
   // Conjunct 2 — `last_fetch_attempt_at == last_fetch_success_at`, *"and
   // nothing has failed since"* — is read as the record's shape rather than as
   // that comparison, and the difference is not cosmetic. [FetchDiagnostics]
-  // makes the two instants **one value** on the success path and refuses to
-  // record a failure at or before the last success, so no record exists in
-  // which they are equal while an error is held. Writing the equality out would
-  // be an expression that cannot be false — a guard nothing can pin, which is
-  // the shape this project keeps finding in its own green suites.
+  // makes the two instants **one value** on the success path, so the equality
+  // holds exactly when the last attempt succeeded, which is what [lastError]
+  // says directly. Writing the comparison out would be an expression that
+  // cannot be false — a guard nothing can pin, which is the shape this project
+  // keeps finding in its own green suites.
+  //
+  // It is also the only reading that survives a backwards clock, and that is
+  // why it must not be "tightened" back into the equality later.
+  // `FetchDiagnostics.failed` deliberately **accepts** a failure stamped at or
+  // before the success it followed — refusing it discarded the newer, worse
+  // news — so records do exist in which the two instants compare equal, or the
+  // wrong way round, while an error is held. The comparison would call that
+  // `HOST_NOT_PUBLISHING` about a host the phone had just failed to reach.
   if (held.lastError case final FetchFailureClass error) {
     return CannotCheck(cause: FetchFailed(error), since: held.lastSuccess?.at);
   }

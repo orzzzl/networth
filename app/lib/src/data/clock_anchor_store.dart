@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import '../domain/clock_anchor.dart';
+import '../domain/clock_continuity.dart';
 import '../domain/payload_format_exception.dart';
 import '../domain/publication_seq.dart';
 import 'stored_file.dart';
@@ -119,29 +120,32 @@ class FileClockAnchorStore implements ClockAnchorStore {
     // relied upon. A guard that lives only in the caller is a guard the caller
     // can forget, and this one is invisible when it is missing: the wrong
     // anchor produces a confident, wrong verdict rather than an error.
+    final AnchorTrust trust;
     switch (await read(anchor.pairingId)) {
       case AnchorHeld(anchor: final stored):
         if (!(anchor.seq > stored.seq)) {
           throw AnchorNotAdvanced(stored: stored.seq, offered: anchor.seq);
         }
+        trust = _inherited(stored, anchor);
       case AnchorAbsent():
-        // First-anchor establishment: no previous instant to preserve, so any
-        // accepted publication may take it. This is also the recovery path —
-        // after a lost or foreign anchor the next accepted publication starts a
-        // new interval, and the copy it anchors is one the phone has just
-        // received rather than one it was already holding.
-        break;
+        // First-anchor establishment, and **it starts unproven**. There is no
+        // previous instant to preserve — but that is an argument for *having no
+        // evidence*, not for minting some. The record this writes is a pair of
+        // readings taken a moment apart, which agree with each other no matter
+        // how wrong the wall clock is. This is also the recovery path, after a
+        // lost or foreign anchor, and it starts unproven for the same reason.
+        trust = _offered(anchor);
       case AnchorUnreadable():
         // Damage must not block recovery. Refusing here would leave a phone
         // whose anchor file was corrupted permanently unable to date any copy,
         // and the record being replaced is one nothing can read anyway. What it
-        // must not do is *silently* look like continuity, and it cannot: until
-        // this call lands, `read` answers [AnchorUnreadable] and the verdict is
-        // `COPY_UNKNOWN`.
-        break;
+        // must not do is come back *trusted*: the damaged record may have been
+        // the one holding the evidence of a broken clock, so recovery restores
+        // the ability to anchor and not the right to be believed.
+        trust = _offered(anchor);
     }
     final file = await open();
-    final bytes = jsonEncode(_json(anchor));
+    final bytes = jsonEncode(_json(anchor, trust));
     // Writability and readability are one predicate, not two that can drift —
     // `23a`'s precedent, and the same standing caveat as the diagnostics store:
     // every invariant [_parse] checks is already held by [ClockAnchor]'s
@@ -155,14 +159,80 @@ class FileClockAnchorStore implements ClockAnchorStore {
     await temporary.rename(file.path);
   }
 
-  Map<String, Object?> _json(ClockAnchor anchor) => <String, Object?>{
+  /// What the caller brought, which today is always [AnchorTrust.unproven]
+  /// because nothing in this app can construct the other value.
+  ///
+  /// Named rather than inlined so the three call sites read as one rule: trust
+  /// is only ever *carried in* or *inherited*, and is never a consequence of
+  /// having written a record.
+  AnchorTrust _offered(ClockAnchor anchor) => anchor.trust;
+
+  /// Trust after an accepted advance: **the previous anchor's, and only if the
+  /// interval since it survives the same test the predicate applies.**
+  ///
+  /// This is the fix for the hole the `seq` guard did not close. That guard
+  /// stops the anchor being *re-taken on a copy we already hold*; an advance is
+  /// a different event and used to re-stamp both readings unconditionally. The
+  /// nine-day case, reproduced against the real store: a phone rolled back nine
+  /// days correctly reports `COPY_UNKNOWN`, then fetches a `seq` the host
+  /// published before it stopped, and the fresh pair of readings — taken a
+  /// moment apart and therefore in perfect agreement — renders that
+  /// nine-day-old publication `COPY_FRESH`. The measurement was not contradicted
+  /// by anything; it was overwritten.
+  ///
+  /// So the interval from the stored anchor to this one is evaluated with the
+  /// **same** [ContinuityHeld] the reader uses — same `drift`, same
+  /// [ContinuityHeld.tolerance] — rather than a second copy of the rule that can
+  /// drift away from it. A discontinuity, a backwards counter or a drift past
+  /// tolerance all land in the same place: whatever the old anchor was worth,
+  /// this one is worth nothing.
+  AnchorTrust _inherited(ClockAnchor stored, ClockAnchor offered) {
+    if (_offered(offered) == AnchorTrust.corroborated) {
+      // Fresh proof outranks history: a caller that can corroborate *this*
+      // stamp does not need the old one to have been sound.
+      return AnchorTrust.corroborated;
+    }
+    if (stored.trust != AnchorTrust.corroborated) {
+      return AnchorTrust.unproven;
+    }
+    if (stored.reading.runId != offered.reading.runId) {
+      return AnchorTrust.unproven;
+    }
+    final monotonic = offered.reading.elapsed - stored.reading.elapsed;
+    if (monotonic.isNegative) {
+      // Same run id, smaller reading: one of the two is wrong and there is no
+      // way to tell which, so the run identity has stopped meaning anything.
+      return AnchorTrust.unproven;
+    }
+    final continuity = AnchoredClockEvidence(
+      anchoredAt: stored.anchoredAt,
+      monotonicElapsed: monotonic,
+    ).at(offered.anchoredAt);
+    return continuity is ContinuityHeld && continuity.isTrustworthy
+        ? AnchorTrust.corroborated
+        : AnchorTrust.unproven;
+  }
+
+  Map<String, Object?> _json(ClockAnchor anchor, AnchorTrust trust) => <String, Object?>{
         'pairing_id': anchor.pairingId,
         'anchored_at': anchor.anchoredAt.toUtc().toIso8601String(),
         'run_id': anchor.reading.runId,
         'monotonic_elapsed_ms': anchor.reading.elapsed.inMilliseconds,
         // The host's own bytes, not this app's rendering of a parsed number.
         'seq': anchor.seq.wire,
+        'trust': _trustWire[trust],
       };
+
+  /// The on-disk spelling, written out rather than taken from `enum.name`.
+  ///
+  /// A rename in Dart would silently change the format and every previously
+  /// written record would read as damaged — on the far side of an app update,
+  /// where nothing in this repo is watching. The same reason the keys above are
+  /// literals and are asserted as a format by the tests.
+  static const Map<AnchorTrust, String> _trustWire = <AnchorTrust, String>{
+    AnchorTrust.corroborated: 'corroborated',
+    AnchorTrust.unproven: 'unproven',
+  };
 
   ClockAnchor _parse(String bytes, {required String pairingId}) {
     final Object? decoded;
@@ -211,7 +281,23 @@ class FileClockAnchorStore implements ClockAnchorStore {
     if (storedSeq is! String) {
       throw const PayloadFormatException('stored clock anchor seq is not a string');
     }
+    // **A record that does not say is damaged, never `unproven`.** Defaulting a
+    // missing field to the safe value reads as prudence and is the wrong
+    // reflex: `unproven` is a *decision this store made*, and a record that
+    // cannot state one is a record that cannot be read. Unreadable is already
+    // `COPY_UNKNOWN`, so nothing is lost by saying so — and a record written by
+    // a build that spelled this key differently is exactly the case the format
+    // literals exist to catch rather than paper over.
+    final storedTrust = decoded['trust'];
+    final trust = _trustWire.entries
+        .where((entry) => entry.value == storedTrust)
+        .map((entry) => entry.key)
+        .firstOrNull;
+    if (trust == null) {
+      throw PayloadFormatException('stored clock anchor trust is not recognised: $storedTrust');
+    }
     return ClockAnchor(
+      trust: trust,
       pairingId: storedPairing,
       anchoredAt: anchoredAt,
       reading: MonotonicReading(

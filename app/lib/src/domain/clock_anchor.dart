@@ -44,6 +44,51 @@ class MonotonicReading {
   String toString() => 'MonotonicReading($runId, $elapsed)';
 }
 
+/// Whether anything has ever corroborated the wall-clock reading an anchor was
+/// stamped with.
+///
+/// **Continuity and correctness are two different claims, and conflating them
+/// is how a nine-day-old copy renders fresh.** [ContinuityHeld] proves the wall
+/// clock has not been *adjusted* since the anchor. §9.1's comparison needs more
+/// than that: `device_now` is measured against `stale_after`, which is built
+/// from the host's `published_at`. That comparison is only meaningful if this
+/// device's clock agrees with the host's — and an unbroken run since an
+/// arbitrary starting reading says nothing whatever about whether that reading
+/// was right.
+///
+/// Measured, not argued: a phone whose clock is nine days slow, anchoring a
+/// publication it has just received, reports zero drift a moment later and
+/// renders a nine-day-old copy `COPY_FRESH`. Zero drift since an unproven
+/// reading is zero evidence.
+enum AnchorTrust {
+  /// The wall clock agreed with the host's at the moment this anchor was
+  /// stamped, and something proved it.
+  ///
+  /// **No caller in this app can construct this today**, and that is the state
+  /// of the work rather than an oversight. A single fetch cannot supply the
+  /// proof: `published_at` is the host's clock *at publication*, so a reachable
+  /// host whose publisher has stopped serves an arbitrarily old instant — which
+  /// is precisely the `HOST_NOT_PUBLISHING` case, so the corroboration fails
+  /// exactly where it is needed. The future-publication check is one-sided
+  /// evidence of *disagreement* and never corroboration of agreement.
+  ///
+  /// The proof that will be able to set this is the transport's, not this
+  /// layer's: two successful fetches from the same monotonic run, the second
+  /// returning a higher `seq` than the first. The host serves its latest
+  /// publication, so a `seq` absent from the earlier reply was created *between*
+  /// the two — which bounds the copy's age by a monotonically measured interval
+  /// and never consults the wall clock at all. Owed by task `22` along with the
+  /// transport itself.
+  corroborated,
+
+  /// Nothing corroborates it. **The only value this app constructs today**, and
+  /// therefore the reason every copy reads `COPY_UNKNOWN`.
+  ///
+  /// Fail-closed is the whole point: there is no third value meaning "probably
+  /// fine", and an anchor cannot become [corroborated] by being re-taken.
+  unproven,
+}
+
 /// The moment the copy this phone holds was received, stamped by both clocks.
 ///
 /// **The anchor is not "the last time we looked at the clock" — it is when the
@@ -57,6 +102,11 @@ class MonotonicReading {
 /// and `ClockAnchorStore.establish` refuses an anchor that does not advance it.
 /// A fetch returning the publication we already hold changes nothing about when
 /// that copy arrived, so it must not move the anchor.
+///
+/// [trust] is the second half of that guard and it was missing. Refusing to move
+/// the anchor backwards stops one hole; an *advance* opened the same one, by
+/// replacing a record that had already measured a rolled-back clock with a fresh
+/// pair of readings that trivially agree. See [AnchorTrust].
 @immutable
 class ClockAnchor {
   ClockAnchor({
@@ -64,6 +114,7 @@ class ClockAnchor {
     required this.anchoredAt,
     required this.reading,
     required this.seq,
+    required this.trust,
   }) {
     if (pairingId.isEmpty) {
       throw const PayloadFormatException('clock anchor has no pairing_id');
@@ -91,16 +142,21 @@ class ClockAnchor {
   /// The publication this anchor vouches for.
   final PublicationSeq seq;
 
+  /// What [anchoredAt] is worth. Decided by `ClockAnchorStore.establish` on the
+  /// way in, never by whoever happens to be holding the value.
+  final AnchorTrust trust;
+
   @override
   bool operator ==(Object other) =>
       other is ClockAnchor &&
       other.pairingId == pairingId &&
       other.anchoredAt.isAtSameMomentAs(anchoredAt) &&
       other.reading == reading &&
-      other.seq == seq;
+      other.seq == seq &&
+      other.trust == trust;
 
   @override
-  int get hashCode => Object.hash(pairingId, anchoredAt.toUtc(), reading, seq);
+  int get hashCode => Object.hash(pairingId, anchoredAt.toUtc(), reading, seq, trust);
 }
 
 /// What the anchor store found — three outcomes, the same shape as

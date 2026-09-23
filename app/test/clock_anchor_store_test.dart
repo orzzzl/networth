@@ -30,18 +30,23 @@ void main() {
 
   DateTime utc(int day, int hour) => DateTime.utc(2026, 9, day, hour);
 
+  /// [trust] defaults to what **production** passes, because nothing in the app
+  /// can construct the other value; a test that wants a corroborated anchor has
+  /// to say so, which is the point.
   ClockAnchor anchor({
     String pairingId = 'pairing-a',
     DateTime? at,
     String runId = 'run-1',
     Duration elapsed = const Duration(minutes: 3),
     String seq = '7',
+    AnchorTrust trust = AnchorTrust.unproven,
   }) =>
       ClockAnchor(
         pairingId: pairingId,
         anchoredAt: at ?? utc(20, 9),
         reading: MonotonicReading(runId: runId, elapsed: elapsed),
         seq: PublicationSeq.parse(seq),
+        trust: trust,
       );
 
   ClockAnchor held(AnchorState state) {
@@ -101,8 +106,50 @@ void main() {
           'run_id': 'run-x',
           'monotonic_elapsed_ms': 1500,
           'seq': '41',
+          'trust': 'unproven',
         },
       );
+    });
+
+    test('the trust spelling is the format too, and both values are asserted', () async {
+      // `AnchorTrust.name` would have made a Dart rename a silent format change,
+      // readable only by the build that did the renaming. Both values are
+      // written out because a table shared by the encoder and the decoder is
+      // invisible to any round trip through it.
+      await store.establish(anchor(seq: '41', trust: AnchorTrust.corroborated));
+      expect((jsonDecode(await file.readAsString()) as Map)['trust'], 'corroborated');
+      // A fresh start rather than a second establish, which would *inherit* the
+      // corroborated value over an interval both clocks agree on.
+      await file.delete();
+      await store.establish(anchor(seq: '41'));
+      expect((jsonDecode(await file.readAsString()) as Map)['trust'], 'unproven');
+    });
+
+    test('a record that does not say what it is worth is damaged, not unproven', () async {
+      // Defaulting a missing field to the safe value reads as prudence and
+      // hides the case the format literals exist to catch: a build that spelled
+      // the key differently. Unreadable is already `COPY_UNKNOWN`, so saying so
+      // costs nothing.
+      await writeRaw(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'anchored_at': '2026-09-20T09:00:00.000Z',
+        'run_id': 'run-1',
+        'monotonic_elapsed_ms': 0,
+        'seq': '7',
+      });
+      expect(await store.read('pairing-a'), isA<AnchorUnreadable>());
+    });
+
+    test('a trust value this build does not know is damaged', () async {
+      await writeRaw(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'anchored_at': '2026-09-20T09:00:00.000Z',
+        'run_id': 'run-1',
+        'monotonic_elapsed_ms': 0,
+        'seq': '7',
+        'trust': 'probably-fine',
+      });
+      expect(await store.read('pairing-a'), isA<AnchorUnreadable>());
     });
 
     test('an instant given in local time is stored with its zone', () async {
@@ -302,6 +349,145 @@ void main() {
       await file.writeAsString('{not json');
       await store.establish(anchor(seq: '41'));
       expect(held(await store.read('pairing-a')).seq, PublicationSeq.parse('41'));
+    });
+  });
+
+  group('an advance carries the old anchor s trust and cannot manufacture it', () {
+    Future<AnchorTrust> trustAfter(List<ClockAnchor> anchors) async {
+      for (final one in anchors) {
+        await store.establish(one);
+      }
+      return held(await store.read('pairing-a')).trust;
+    }
+
+    test('the first anchor under a pairing is unproven, whatever it anchors', () async {
+      // The record written here is two readings taken a moment apart. They
+      // agree with each other no matter how wrong the wall clock is, so there
+      // is nothing in it to believe.
+      expect(await trustAfter(<ClockAnchor>[anchor(seq: '41')]), AnchorTrust.unproven);
+    });
+
+    test('recovery from a damaged record is unproven, not restored', () async {
+      // The damaged record may have been the one holding the evidence of a
+      // broken clock. Recovery restores the ability to anchor, never the right
+      // to be believed.
+      await file.writeAsString('{not json');
+      expect(await trustAfter(<ClockAnchor>[anchor(seq: '41')]), AnchorTrust.unproven);
+    });
+
+    test('an advance over an unproven anchor stays unproven on a perfect interval', () async {
+      // Two hours by both clocks, same run, zero drift — and still nothing,
+      // because a perfectly measured interval since an unproven instant is an
+      // unproven instant.
+      expect(
+        await trustAfter(<ClockAnchor>[
+          anchor(at: utc(20, 9), elapsed: Duration.zero, seq: '41'),
+          anchor(at: utc(20, 11), elapsed: const Duration(hours: 2), seq: '42'),
+        ]),
+        AnchorTrust.unproven,
+      );
+    });
+
+    test('an advance over a corroborated anchor keeps it when the interval holds', () async {
+      expect(
+        await trustAfter(<ClockAnchor>[
+          anchor(
+            at: utc(20, 9),
+            elapsed: Duration.zero,
+            seq: '41',
+            trust: AnchorTrust.corroborated,
+          ),
+          anchor(at: utc(20, 11), elapsed: const Duration(hours: 2), seq: '42'),
+        ]),
+        AnchorTrust.corroborated,
+      );
+    });
+
+    test('a measured rollback is not erased by the publication that advances seq', () async {
+      // The review case, at this layer. The phone anchored seq 41, spent nine
+      // days suspended, and had its clock corrected backwards — so one hour of
+      // wall time stands against nine days of real time. Then it fetches seq
+      // 42, which the host published before it stopped. Re-stamping both
+      // readings would leave them in perfect agreement and hand a nine-day-old
+      // publication a fresh verdict.
+      expect(
+        await trustAfter(<ClockAnchor>[
+          anchor(
+            at: utc(20, 9),
+            elapsed: Duration.zero,
+            seq: '41',
+            trust: AnchorTrust.corroborated,
+          ),
+          anchor(at: utc(20, 10), elapsed: const Duration(days: 9), seq: '42'),
+        ]),
+        AnchorTrust.unproven,
+      );
+    });
+
+    test('an advance from a different run cannot inherit anything', () async {
+      // A counter that reset. The two readings are both valid and entirely
+      // incomparable, so the interval between them was never measured.
+      expect(
+        await trustAfter(<ClockAnchor>[
+          anchor(
+            at: utc(20, 9),
+            runId: 'run-1',
+            elapsed: Duration.zero,
+            seq: '41',
+            trust: AnchorTrust.corroborated,
+          ),
+          anchor(at: utc(20, 11), runId: 'run-2', elapsed: const Duration(hours: 2), seq: '42'),
+        ]),
+        AnchorTrust.unproven,
+      );
+    });
+
+    test('a counter that went backwards under one run id inherits nothing', () async {
+      // Same run, smaller reading: one of the two is wrong and there is no way
+      // to tell which, so the run identity has stopped meaning anything.
+      //
+      // **The two readings must very nearly cancel**, and that is the whole
+      // point of the case. Deleting the guard and letting a negative monotonic
+      // delta through leaves `drift = wall - monotonic`, which for a backwards
+      // counter *grows* — so any ordinary scenario is caught by the drift check
+      // anyway and cannot tell whether this guard exists. Written first with
+      // three hours of each, it passed against the mutant. One second of wall
+      // and two of counter leaves a drift of one second, inside
+      // `ContinuityHeld.tolerance`, and the mutant hands back corroborated on
+      // two readings that flatly contradict each other.
+      expect(
+        await trustAfter(<ClockAnchor>[
+          anchor(
+            at: DateTime.utc(2026, 9, 20, 9),
+            elapsed: const Duration(hours: 5),
+            seq: '41',
+            trust: AnchorTrust.corroborated,
+          ),
+          anchor(
+            at: DateTime.utc(2026, 9, 20, 8, 59, 59),
+            elapsed: const Duration(hours: 4, minutes: 59, seconds: 58),
+            seq: '42',
+          ),
+        ]),
+        AnchorTrust.unproven,
+      );
+    });
+
+    test('a caller that corroborates this stamp does not need the old one', () async {
+      // Fresh proof outranks history — otherwise a phone whose clock was once
+      // wrong could never recover, no matter what it later established.
+      expect(
+        await trustAfter(<ClockAnchor>[
+          anchor(at: utc(20, 9), elapsed: Duration.zero, seq: '41'),
+          anchor(
+            at: utc(20, 10),
+            elapsed: const Duration(days: 9),
+            seq: '42',
+            trust: AnchorTrust.corroborated,
+          ),
+        ]),
+        AnchorTrust.corroborated,
+      );
     });
   });
 }

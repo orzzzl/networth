@@ -20,12 +20,23 @@ import 'package:flutter/foundation.dart';
 ///    arbitrarily old publication — which is precisely the `HOST_NOT_PUBLISHING`
 ///    case §9.1 exists to report, so the corroboration fails exactly where it
 ///    is needed.
+/// 3. *"A publication that advances `seq` may re-anchor, because a payload from
+///    the future is refused anyway."* The future check is one-sided: it fires on
+///    `published_at > device_now + 5min` and therefore only ever catches a clock
+///    that is **behind** the publication. A higher `seq` says a publication is
+///    newer than the one we held, never that it is new — a host that published
+///    once and stopped hands out an arbitrarily old higher `seq` forever. So an
+///    advance re-stamped both readings, and a rollback this phone had already
+///    *measured* was erased by the record that was supposed to preserve it.
+///    Caught in review of this component, with the nine-day case reproduced
+///    against the real store.
 ///
-/// The tell in both is the same: each found a quantity that behaves like
+/// The tell in all three is the same: each found a quantity that behaves like
 /// current time in the *healthy* case and never quantified it over the failure
 /// case. So the evidence has to come from a clock that is not the wall clock —
 /// a monotonic source that **counts suspended time**, since days spent asleep
-/// still age a copy.
+/// still age a copy — and from an anchor whose own stamp was corroborated
+/// rather than merely written down (`AnchorTrust`).
 ///
 /// **This is fail-closed by construction.** There is no "assume continuous"
 /// value: a source that cannot answer says [ContinuityUnknown], and the
@@ -64,6 +75,16 @@ enum ContinuityGap {
 
   /// An anchor exists and could not be read.
   anchorUnreadable,
+
+  /// An anchor exists, is readable, and its wall-clock stamp was never
+  /// corroborated against the host's clock — so no amount of measured
+  /// continuity since it can date the copy.
+  ///
+  /// A different sentence from [noAnchor] and worth keeping apart: nothing is
+  /// lost or broken, the phone simply has never been able to check its own
+  /// clock against the server. It is also the state this app is permanently in
+  /// today, because no caller can construct [AnchorTrust.corroborated] yet.
+  anchorUnproven,
 
   /// The platform could not supply a monotonic reading at all.
   sourceUnavailable,
