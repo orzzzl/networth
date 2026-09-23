@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/data/fetch_diagnostics_store.dart';
+import 'package:networth_app/src/domain/fetch_diagnostics.dart';
 import 'package:networth_app/src/domain/payload_format_exception.dart';
 import 'package:networth_app/src/domain/publication_seq.dart';
 

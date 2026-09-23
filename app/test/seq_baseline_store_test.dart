@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/data/seq_baseline_store.dart';
 import 'package:networth_app/src/domain/publication_seq.dart';
+import 'package:networth_app/src/domain/seq_baseline.dart';
 
 /// Stands in for the exception types this path can raise that `dart:io` does not
 /// define — `path_provider`'s `MissingPlatformDirectoryException` is the real
