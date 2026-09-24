@@ -9,12 +9,6 @@ import 'package:networth_app/src/ui/snapshot_view.dart';
 
 import 'fixtures.dart';
 
-/// A clock this device has proved continuous: the same interval measured two
-/// ways, agreeing exactly. The neutral value for tests about *age*, which is a
-/// different question from whether the clock can be trusted at all.
-const ClockContinuity trustedClock =
-    ContinuityHeld(wallElapsed: Duration.zero, monotonicElapsed: Duration.zero);
-
 Future<void> _pump(
   WidgetTester tester,
   PhonePayload payload,
@@ -215,9 +209,15 @@ void main() {
     // needs to be reconnected" for all three, so it sent the owner to the wrong
     // place two thirds of the time. The payload carries one enum and no cause.
     //
-    // Constructed rather than read from a fixture: no shipped fixture carries
-    // ACTION_NEEDED, and inventing one to satisfy a test would be adding a
-    // fixture the daemon does not send.
+    // Still constructed rather than read from a fixture, and the reason changed
+    // with this commit. It used to be that no shipped fixture carried
+    // ACTION_NEEDED; `alerts_open.json` now does. But this test asserts the
+    // *absence* of four words from the entire screen, and that fixture's alert
+    // rows name causes and remedies deliberately — so what it needs is
+    // ACTION_NEEDED with an **empty** alert set: the connection row on its own,
+    // which is the copy under test. The claim being pinned is unchanged and is
+    // specifically about that row: a remedy may only be named by something that
+    // knows the cause, and one enum does not.
     final base = loadFixture(knownFixture);
     await _pump(
       tester,
@@ -230,6 +230,7 @@ void main() {
         grace: base.grace,
         total: base.total,
         connectionState: ConnectionDisplayState.actionNeeded,
+        alerts: const [],
       ),
       DateTime.utc(2026, 9, 15, 12),
     );
@@ -263,8 +264,13 @@ void main() {
       'landscape 640x360 at 1.5x text': (Size(640, 360), 1.5),
     };
 
-    for (final entry in cases.entries) {
-      testWidgets(entry.key, (tester) async {
+    // Both the fixture this regression was found on and the tallest screen this
+    // app can draw. The alert block is new vertical content whose height depends
+    // on how many kinds are open, and it lands above the curve — so the case that
+    // used to be the worst one no longer is.
+    for (final fixture in [mixedFixture, alertsOpenFixture]) {
+      for (final entry in cases.entries) {
+        testWidgets('${entry.key} — $fixture', (tester) async {
         final (size, textScale) = entry.value;
         tester.view.physicalSize = size;
         tester.view.devicePixelRatio = 1.0;
@@ -277,7 +283,7 @@ void main() {
             MediaQuery(
               data: MediaQueryData(textScaler: TextScaler.linear(textScale)),
               child: SnapshotView(
-                payload: loadFixture(mixedFixture),
+                payload: loadFixture(fixture),
                 history: demoSeries(),
                 recordingFailed: false,
                 deviceNow: DateTime.utc(2026, 9, 20),
@@ -302,7 +308,8 @@ void main() {
         await tester.drag(find.byType(SnapshotView), const Offset(0, -400));
         await tester.pump();
         expect(tester.takeException(), isNull);
-      });
+        });
+      }
     }
   });
 }
