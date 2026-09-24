@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:networth_app/src/domain/clock_continuity.dart';
 import 'package:networth_app/src/domain/copy_freshness.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
@@ -8,12 +9,19 @@ import 'package:networth_app/src/ui/snapshot_view.dart';
 
 import 'fixtures.dart';
 
+/// A clock this device has proved continuous: the same interval measured two
+/// ways, agreeing exactly. The neutral value for tests about *age*, which is a
+/// different question from whether the clock can be trusted at all.
+const ClockContinuity trustedClock =
+    ContinuityHeld(wallElapsed: Duration.zero, monotonicElapsed: Duration.zero);
+
 Future<void> _pump(
   WidgetTester tester,
   PhonePayload payload,
   DateTime deviceNow, {
   NetWorthHistory? history = NetWorthHistory.empty,
   bool recordingFailed = false,
+  ClockContinuity continuity = trustedClock,
 }) async {
   await tester.pumpWidget(
     localized(
@@ -22,6 +30,7 @@ Future<void> _pump(
         history: history,
         recordingFailed: recordingFailed,
         deviceNow: deviceNow,
+        continuity: continuity,
       ),
     ),
   );
@@ -151,6 +160,7 @@ void main() {
                 history: demoSeries(),
                 recordingFailed: false,
                 deviceNow: DateTime.utc(2026, 9, 20),
+                continuity: trustedClock,
               ),
             ),
           ),

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import 'clock_continuity.dart';
 import 'copy_freshness.dart';
 import 'dated_total.dart';
 import 'instant.dart';
@@ -91,11 +92,21 @@ class PhonePayload {
   }
 
   /// This copy's age dimension, evaluated against the device's clock.
-  CopyFreshness copyFreshness(DateTime deviceNow) => evaluateCopyFreshness(
+  ///
+  /// [continuity] has no default **on purpose**. A default would be a value
+  /// this app fabricated rather than measured, and the only one that would not
+  /// change behaviour is the one asserting the clock is fine — which is the
+  /// exact claim the type exists to stop anybody making for free.
+  CopyFreshness copyFreshness(
+    DateTime deviceNow, {
+    required ClockContinuity continuity,
+  }) =>
+      evaluateCopyFreshness(
         publishedAt: publishedAt,
         publishInterval: publishInterval,
         grace: grace,
         deviceNow: deviceNow,
+        continuity: continuity,
       );
 
   static String _string(Map<String, Object?> body, String field) {
