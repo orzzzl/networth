@@ -122,10 +122,11 @@ that row. He caught it, not us.)
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **DONE** (#79, 2026-09-16) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | **DONE** (#82, 2026-09-16) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | **DONE** (#77, 2026-09-16) |
+| 21a | Runtime phone pairing intake (typed fallback in v0) | 19a, 21 | **claude** | codex | **READY** (issue #111. The half of §6.3 that was never assigned: `networth pair` prints the bundle and nothing in `app/lib/` calls `PairingVault.provision`, so a real-transport build cannot be paired at all) |
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | **WIP** (merged: #92 five facts + predicate, #97 copy row, #98 §6.1 envelope, #99 transport, #100 monotonic clock, #101 transport↔envelope join, #102 alert surface, #103 stack promotion, #107 the held copy. Owed: the adapter that joins them, then the `main.dart` acceptance path and the I6 refusal it makes reachable — plus the per-account surface, which is blocked on a field the host does not have; see the acceptance list. **Nothing in this row is reachable from `main.dart` yet**: the shipped wiring is still `FixtureSnapshotSource`, which is what the adapter and the wiring change) |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **DONE** (#83, 2026-09-22) |
 | 23a | Record the history the curve draws: app-private, durable, across pairing rotation | 20, 23 | **claude** | codex | **DONE** (#89, 2026-09-22) |
-| 24 | Release signing + APK delivery | 20, 21, 22, 23a | **claude** | codex | BLOCKED |
+| 24 | Release signing + APK delivery | 20, 21, 21a, 22, 23a | **claude** | codex | BLOCKED |
 | 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 19, 22 | **claude** | codex | BLOCKED |
 
 ### Phase 5 — operations
@@ -2472,6 +2473,65 @@ i18n. *(Also from PR #77's review: the load-failure branch rendered `${snapshot.
 which the literal-string guard did not catch because the literal was a hole rather than a
 sentence.)*
 
+### 21a — Runtime phone pairing intake (typed fallback in v0) — **claude**
+
+**Normative:** §6.3 (step 2 in particular), §6.3.1, `AGENTS.md` rule 1.
+
+**Why this row exists, and it is a gap rather than a new idea.** §6.3 has always had two halves:
+the host mints and renders the bundle, the phone takes it in once. Row `19a` built and closed the
+first half — its three acceptance bullets are all `networth pair` / `revoke` on the VPS — and the
+second half was never written down anywhere, so nobody was ever not doing it.
+
+Measured on `main` @ `eda6f05` rather than inferred: `grep -rn "\.provision(" app/lib/` returns
+**nothing**, and the only caller of `PairingVault.provision` in the repo is
+`app/test/pairing_vault_test.dart`. `lib/` names `PairingVault` twice outside its own file, both
+times to *read* it. So the vault has a parser, protected storage and a reader, and no door.
+
+**What that costs, stated as the trap rather than as the feature.** Task `22` swaps `main.dart`'s
+`FixtureSnapshotSource` for the real transport. After that swap the vault is the only source of a
+payload key, so on a real device the app renders *"not paired"* permanently. Row `24` depended on
+`20`, `21`, `22` and `23a`; **all four could be DONE and the delivered APK still could not show a
+number.** That is the same shape `24` already warns about for the curve — *"the check before
+delivering is not 'is `23a` done' but run the build and look at the curve"* — one layer over, on
+the thing that has to happen before any fetch at all.
+
+**Typed fallback only, and that is a scope decision rather than a shortcut.** §6.3 step 1 already
+renders the bundle *"with a typed fallback string"*, and `PairingProvision.parse` already accepts
+it, so this row needs a form, the existing parser and the existing vault — **no new dependency and
+no camera permission**. A real scanner is the nicer thing and is the one that costs a package;
+**it is deferred beyond v0 and must not be described as shipping.**
+
+**Acceptance** *(reviewed and recorded in issue #111 before this row was written):*
+
+- [ ] An unpaired install has a **reachable pairing form**; a paired install has a **reachable
+      replace-pairing action**. Through `PairingProvision.parse` / `PairingVault.provision` and the
+      Android protected store, preserving the **exact v1 bundle format**. No rebuild, no reinstall
+      — §6.3's own closing sentence.
+- [ ] **The input is treated as a secret.** No logging, no analytics, no exception or source
+      interpolation, no persistent draft or saved form state; suggestions and autocorrect
+      disabled; the controller cleared and disposed after success or dismissal; submitted material
+      absent from every visible success and error message. All copy through the app's i18n. Typing
+      the terminal fallback locally must be sufficient — **the flow may not require the bundle to
+      travel through messaging, a cloud clipboard or any other network service**, which would put
+      the payload key exactly where §6.3 exists to keep it from going.
+- [ ] **Nothing that failed reports success.** A parse rejection leaves the previous pairing
+      intact; a secure-store write failure gets an explicit recoverable state rather than a
+      success screen; duplicate submissions are suppressed; the protected write is **awaited**
+      before the paired source is refreshed.
+- [ ] **A replacement does not let the old pairing's work land on the new one.** After
+      provisioning, task `22`'s real source refreshes from the newly stored pairing, and an
+      in-flight fetch from before must not replace the new pairing's screen or attach fetch,
+      baseline or held-copy facts to the new `pairing_id`. **History is not erased as an intake
+      shortcut** — `23a` made the curve survive re-pairing on purpose.
+- [ ] **Synthetic widget/integration tests** for first pairing, malformed input, storage failure,
+      cancellation, replacement, and a pending old fetch across a replacement. They must prove the
+      **app's own entry point** reaches intake and then the real-source path once `22` is wired:
+      *testing the vault alone cannot satisfy this row*, which is precisely how the gap survived
+      this long — `pairing_vault_test.dart` passes today.
+
+**Must not:** ship anything that reads as a QR scanner, take a camera dependency, or weaken the v1
+bundle format to make typing easier.
+
 ### 22 — Dual-staleness UI + alert surface + downgrade handling — **claude**
 
 **With alerts in-app only, this is where the product either works or quietly fails.**
@@ -2626,10 +2686,21 @@ reading; or leave a synthetic series reachable from a release build.
       forces an uninstall.
 - [ ] Version bumped per `AGENTS.md` before each delivery; the desktop file name carries
       the new version.
+- [ ] **The installed signed build is provisioned and read end to end, on synthetic data.** A
+      fresh install is paired **through the visible UI**, displays an authenticated dated snapshot
+      over the real transport, reopens using the protected pairing, and replaces its pairing
+      **without reinstalling**. *(Added with `21a`. Board status cannot discharge this: every
+      dependency of this row can read DONE while the delivered APK has no door — which is the
+      state `main` was in until `21a` was written, and is the same trap this row's curve paragraph
+      below describes.)*
+      **Evidence is sanitized**: a synthetic payload key, synthetic figures, and no screenshot,
+      fixture or GitHub text carrying a real balance or a real key (`AGENTS.md` rule 1).
 
 **Depends on `22`** so a build that can collapse the two staleness dimensions — or bury an
-alert on a design with no second channel — cannot be delivered, and on `20` so the
-delivered app has a real transport. **And on `23a`**, so the delivered app's curve is the
+alert on a design with no second channel — cannot be delivered, on `20` so the
+delivered app has a real transport, and on **`21a`** so it has a way to be *given* the
+key that transport needs — without which every other dependency can be DONE and the
+delivered APK still renders "not paired" forever. **And on `23a`**, so the delivered app's curve is the
 owner's own record rather than an empty panel or an invented one; `23` deliberately ships
 the empty state rather than a fixture, and this dependency is what stops that honest
 placeholder from becoming the shipped feature by default.

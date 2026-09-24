@@ -1617,8 +1617,19 @@ runtime:
    read-only transport token, because a third party had to be told who was
    allowed to read. There is no third party now, so there is no token to issue:
    see "authentication is two layers" below.)*
-2. The phone scans it once, on-screen, on the owner's own desk — the material
-   never crosses a network during pairing.
+2. The phone takes it in once, on the owner's own desk — the material never
+   crosses a network during pairing. *(Rev 24, after a measurement: through rev
+   23 this step said "scans it once, on-screen" and **no task owned building
+   either intake**. `networth pair` was task `19a`'s whole scope, and nothing in
+   `app/lib/` calls `PairingVault.provision`, so the app had a parser, a
+   protected store and a reader with no door — a real-transport build could not
+   be paired at all, and row `24` could have delivered an APK whose every
+   dependency read DONE. Task `21a` builds the intake, and the **typed fallback
+   step 1 already renders is what it uses**: a form, the existing
+   `PairingProvision.parse`, the existing vault — no camera dependency and no
+   new package. **A QR scanner is deferred beyond v0 and this document does not
+   claim one ships**; when one is built it reads the same bundle into the same
+   parser, so it is an input method rather than a second format.)*
 3. The app stores it via `flutter_secure_storage`, backed by the **Android
    Keystore**, so the OS protects it rather than a string constant in a DEX file.
 4. Rotation, revocation and re-pairing are runtime operations. No rebuild, no
