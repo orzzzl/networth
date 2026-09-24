@@ -24,8 +24,8 @@ Item budget. The same problem occurs when the last known session was unfinished.
 The six-hour statement is a retention limit, not a completeness guarantee.
 
 Current code makes neither destructive decision: `ingest_poll` records evidence
-without closing requests, and `run_request` does not reap. The missing decision
-must be resolved before adding those paths, per AGENTS.md's credential/budget rule.
+without closing requests, and `run_request` does not reap. The reviewed boundary
+below governs those paths under AGENTS.md's credential/budget rule.
 
 ## Selected A: conservative closure with explicit coverage holds
 
@@ -113,6 +113,6 @@ list and issue #16 now narrow cleanup to the request boundary above:
 parent request's token. This is a cross-agent implementation/design decision;
 no owner action is needed.
 
-After approval, implement the minter, return attestation, poll/abandon/coverage
+After this contract lands, implement the minter, return attestation, poll/abandon/coverage
 classification and reaper together, with named crash and multi-session regressions.
 07a is not DONE and 07b remains blocked until that integrated path is reviewed.

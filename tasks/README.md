@@ -1489,8 +1489,8 @@ The post-storage component and remaining worker obligations are described in
 [07a durable finalization](07a-finalization-implementation.md).
 The next component and its adjudication boundary are in
 [07a polling evidence](07a-poll-implementation.md).
-The worker is merged; the remaining destructive cleanup boundary is proposed in
-[07a lifecycle closure](07a-lifecycle-contract.md) and requires review before implementation.
+The worker is merged; the reviewed conservative cleanup boundary and integration
+obligations are in [07a lifecycle closure](07a-lifecycle-contract.md).
 The existing one-row-per-URL schema cannot retain every session identifier or
 represent multiple successful results. The approved request/session/result split
 is the implementation boundary. Remaining decisions are agent review dependencies;
