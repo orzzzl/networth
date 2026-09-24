@@ -92,7 +92,7 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **WIP** (exchange worker merged; lifecycle closure under review) |
+| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **WIP** (integrated lifecycle implementation under review) |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
@@ -1491,6 +1491,8 @@ The next component and its adjudication boundary are in
 [07a polling evidence](07a-poll-implementation.md).
 The worker is merged; the reviewed conservative cleanup boundary and integration
 obligations are in [07a lifecycle closure](07a-lifecycle-contract.md).
+The integrated implementation and operator paths are in
+[07a lifecycle implementation](07a-lifecycle-implementation.md).
 The existing one-row-per-URL schema cannot retain every session identifier or
 represent multiple successful results. The approved request/session/result split
 is the implementation boundary. Remaining decisions are agent review dependencies;

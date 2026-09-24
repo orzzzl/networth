@@ -271,6 +271,15 @@ def run(args: argparse.Namespace) -> int:
 
     directory = link_recovery.mac_recovery_directory()
     try:
+        path = link_recovery.record_path(directory, outcome.flow_id)
+        if path.exists() and link_recovery.load(directory, outcome.flow_id).hosted_url is not None:
+            print("Automatic recovery record retained; one child cannot retire its request.")
+            _record_outcome(
+                args.outcome_file,
+                exchange=EXCHANGED,
+                record=_observe_record(directory, outcome.flow_id),
+            )
+            return 0
         removed = link_recovery.delete(directory, outcome.flow_id)
     except (LinkRecoveryError, OSError) as exc:
         # A cleanup fault after a completed exchange is a note, never a failure:

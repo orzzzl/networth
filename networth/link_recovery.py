@@ -13,12 +13,14 @@ the exchange. The newest archive predates the Link, so it holds neither an
 Without a copy somewhere else the Item is stranded *immediately* — not at the end
 of any window — and F7's recovery path is unreachable.
 
-**The copy is inert on its own, which is why it may live beside the backup key.**
-`/link/token/get` needs `client_id`, `secret` *and* the `link_token`. This machine
-holds only the third. If the VPS is gone the owner re-reads the first two from
-Plaid's dashboard, where they have been all along; the `link_token` is the one
-input no dashboard can reissue. So this file widens nothing that
-``~/agents/secrets/`` did not already carry (§15).
+**The location is a directory capability boundary, not equal file modes.**
+Version 1 contains a retrieval token needing provider credentials. Version 2
+additionally contains an openable hosted URL and is not inert on its own.
+The directory ``~/agents/secrets/`` on ``zelengs-macbook-air-2`` already holds
+``networth-vps.key``, which reaches the sync host's ``/etc/networth/`` provider
+credentials and can mint fresh hosted URLs. A compromise of that directory
+therefore already grants this capability. An isolated recovery-file disclosure
+exposes a new bearer; restrictive modes and redaction remain required.
 
 **What it may not contain, and this is the part a previous revision got wrong.**
 Rev 17 wrote a `session_retention_expires_at` into this record. Both of Plaid's
@@ -37,30 +39,12 @@ discipline §8.1 applies to data). ``link_token_expires_at`` is **Plaid's**: the
 long the hosted URL stays openable, and it is *not echoed back*, so ``None`` means
 "did not ask, Plaid's default applies, we do not know it" rather than any number.
 
-    **Divergence from `DESIGN.md`, raised rather than absorbed.** The document
-    names this field ``hosted_url_expires_at`` in **three** places — §4's
-    narrative, §7's ``link_flow`` table, and §15's secrets inventory — so this is
-    not one sentence to reword. What the mint response actually carries is the
-    *link token's* expiry, and the URL's lifetime is the other clock, the one
-    that is never echoed back. Storing Plaid's number under a name that says
-    "URL" would merge exactly the two clocks this project keeps separating, and
-    it would do it inside the record the disaster procedure reads. The field is
-    therefore named for what it holds. **The document and this module disagree on
-    a name and agree on the content**; which one changes is a review decision,
-    not one this module should make quietly.
-
-    §7's copy is the one to look at first: its comment reads "30 minutes for a
-    hosted link **token**, measured (§4)" directly under a column named for the
-    **URL**, and §4's probe table measured the token lifetime while listing
-    ``url_lifetime_seconds`` as a separate request parameter that "can widen it".
-    The two clocks are already named in the same breath there.
-
 ``reap_after`` is computed **from this machine's clock, at the moment the record
 is created** — deliberately not ``minted_at + …``. ``minted_at`` is stamped on the
 VPS, and deriving a local deadline from a remote stamp is the cross-machine clock
 comparison §9.1 rule 1 refuses; it is the defect rev 17 shipped in the backup
 canary. Written on one machine, compared on that machine, and generous by
-construction: reaping late costs one inert file, reaping early destroys the
+construction: reaping late retains one combined secret record, reaping early destroys the
 disaster copy while the flow is still live.
 """
 
@@ -100,6 +84,8 @@ _FLOW_ID_RE: Final = re.compile(r"\A[0-9a-f]{32}\Z")
 #: it is read is a disaster on a 30-minute clock, which is the worst possible
 #: time to discover a field means something else now.
 SCHEMA: Final = "networth.link-recovery.1"
+AUTOMATIC_SCHEMA: Final = "networth.link-recovery.2"
+AUTOMATIC_PROTOCOL: Final = "networth.automatic-link.1"
 
 #: Field names this record is **forbidden** to carry. Not a style rule: a
 #: deadline here is a number guessed from mint time that a later reader would
@@ -197,8 +183,14 @@ class RecoveryRecord:
     reap_after: datetime
     second_copy_verified_at: datetime | None = None
     second_copy_holder: str | None = None
+    hosted_url: Secret | None = None
+    protocol: str | None = None
 
     def __post_init__(self) -> None:
+        if (self.hosted_url is None) != (self.protocol is None) or (
+            self.protocol is not None and self.protocol != AUTOMATIC_PROTOCOL
+        ):
+            raise CorruptRecord("invalid automatic recovery protocol")
         if not _FLOW_ID_RE.match(self.flow_id):
             # The rejected value is never repeated: a caller that arrived here by
             # passing token material where a flow id belonged would otherwise have
@@ -246,7 +238,7 @@ class RecoveryRecord:
 
     def to_json(self) -> str:
         payload: dict[str, Any] = {
-            "schema": SCHEMA,
+            "schema": AUTOMATIC_SCHEMA if self.hosted_url is not None else SCHEMA,
             "flow_id": self.flow_id,
             "link_token": self.link_token.reveal(),
             "minted_at": self.minted_at.isoformat(),
@@ -264,6 +256,9 @@ class RecoveryRecord:
             ),
             "second_copy_holder": self.second_copy_holder,
         }
+        if self.hosted_url is not None:
+            payload["hosted_url"] = self.hosted_url.reveal()
+            payload["protocol"] = self.protocol
         # Sorted so two serialisations of the same record are byte-identical,
         # which is what makes the read-back check below a comparison of bytes
         # rather than of a parse. A read-back that re-parses can agree while the
@@ -278,18 +273,30 @@ class RecoveryRecord:
             raise CorruptRecord("recovery record is not JSON") from exc
         if not isinstance(payload, dict):
             raise CorruptRecord("recovery record is not an object")
-        if payload.get("schema") != SCHEMA:
+        if payload.get("schema") not in (SCHEMA, AUTOMATIC_SCHEMA):
             # The value is not echoed: this file holds token material, and the
             # branch that runs when it is malformed is exactly the branch where
             # its contents are arbitrary.
-            raise CorruptRecord(f"recovery record is not {SCHEMA!r}")
+            raise CorruptRecord("unsupported recovery record schema")
         present = FORBIDDEN_FIELDS & set(payload)
         if present:
             raise CorruptRecord(
                 f"recovery record carries {sorted(present)}, which mint time cannot know (§4)"
             )
+        automatic = payload["schema"] == AUTOMATIC_SCHEMA
+        if automatic:
+            if (
+                payload.get("protocol") != AUTOMATIC_PROTOCOL
+                or not isinstance(payload.get("hosted_url"), str)
+                or not payload["hosted_url"].startswith("https://")
+            ):
+                raise CorruptRecord("invalid automatic recovery record")
+        elif "hosted_url" in payload or "protocol" in payload:
+            raise CorruptRecord("measurement record contains automatic material")
         try:
             return cls(
+                hosted_url=Secret(payload["hosted_url"]) if automatic else None,
+                protocol=AUTOMATIC_PROTOCOL if automatic else None,
                 flow_id=payload["flow_id"],
                 link_token=Secret(payload["link_token"]),
                 minted_at=datetime.fromisoformat(payload["minted_at"]),
@@ -339,9 +346,9 @@ class MintResult:
     write that has not happened yet. A wire format that carried them would let
     the far side hand this machine a verification it never performed.
 
-    So the wire carries the mint's *observations* — and the hosted URL, which is
-    not part of the record at all and is the thing the driver is holding back
-    until the record is verified.
+    The measurement wire carries observations and a transient hosted URL.
+    The automatic driver explicitly opts into version 2, retaining the URL in
+    the same durable record before the authenticated release return leg.
 
     ``link_token`` is the credential here, so this object has the same
     ``__repr__`` discipline as :class:`RecoveryRecord`: the timestamps render,
@@ -417,7 +424,7 @@ class MintResult:
         except (KeyError, TypeError, ValueError) as exc:
             raise CorruptRecord("the mint payload is missing or misshapes a field") from exc
 
-    def as_record(self, *, now: datetime) -> RecoveryRecord:
+    def as_record(self, *, now: datetime, automatic: bool = False) -> RecoveryRecord:
         """The record this Mac will write, with **this machine's** reap deadline."""
         return RecoveryRecord(
             flow_id=self.flow_id,
@@ -426,6 +433,8 @@ class MintResult:
             link_token_expires_at=self.link_token_expires_at,
             url_lifetime_seconds=self.url_lifetime_seconds,
             reap_after=reap_after_from(now),
+            hosted_url=Secret(self.hosted_link_url) if automatic else None,
+            protocol=AUTOMATIC_PROTOCOL if automatic else None,
         )
 
 
@@ -541,6 +550,8 @@ def store_and_verify(
         reap_after=record.reap_after,
         second_copy_verified_at=_aware(now, field="now"),
         second_copy_holder=holder,
+        hosted_url=record.hosted_url,
+        protocol=record.protocol,
     )
     payload = verified.to_json()
     path = record_path(directory, record.flow_id)
@@ -715,3 +726,29 @@ def reap_expired(directory: Path, *, now: datetime) -> ReapOutcome:
         discarded=tuple(discarded),
         unreadable=tuple(unreadable),
     )
+
+
+def verify_for_resume(
+    directory: Path, flow_id: str, *, holder: str, now: datetime
+) -> RecoveryRecord:
+    """Re-establish durability and literal read-back without rewriting the record."""
+    directory = ensure_directory(directory)
+    path = record_path(directory, flow_id)
+    with path.open("r", encoding="utf-8") as handle:
+        original = handle.read()
+        record = RecoveryRecord.from_json(original)
+        if (
+            record.flow_id != flow_id
+            or record.hosted_url is None
+            or record.protocol != AUTOMATIC_PROTOCOL
+            or record.second_copy_holder != holder
+            or record.second_copy_verified_at is None
+            or record.expired(now)
+        ):
+            raise SecondCopyUnverified("automatic recovery record cannot authorize resume")
+        os.fchmod(handle.fileno(), _FILE_MODE)
+        os.fsync(handle.fileno())
+    _fsync_directory(directory)
+    if path.read_text(encoding="utf-8") != original:
+        raise SecondCopyUnverified("recovery record changed during read-back")
+    return record

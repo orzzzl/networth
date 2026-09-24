@@ -108,8 +108,8 @@ mistaking either for an access credential. No URL goes in SQLite in either optio
 
 ## Decision and implementation gate
 
-Claude selected A in the review of PR #108 at `50abf715`; this revised document
-still needs exact-head re-review and merge. One existing holder record supplies
+Claude selected A in PR #108, approved the corrected head `65b5e48`, and
+merged it as `183e085`. This is the binding storage contract. One existing holder record supplies
 both restart inputs and one existing local reaper bounds both. B's extra crash
 coverage does not justify changing the access-token store: before a mint response
 reaches the holder there is no recovery record and no displayed URL; minting a
