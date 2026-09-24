@@ -128,6 +128,39 @@ final class HostNotPublishing extends StaleReason {
   final DateTime confirmedAt;
 }
 
+/// *"Reached the source, and it has nothing to serve at all."*
+///
+/// `serve.py`'s `404`: the host answered, and it holds no active publication
+/// for this pairing. **Neither of the other two reasons, and that is why it is
+/// a third.** `CannotCheck` is wrong because the check succeeded — the phone
+/// reached the host and got a clear answer, so telling the owner his device
+/// *"couldn't check"* sends him after a network that is working.
+/// [HostNotPublishing] is the closer miss and the more dangerous one: its
+/// sentence is *"your server last confirmed this copy `<t>`"*, and a `404`
+/// confirms nothing. The host is not saying *"nothing newer than yours"*; it is
+/// saying it has none at all, which is a stronger and different fact about the
+/// same copy.
+///
+/// **It names no cause, deliberately.** `SnapshotNoPublication` measured the
+/// ambiguity at the wire: `serve.py` answers `404` both when no active envelope
+/// exists and when the joined pairing is not `ACTIVE`, so a revoked pairing and
+/// a host whose publisher has stopped are the same three digits, with different
+/// remedies. Task `21`'s review established the rule this follows — copy states
+/// what the state guarantees and never one of the ways to reach it, because the
+/// named cause reads as the only one.
+final class HostServingNothing extends StaleReason {
+  const HostServingNothing({required this.lastPublishedAt, required this.reachedAt});
+
+  /// `published_at` of the copy on screen — the publication the host no longer
+  /// has.
+  final DateTime lastPublishedAt;
+
+  /// `last_fetch_attempt_at` of the attempt that got the `404`. A claim about
+  /// the host is worth the instant it was observed, the same reason
+  /// [HostNotPublishing] carries one.
+  final DateTime reachedAt;
+}
+
 /// *"Couldn't check since <time>"*, plus which inability it was.
 ///
 /// The phone says nothing about the host here, because it has not reached it.
@@ -308,8 +341,20 @@ StaleReason _staleReason({
   if (held.lastError case final FetchFailureClass error) {
     return CannotCheck(cause: FetchFailed(error), since: held.lastSuccess?.at);
   }
-  // `lastError == null` is only reachable through `FetchDiagnostics.succeeded`,
-  // which sets both.
+  // The `404`, before conjunct 1, because conjunct 1 asks when the source last
+  // *served this copy* and this record's news is that it no longer serves it at
+  // all. Ordering it after would answer a host that has dropped the publication
+  // with `NotCheckedSinceDue` — "nothing is wrong yet and nobody is blamed" —
+  // whenever the last success predated the deadline, which is the ordinary case
+  // for a copy that has since gone stale.
+  if (held.foundNoPublication) {
+    return HostServingNothing(
+      lastPublishedAt: publishedAt,
+      reachedAt: held.lastAttemptAt,
+    );
+  }
+  // Neither an error nor a `404` is only reachable through
+  // `FetchDiagnostics.succeeded`, which sets both instants from one value.
   final success = held.lastSuccess!;
 
   // Conjunct 1 — we reached the source **after** the copy was already due, not

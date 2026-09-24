@@ -158,6 +158,11 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String copyReasonHostServingNothing(String timestamp) {
+    return 'your server answered $timestamp and has no snapshot to give';
+  }
+
+  @override
   String get copyReasonNeverFetched => 'this device hasn\'t checked yet';
 
   @override

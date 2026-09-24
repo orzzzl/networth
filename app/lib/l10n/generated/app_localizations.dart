@@ -226,6 +226,12 @@ abstract class AppLocalizations {
   /// **'nothing newer has been published — your server last confirmed this copy {timestamp}'**
   String copyReasonHostNotPublishing(String timestamp);
 
+  /// serve.py's 404 with a copy already on screen: the host is up and holds no active publication for this pairing. Deliberately does NOT say why — serve.py answers 404 both for a revoked pairing and for a host that has published nothing, which have different remedies, and task 21's review settled that copy states what the state guarantees rather than one of the ways to reach it. The instant is in the sentence because the 404 IS the last check, so the 'last checked' suffix would print it twice.
+  ///
+  /// In en, this message translates to:
+  /// **'your server answered {timestamp} and has no snapshot to give'**
+  String copyReasonHostServingNothing(String timestamp);
+
   /// §9.1's 'never fetched'. Says only that, and asks for nothing: a new install has no problem.
   ///
   /// In en, this message translates to:

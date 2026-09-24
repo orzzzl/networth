@@ -76,6 +76,35 @@ void main() {
       expect(line, isNot(contains('last checked')));
     });
 
+    test('a host with nothing to serve says that, and not the other two', () {
+      final line = reason(
+        CopyStale(HostServingNothing(lastPublishedAt: published, reachedAt: confirmed)),
+      )!;
+
+      expect(line, 'your server answered Sep 18, 2026, 06:30 UTC and has no snapshot to give');
+      // Not `HOST_NOT_PUBLISHING`: that sentence says the server *confirmed*
+      // this copy, and a 404 disowns it.
+      expect(line, isNot(contains('confirmed')));
+      // Not a `CANNOT_CHECK`: the check worked.
+      expect(line, isNot(contains("couldn't check")));
+      // And its instant is inside the sentence, so no suffix restates it.
+      expect(line, isNot(contains('last checked')));
+    });
+
+    test('and it names neither of the two causes it cannot tell apart', () {
+      // `serve.py` answers 404 both for a revoked pairing and for a host that
+      // has published nothing, with different remedies. Task 21's review
+      // settled that copy states what the state guarantees, never one of the
+      // ways to reach it — the named cause reads as the only one.
+      final line = reason(
+        CopyStale(HostServingNothing(lastPublishedAt: published, reachedAt: confirmed)),
+      )!;
+
+      expect(line, isNot(contains('pair')));
+      expect(line, isNot(contains('revoke')));
+      expect(line, isNot(contains('sync')));
+    });
+
     test('no CANNOT_CHECK cause claims the host published nothing', () {
       // The whole point of §9.1's split: CANNOT_CHECK means the phone did not
       // reach the host, so a sentence about what the host did has nothing behind

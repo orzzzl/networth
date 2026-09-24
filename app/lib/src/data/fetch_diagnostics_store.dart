@@ -97,6 +97,11 @@ class FileFetchDiagnosticsStore implements FetchDiagnosticsStore {
         'last_fetch_attempt_at': diagnostics.lastAttemptAt.toUtc().toIso8601String(),
         if (diagnostics.lastError case final FetchFailureClass error)
           'last_fetch_error': _errorWire[error],
+        // Written only when true, so a record from before this key existed
+        // reads back as what it was: an attempt that either succeeded or
+        // failed. Absent and `false` mean the same thing and one of them is
+        // what every already-stored file says.
+        if (diagnostics.foundNoPublication) noPublicationKey: true,
         if (diagnostics.lastSuccess case final FetchSuccess success) ...<String, Object?>{
           'last_fetch_success_at': success.at.toUtc().toIso8601String(),
           // The host's own bytes, not this app's rendering of a parsed number.
@@ -153,6 +158,33 @@ class FileFetchDiagnosticsStore implements FetchDiagnosticsStore {
             seq: PublicationSeq.parse(storedSeq! as String, field: 'stored last_fetch_seq'),
           );
     final storedError = decoded['last_fetch_error'];
+    final noPublication = decoded[noPublicationKey];
+    if (noPublication != null && noPublication != true) {
+      // `false` is refused as well as a non-boolean. The key is written only
+      // when true, so a `false` on disk was not written by this store, and a
+      // record whose shape nothing here produced is one whose other fields
+      // there is no reason to trust either.
+      throw PayloadFormatException(
+        'stored fetch diagnostics $noPublicationKey is not true',
+      );
+    }
+    if (storedError != null && noPublication == true) {
+      // Contradictory: the attempt cannot both have failed to reach the host
+      // and have reached one that had nothing. Guessing which half to believe
+      // picks between "your network is down" and "your server has nothing" —
+      // opposite ends of how much the owner should care, which is the very
+      // distinction §9.1 makes this record carry.
+      throw const PayloadFormatException(
+        'stored fetch diagnostics record an attempt that both failed and reached a host',
+      );
+    }
+    if (noPublication == true) {
+      return FetchDiagnostics.foundNoPublication(
+        pairingId: storedPairing,
+        at: attemptAt,
+        after: success,
+      );
+    }
     if (storedError == null) {
       if (success == null || !success.at.isAtSameMomentAs(attemptAt)) {
         // No error and no success at the attempt's instant: the record says the
@@ -217,6 +249,14 @@ class FileFetchDiagnosticsStore implements FetchDiagnosticsStore {
     }
     throw PayloadFormatException('stored fetch diagnostics error class is unknown: $stored');
   }
+
+  /// The one key that is not one of §9.1's five facts.
+  ///
+  /// Named here rather than spelled at its three use sites for the reason the
+  /// error table below is: the file format must not be changeable by an
+  /// editor's rename, and a key written in one place and read in another is a
+  /// format two literals wide.
+  static const String noPublicationKey = 'last_fetch_found_no_publication';
 
   /// The stored spelling of each class, kept apart from the enum's Dart name so
   /// renaming the identifier cannot silently change the file format.
