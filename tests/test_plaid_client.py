@@ -901,3 +901,43 @@ def test_value_fetch_refuses_unusable_provider_fields_without_echoing_them() -> 
     assert str(raised.value) == "accounts/balance/get returned an unusable account record"
     assert "sensitive-account" not in str(raised.value)
     assert "4321.99" not in str(raised.value)
+
+
+def test_incomplete_exchange_keeps_valid_support_identity_outside_exception_text() -> None:
+    client, _ = sandbox_client(
+        item_public_token_exchange=SimpleNamespace(
+            access_token=None,
+            item_id=ITEM_ID,
+            request_id=EXCHANGE_REQUEST_ID,
+        )
+    )
+    with pytest.raises(PlaidCallError) as caught:
+        client.item_public_token_exchange("synthetic-public")
+    assert caught.value.item_id == ITEM_ID
+    assert caught.value.request_id == EXCHANGE_REQUEST_ID
+    assert ITEM_ID not in str(caught.value) and ITEM_ID not in repr(caught.value)
+
+
+@pytest.mark.parametrize("field", ["item_id", "request_id"])
+def test_exchange_identity_cannot_echo_bearer_material(field: str) -> None:
+    fields = dict(access_token="syntheticbearer", item_id=ITEM_ID, request_id=EXCHANGE_REQUEST_ID)
+    fields[field] = "syntheticbearer"
+    client, _ = sandbox_client(item_public_token_exchange=SimpleNamespace(**fields))
+    if field == "item_id":
+        with pytest.raises(PlaidCallError) as caught:
+            client.item_public_token_exchange("synthetic-public")
+        assert caught.value.item_id is None
+        assert "syntheticbearer" not in repr(caught.value)
+    else:
+        assert client.item_public_token_exchange("synthetic-public").request_id is None
+
+
+def test_http_failure_carries_request_id_as_structured_evidence() -> None:
+    def boom(_request: Any) -> Any:
+        raise api_exception(400, json.dumps({"request_id": "abc123XYZ"}))
+
+    client = PlaidClient(CREDENTIALS, api=SimpleNamespace(item_public_token_exchange=boom))
+    with pytest.raises(PlaidCallError) as caught:
+        client.item_public_token_exchange("synthetic-public")
+    assert caught.value.request_id == "abc123XYZ"
+    assert caught.value.item_id is None

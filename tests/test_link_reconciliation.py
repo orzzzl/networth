@@ -398,3 +398,21 @@ def test_real_pending_durability_failure_persists_a_hold(
     assert db.execute("SELECT reason FROM link_material_hold").fetchone() == (
         "UNVERIFIED_MATERIAL",
     )
+
+
+@pytest.mark.parametrize("with_result", [False, True])
+def test_healthy_legacy_link_reference_does_not_create_material_hold(
+    setup: tuple[sqlite3.Connection, RecordingStore],
+    with_result: bool,
+) -> None:
+    db, store = setup
+    ref = store.put(SecretKind.LINK_TOKEN, FLOW, "synthetic-legacy-link-token")
+    legacy(db, ref)
+    if not with_result:
+        db.execute("DELETE FROM link_result")
+        db.commit()
+    result = scan(setup)
+    assert result.hold_ids == ()
+    assert result.absent_result_ids == ((RESULT,) if with_result else ())
+    assert store.get(ref).reveal() == "synthetic-legacy-link-token"
+    read_item_budget(db)
