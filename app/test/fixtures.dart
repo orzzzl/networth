@@ -21,7 +21,36 @@ const String knownFixture = 'assets/fixtures/known.json';
 const String mixedFixture = 'assets/fixtures/mixed_known_and_unknown.json';
 const String staticOnlyFixture = 'assets/fixtures/static_only.json';
 
-const List<String> allFixtures = [knownFixture, mixedFixture, staticOnlyFixture];
+/// A payload with a non-empty §11 alert set — **added rather than folded into
+/// one of the three above**, which all carry `alerts: []` and are unchanged.
+///
+/// Editing one of them would have been the cheaper diff and the worse one: those
+/// three are what every existing test asserts against, and the empty set is
+/// itself a case worth keeping (it is the ordinary one, and the screen must show
+/// no alert block at all for it).
+///
+/// It is internally consistent the way the host would have produced it, because
+/// a fixture that could not have come off `publisher.py` tests the parser
+/// against a shape production never sends: two accounts on re-auth Items are
+/// `STALE` and carried forward with `reauth_account_count: 2`, the unreconciled
+/// third has no observation and no freshness and is excluded from `value_minor`,
+/// and `is_complete` is `false` because §10.5 makes it false whenever anything
+/// was carried forward or unreconciled.
+///
+/// Its `pairing_id` is a UUIDv4 rather than the three siblings' literal
+/// `fixture-pairing`, which is PR #101's finding applied one layer down:
+/// `PairingProvision.parse` requires a UUIDv4, so a fixture carrying anything
+/// else is one no real pairing can ever be holding — fine while nothing checks,
+/// and a happy path built on a configuration production cannot reach the moment
+/// a later test lifts it into an envelope.
+const String alertsOpenFixture = 'assets/fixtures/alerts_open.json';
+
+const List<String> allFixtures = [
+  knownFixture,
+  mixedFixture,
+  staticOnlyFixture,
+  alertsOpenFixture,
+];
 
 String readFixture(String assetPath) => File(assetPath).readAsStringSync();
 

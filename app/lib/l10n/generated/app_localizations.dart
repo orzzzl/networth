@@ -160,6 +160,42 @@ abstract class AppLocalizations {
   /// **'an account needs your attention'**
   String get connectionActionNeeded;
 
+  /// Section label above the open alert set, rendered only when the set is non-empty. DESIGN.md §11: the phone is the ONLY channel an alert can reach the owner through — no mail, no push — so the section is given a filled surface rather than being a fourth quiet row. A noun phrase, like the Accounts / This copy / History labels beside it, and deliberately NOT 'needs your attention', which is already the connection row's wording one line above: the same phrase twice on one screen reads as one thing said twice rather than as a summary and its detail. It echoes §9.2's ACTION_NEEDED state name, which is the same claim this section itemises.
+  ///
+  /// In en, this message translates to:
+  /// **'Action needed'**
+  String get alertsLabel;
+
+  /// AlertKind.NEEDS_REAUTH, counted by subject. The count is of connections (Items), not accounts — one connection can carry several accounts, and the owner signs in once per connection. The payload carries no name for the subject (publisher.py::_account emits ids and states, never a label), so a count is the most this side can honestly say.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{A connection needs you to sign in again before it can update.} other{{count} connections need you to sign in again before they can update.}}'**
+  String alertNeedsReauth(int count);
+
+  /// AlertKind.REVOKED. Distinct from NEEDS_REAUTH on purpose: signing in again does not fix this one, the connection has to be set up from scratch, and collapsing the two would send the owner to the wrong screen.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{A connection was disconnected and needs to be linked again.} other{{count} connections were disconnected and need to be linked again.}}'**
+  String alertRevoked(int count);
+
+  /// AlertKind.FROZEN_DATA — §11's five-market-day threshold, and the exact failure this product exists to catch: Axis A green, Axis B dead. The second clause is load-bearing, because a healthy-looking connection is precisely why this state is otherwise invisible. It does not name re-linking as the fix even though it usually is: the host cannot tell, and a wrong instruction here costs more than none.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{An account\'s value has stopped changing, even though its connection looks fine.} other{{count} accounts\' values have stopped changing, even though their connections look fine.}}'**
+  String alertFrozenData(int count);
+
+  /// AlertKind.PENDING_RECONCILIATION. The only alert kind that is a statement about the headline: §8.5 accounts sitting at NEW contribute nothing, so the total above is knowingly understated while this row is showing. Says so directly rather than describing the reconciliation machinery.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{An account isn\'t in your total yet — it still needs matching to the account it replaces.} other{{count} accounts aren\'t in your total yet — they still need matching to the accounts they replace.}}'**
+  String alertPendingReconciliation(int count);
+
+  /// AlertKind.SHARE_COUNT_UNCONFIRMED (§11, task 27). Not phrased as staleness: §12 says a manual quantity is never marked stale, and the ask is different from every other kind here — count the shares, rather than fix a connection. The re-confirmation period is deliberately not named; it lives in RECONFIRM_SHARE_COUNT_AFTER on the host and a number repeated here would be a second definition free to drift.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{A share count hasn\'t been confirmed since you set it, so its value may be out of date.} other{{count} share counts haven\'t been confirmed since you set them, so their values may be out of date.}}'**
+  String alertShareCountUnconfirmed(int count);
+
   /// Row label for the copy dimension: how old THIS PHONE's copy of the snapshot is, as opposed to how old the data behind it is.
   ///
   /// In en, this message translates to:

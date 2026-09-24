@@ -4,6 +4,7 @@ import '../../l10n/generated/app_localizations.dart';
 import '../domain/copy_freshness.dart';
 import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
+import 'alert_list.dart';
 import 'headline.dart';
 import 'history_curve.dart';
 import 'instant.dart';
@@ -74,9 +75,20 @@ class SnapshotView extends StatelessWidget {
             detail: _copyText(l10n, payload, deviceNow),
             isWarning: payload.copyFreshness(deviceNow) != CopyFreshness.fresh,
           ),
+          // Between the two dimensions and the curve, and the position is
+          // argued rather than aesthetic. The rows above summarise — the
+          // connection row says `ACTION_NEEDED` without naming a cause, because
+          // one enum is all the wire gives it — and this block is the itemised
+          // version of that same claim, so it belongs directly beneath it.
+          // Below the curve it would be under the fold on a phone, and §11's
+          // "impossible to miss on open" is the one requirement on this screen
+          // that a scroll position can defeat. It renders nothing when the set
+          // is empty, so nothing moves on a healthy screen.
+          if (payload.alerts.isNotEmpty) const SizedBox(height: 20),
+          AlertList(alerts: payload.alerts),
           // Last, deliberately. The order on this screen is the order of the
-          // claims: the number, its age, the two reasons it could be old, and
-          // only then its shape over time.
+          // claims: the number, its age, the two reasons it could be old, what
+          // is actually wrong, and only then its shape over time.
           const SizedBox(height: 24),
           // The headline's currency travels with the series, because this is the
           // only place both are in scope. `NetWorthHistory.reduce` refuses a
