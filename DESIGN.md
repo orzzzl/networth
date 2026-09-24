@@ -2722,9 +2722,10 @@ The phone evaluates, in order:
 
    It names no cause. `serve.py` answers `404` both when no active envelope
    exists and when the pairing is not `ACTIVE`, so a revoked pairing and a host
-   whose publisher stopped are the same three digits with different remedies;
-   §9.2's rule applies — state what the state guarantees, never one of the ways
-   to reach it.
+   whose publisher stopped are the same three digits with different remedies —
+   and task `21`'s review settled the rule that follows from that: copy states
+   what the state guarantees, never one of the ways to reach it, because the
+   named cause reads as the only one.
 
    Otherwise the reason is `HOST_NOT_PUBLISHING` **iff all three hold**, and
    `CANNOT_CHECK` otherwise:
