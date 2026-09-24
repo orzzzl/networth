@@ -158,6 +158,9 @@ void main() {
           history: NetWorthHistory.empty,
           recordingFailed: false,
           deviceNow: DateTime.utc(2026, 9, 15, 12),
+          // Placement is the subject here, so the clock is held neutral rather
+          // than left to a default — `continuity` has none, by design.
+          continuity: trustedClock,
         ),
       ),
     );
@@ -177,6 +180,9 @@ void main() {
           history: NetWorthHistory.empty,
           recordingFailed: false,
           deviceNow: DateTime.utc(2026, 9, 15, 12),
+          // An empty alert set is the subject; a distrusted clock changes the
+          // copy row above and would leave this asserting two things at once.
+          continuity: trustedClock,
         ),
       ),
     );

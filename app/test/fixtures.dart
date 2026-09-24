@@ -8,8 +8,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/l10n/generated/app_localizations.dart';
 import 'package:networth_app/src/data/history_source.dart';
 import 'package:networth_app/src/data/history_store.dart';
+import 'package:networth_app/src/domain/clock_continuity.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
+
+/// A clock this device has proved continuous: the same interval measured two
+/// ways, agreeing exactly. The neutral value for tests whose subject is *not*
+/// whether the clock can be trusted — age, placement, or whether a block is
+/// drawn at all.
+///
+/// Shared from here for the same reason [localized] is: `continuity` is a
+/// required parameter precisely so that no caller can quietly assert the
+/// reassuring answer, and a per-file copy of the value that means "assume it is
+/// fine" is how that requirement decays into a default with extra steps.
+const ClockContinuity trustedClock =
+    ContinuityHeld(wallElapsed: Duration.zero, monotonicElapsed: Duration.zero);
 
 /// The fixtures the app ships, read from disk rather than through the bundle.
 ///

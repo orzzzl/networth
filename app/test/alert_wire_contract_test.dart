@@ -30,6 +30,15 @@ void main() {
   final publisher = File('../networth/publisher.py');
 
   /// The `NAME = "WIRE"` pairs inside `class AlertKind(StrEnum)`.
+  ///
+  /// **A literal scan over a text slice, and only that.** It does not parse
+  /// Python: it trusts four-space indentation, one member per line, a
+  /// double-quoted value, and `@property` as the end of the member block. A
+  /// member written any other way is simply not seen, and this returns a
+  /// *smaller* set rather than a wrong one — which is the safe direction here,
+  /// because the assertions below compare it against the app's vocabulary and a
+  /// missing host kind cannot manufacture agreement. What it cannot do is prove
+  /// the class it read is the one `publisher.py` imports.
   Set<String> hostKinds(String source) {
     final start = source.indexOf('class AlertKind(StrEnum):');
     if (start < 0) {
@@ -45,7 +54,29 @@ void main() {
         .toSet();
   }
 
-  /// Every JSON key `_alert` puts on the wire, at any nesting depth.
+  /// Every string literal followed by a colon in `_alert`'s text.
+  ///
+  /// **That is the honest description, and it is weaker than "the keys `_alert`
+  /// puts on the wire at any nesting depth", which is what this used to claim.**
+  /// The regex sees a flat bag of literals in a slice delimited by the next
+  /// top-level `def`. It cannot tell a key in the returned dict from one in a
+  /// nested dict, a comprehension, a docstring or a comment; it cannot associate
+  /// a key with the object it belongs to; and it says nothing about whether a
+  /// branch that emits it is reachable.
+  ///
+  /// It is still worth having, because the drift it exists to catch is a
+  /// *vocabulary* change — a key added to or renamed on the wire — and that does
+  /// show up in the bag of literals. Its assertion is an exact set equality
+  /// against a written-out set, so a discrepancy in **either** direction goes
+  /// red: a stray literal from a comment or a nested dict is a false red, and a
+  /// real key the regex cannot match (anything not lower-snake-case, or built
+  /// from a variable) is also red. False reds cost a reading; neither direction
+  /// is a false pass.
+  ///
+  /// The gap that *is* a false pass is structural: the same bag of literals
+  /// arranged differently — `id` moved out of `subject`, say — compares equal
+  /// and this test stays green. Nothing here can see that, and
+  /// `payload_alert_test.dart` parsing real fixture shapes is what pins it.
   Set<String> wireKeys(String source) {
     final start = source.indexOf('def _alert(');
     if (start < 0) {

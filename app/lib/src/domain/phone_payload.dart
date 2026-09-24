@@ -2,11 +2,14 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import 'clock_continuity.dart';
 import 'copy_freshness.dart';
 import 'dated_total.dart';
+import 'fetch_diagnostics.dart';
 import 'instant.dart';
 import 'payload_alert.dart';
 import 'payload_format_exception.dart';
+import 'seq_baseline.dart';
 
 /// The plaintext body of a task-19 publication, as far as this build reads it.
 ///
@@ -106,13 +109,48 @@ class PhonePayload {
     );
   }
 
-  /// This copy's age dimension, evaluated against the device's clock.
-  CopyFreshness copyFreshness(DateTime deviceNow) => evaluateCopyFreshness(
+  /// This copy's age dimension **with its reason**, evaluated against the
+  /// device's clock.
+  ///
+  /// [continuity] has no default **on purpose**. A default would be a value
+  /// this app fabricated rather than measured, and the only one that would not
+  /// change behaviour is the one asserting the clock is fine — which is the
+  /// exact claim the type exists to stop anybody making for free.
+  ///
+  /// **The two stores are absent here and that is a measurement, not a
+  /// default.** This build holds no fetch records because it performs no
+  /// fetches, so [DiagnosticsAbsent] is what is true of it — §9.1's *"never
+  /// fetched"* and nothing else. That is the difference from [continuity]
+  /// above, which is required precisely because the reassuring value would be
+  /// fabricated: absence of records is a fact this phone can establish, and
+  /// absence of clock evidence is not a claim that the clock is sound. When
+  /// task `22`'s transport lands, the records stop being absent and this
+  /// accessor is where they arrive.
+  CopyState copyState(
+    DateTime deviceNow, {
+    required ClockContinuity continuity,
+  }) =>
+      evaluateCopyState(
         publishedAt: publishedAt,
         publishInterval: publishInterval,
         grace: grace,
         deviceNow: deviceNow,
+        continuity: continuity,
+        diagnostics: const DiagnosticsAbsent(),
+        baseline: const BaselineAbsent(),
       );
+
+  /// The dimension alone, for callers that do not need the reason.
+  ///
+  /// Delegates to [copyState] rather than to `evaluateCopyFreshness`, so the
+  /// indicator this returns is by construction the one belonging to the reason
+  /// the screen shows. Two independent evaluations of the same instant is how
+  /// a row comes to warn about a state its own text denies.
+  CopyFreshness copyFreshness(
+    DateTime deviceNow, {
+    required ClockContinuity continuity,
+  }) =>
+      copyState(deviceNow, continuity: continuity).freshness;
 
   static String _string(Map<String, Object?> body, String field) {
     final value = body[field];

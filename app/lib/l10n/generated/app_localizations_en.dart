@@ -144,11 +144,68 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String copyStale(String timestamp) {
-    return 'overdue — nothing new since $timestamp';
+    return 'showing a copy from $timestamp';
   }
 
   @override
-  String get copyUnknown => 'this device\'s clock disagrees with the server\'s';
+  String copyUnknownShowing(String timestamp) {
+    return 'showing a copy dated $timestamp';
+  }
+
+  @override
+  String copyReasonHostNotPublishing(String timestamp) {
+    return 'nothing newer has been published — your server last confirmed this copy $timestamp';
+  }
+
+  @override
+  String get copyReasonNeverFetched => 'this device hasn\'t checked yet';
+
+  @override
+  String get copyReasonOffline => 'no network here, so it couldn\'t check';
+
+  @override
+  String get copyReasonHostUnreachable =>
+      'the network is fine, but your server didn\'t answer';
+
+  @override
+  String get copyReasonCredentialRejected =>
+      'your server refused this device — it needs pairing again';
+
+  @override
+  String get copyReasonTransportError =>
+      'your server answered with something this app couldn\'t use';
+
+  @override
+  String get copyReasonNotCheckedSinceDue =>
+      'this device hasn\'t needed to check again yet';
+
+  @override
+  String get copyReasonRecordsUnusable =>
+      'this device can\'t read its own notes, so it can\'t tell why';
+
+  @override
+  String get copyReasonServedPayloadNotHeld =>
+      'your server\'s latest copy isn\'t the one shown here';
+
+  @override
+  String get copyUnknownFuture =>
+      'the copy is dated ahead of this device\'s clock, so its age can\'t be worked out';
+
+  @override
+  String get copyUnknownClockMovedBackwards =>
+      'this device\'s clock has moved backwards, so its age can\'t be worked out';
+
+  @override
+  String get copyUnknownClockUnconfirmed =>
+      'this device can\'t confirm its own clock, so its age can\'t be worked out';
+
+  @override
+  String copyReasonLastChecked(String reason, String timestamp) {
+    return '$reason — last checked $timestamp';
+  }
+
+  @override
+  String get connectionAsOfCopy => 'as of this copy, not now';
 
   @override
   String get historyLabel => 'History';
