@@ -160,6 +160,42 @@ abstract class AppLocalizations {
   /// **'an account needs your attention'**
   String get connectionActionNeeded;
 
+  /// Section label above the open alert set, rendered only when the set is non-empty. DESIGN.md §11: the phone is the ONLY channel an alert can reach the owner through — no mail, no push — so the section is given a filled surface rather than being a fourth quiet row. A noun phrase, like the Accounts / This copy / History labels beside it, and deliberately NOT 'needs your attention', which is already the connection row's wording one line above: the same phrase twice on one screen reads as one thing said twice rather than as a summary and its detail. It echoes §9.2's ACTION_NEEDED state name, which is the same claim this section itemises.
+  ///
+  /// In en, this message translates to:
+  /// **'Action needed'**
+  String get alertsLabel;
+
+  /// AlertKind.NEEDS_REAUTH, counted by subject. The count is of connections (Items), not accounts — one connection can carry several accounts, and the owner signs in once per connection. The payload carries no name for the subject (publisher.py::_account emits ids and states, never a label), so a count is the most this side can honestly say.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{A connection needs you to sign in again before it can update.} other{{count} connections need you to sign in again before they can update.}}'**
+  String alertNeedsReauth(int count);
+
+  /// AlertKind.REVOKED. Distinct from NEEDS_REAUTH on purpose: signing in again does not fix this one, the connection has to be set up from scratch, and collapsing the two would send the owner to the wrong screen.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{A connection was disconnected and needs to be linked again.} other{{count} connections were disconnected and need to be linked again.}}'**
+  String alertRevoked(int count);
+
+  /// AlertKind.FROZEN_DATA — §11's five-market-day threshold, and the exact failure this product exists to catch: Axis A green, Axis B dead. The second clause is load-bearing, because a healthy-looking connection is precisely why this state is otherwise invisible. It does not name re-linking as the fix even though it usually is: the host cannot tell, and a wrong instruction here costs more than none.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{An account\'s value has stopped changing, even though its connection looks fine.} other{{count} accounts\' values have stopped changing, even though their connections look fine.}}'**
+  String alertFrozenData(int count);
+
+  /// AlertKind.PENDING_RECONCILIATION. The only alert kind that is a statement about the headline: §8.5 accounts sitting at NEW contribute nothing, so the total above is knowingly understated while this row is showing. Says so directly rather than describing the reconciliation machinery.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{An account isn\'t in your total yet — it still needs matching to the account it replaces.} other{{count} accounts aren\'t in your total yet — they still need matching to the accounts they replace.}}'**
+  String alertPendingReconciliation(int count);
+
+  /// AlertKind.SHARE_COUNT_UNCONFIRMED (§11, task 27). Not phrased as staleness: §12 says a manual quantity is never marked stale, and the ask is different from every other kind here — count the shares, rather than fix a connection. The re-confirmation period is deliberately not named; it lives in RECONFIRM_SHARE_COUNT_AFTER on the host and a number repeated here would be a second definition free to drift.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{A share count hasn\'t been confirmed since you set it, so its value may be out of date.} other{{count} share counts haven\'t been confirmed since you set them, so their values may be out of date.}}'**
+  String alertShareCountUnconfirmed(int count);
+
   /// Row label for the copy dimension: how old THIS PHONE's copy of the snapshot is, as opposed to how old the data behind it is.
   ///
   /// In en, this message translates to:
@@ -172,17 +208,101 @@ abstract class AppLocalizations {
   /// **'published {timestamp}'**
   String copyFresh(String timestamp);
 
-  /// No description provided for @copyStale.
+  /// The age of the copy on screen, and nothing else. Through task 22 this read 'overdue — nothing new since {timestamp}', which asserts DESIGN.md §9.1's HOST_NOT_PUBLISHING — a claim about the server — for every stale copy, including the ones the phone reached CANNOT_CHECK on precisely because it could not reach the server. The cause now goes on its own line below, so a phone that cannot check says so instead of blaming a host it never spoke to.
   ///
   /// In en, this message translates to:
-  /// **'overdue — nothing new since {timestamp}'**
+  /// **'showing a copy from {timestamp}'**
   String copyStale(String timestamp);
 
-  /// Neither clock is called wrong, because this side cannot tell which one is. DESIGN.md §9.1 rule 1: the two clocks are never merged.
+  /// The COPY_UNKNOWN counterpart of copyStale. Says 'dated' rather than 'from' because the whole state is that this device cannot place the copy in time — 'from' quietly claims the age the copyUnknown* reason lines go on to disclaim.
   ///
   /// In en, this message translates to:
-  /// **'this device\'s clock disagrees with the server\'s'**
-  String get copyUnknown;
+  /// **'showing a copy dated {timestamp}'**
+  String copyUnknownShowing(String timestamp);
+
+  /// DESIGN.md §9.1 HOST_NOT_PUBLISHING. This is the ONLY copy string that makes a claim about the server, and it earns it: all three conjuncts held, meaning the phone reached the host and the host offered nothing newer. The confirmation instant is in the sentence because a claim about someone else is worth what its last check is worth.
+  ///
+  /// In en, this message translates to:
+  /// **'nothing newer has been published — your server last confirmed this copy {timestamp}'**
+  String copyReasonHostNotPublishing(String timestamp);
+
+  /// §9.1's 'never fetched'. Says only that, and asks for nothing: a new install has no problem.
+  ///
+  /// In en, this message translates to:
+  /// **'this device hasn\'t checked yet'**
+  String get copyReasonNeverFetched;
+
+  /// FetchFailureClass.offline. Ordinary and self-correcting; the wording deliberately gives the owner nothing to do.
+  ///
+  /// In en, this message translates to:
+  /// **'no network here, so it couldn\'t check'**
+  String get copyReasonOffline;
+
+  /// FetchFailureClass.hostUnreachable — what a lost VPS looks like from the only screen that can report it. Names the network as working because that is the whole distinction from copyReasonOffline, and the two sit at opposite ends of how much the owner should care (§9.1).
+  ///
+  /// In en, this message translates to:
+  /// **'the network is fine, but your server didn\'t answer'**
+  String get copyReasonHostUnreachable;
+
+  /// FetchFailureClass.credentialRejected. The one failure class whose fix is re-pairing, so it is the one that names a remedy.
+  ///
+  /// In en, this message translates to:
+  /// **'your server refused this device — it needs pairing again'**
+  String get copyReasonCredentialRejected;
+
+  /// FetchFailureClass.transportError — reached it, it answered, the answer was unusable. Says the answer was unusable rather than naming TLS, a 5xx or a parse failure: those are the same thing for him to do, which is wait and then look at the server.
+  ///
+  /// In en, this message translates to:
+  /// **'your server answered with something this app couldn\'t use'**
+  String get copyReasonTransportError;
+
+  /// NotCheckedSinceDue: fetching is fine, the last success simply predates the copy's own deadline. Nothing is wrong and nobody is blamed, so the sentence blames nobody.
+  ///
+  /// In en, this message translates to:
+  /// **'this device hasn\'t needed to check again yet'**
+  String get copyReasonNotCheckedSinceDue;
+
+  /// RecordsUnusable. Deliberately not the 'hasn't checked yet' sentence: saying that to a phone which has fetched for a month and lost its notes is a claim with nothing behind it. Carries no stored bytes and names no path.
+  ///
+  /// In en, this message translates to:
+  /// **'this device can\'t read its own notes, so it can\'t tell why'**
+  String get copyReasonRecordsUnusable;
+
+  /// ServedPayloadNotHeld. On this design the divergence has exactly one cause — a fetch this phone REFUSED under I6 — so the sentence states the divergence and accuses the host of nothing; the §9.3 downgrade warning beside it is the honest surface for the cause.
+  ///
+  /// In en, this message translates to:
+  /// **'your server\'s latest copy isn\'t the one shown here'**
+  String get copyReasonServedPayloadNotHeld;
+
+  /// ClockDisagreement.payloadFromTheFuture. Neither clock is called wrong, because this side cannot tell which one is (DESIGN.md §9.1 rule 1: the two clocks are never merged).
+  ///
+  /// In en, this message translates to:
+  /// **'the copy is dated ahead of this device\'s clock, so its age can\'t be worked out'**
+  String get copyUnknownFuture;
+
+  /// ClockDisagreement.deviceClockMovedBackwards. A detected fault, and the only one of the three that is fixed on this phone — which is why it is its own sentence rather than sharing copyUnknownFuture's.
+  ///
+  /// In en, this message translates to:
+  /// **'this device\'s clock has moved backwards, so its age can\'t be worked out'**
+  String get copyUnknownClockMovedBackwards;
+
+  /// ClockDisagreement.clockContinuityUnknown — the ABSENCE of evidence, not a detected fault. Kept apart from copyUnknownClockMovedBackwards because telling the owner those are the same thing would be the confident answer §9.1 rule 1 forbids.
+  ///
+  /// In en, this message translates to:
+  /// **'this device can\'t confirm its own clock, so its age can\'t be worked out'**
+  String get copyUnknownClockUnconfirmed;
+
+  /// Appends the last successful check to a reason that does not already carry an instant. Applied only when one exists: a phone that has attempted under this pairing and never succeeded has no instant, and inventing one would be the same lie the CannotCheck.since nullable exists to prevent.
+  ///
+  /// In en, this message translates to:
+  /// **'{reason} — last checked {timestamp}'**
+  String copyReasonLastChecked(String reason, String timestamp);
+
+  /// DESIGN.md §9.2's third implementation rule: the connection state shown is always the one INSIDE the payload, so a stale copy shows a stale connection state — correctly labelled as historical rather than silently presented as now. Rendered only when the copy is not fresh; over a fresh copy it would be noise, and the rule is about the case where the two differ.
+  ///
+  /// In en, this message translates to:
+  /// **'as of this copy, not now'**
+  String get connectionAsOfCopy;
 
   /// Section label above the net-worth curve. The curve shows shape over time and no figures: I4 forbids a widget that renders an amount without its age, and an axis label would be exactly that. The number is in the headline above.
   ///

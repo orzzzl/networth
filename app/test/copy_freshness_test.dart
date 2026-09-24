@@ -1,7 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:networth_app/src/domain/clock_continuity.dart';
 import 'package:networth_app/src/domain/copy_freshness.dart';
 
 import 'fixtures.dart';
+
+/// A clock this device has proved continuous: the same interval measured two
+/// ways, agreeing exactly. The neutral value for tests about *age*, which is a
+/// different question from whether the clock can be trusted at all.
+const ClockContinuity trustedClock =
+    ContinuityHeld(wallElapsed: Duration.zero, monotonicElapsed: Duration.zero);
 
 const Duration _interval = Duration(seconds: 86400);
 const Duration _grace = Duration(seconds: 21600);
@@ -12,6 +19,7 @@ CopyFreshness _at(DateTime deviceNow) => evaluateCopyFreshness(
       publishInterval: _interval,
       grace: _grace,
       deviceNow: deviceNow,
+      continuity: trustedClock,
     );
 
 void main() {
@@ -67,7 +75,7 @@ void main() {
   test('the shipped fixtures evaluate against a chosen instant', () {
     final payload = loadFixture(knownFixture);
 
-    expect(payload.copyFreshness(DateTime.utc(2026, 9, 15, 12)), CopyFreshness.fresh);
-    expect(payload.copyFreshness(DateTime.utc(2026, 9, 20)), CopyFreshness.stale);
+    expect(payload.copyFreshness(DateTime.utc(2026, 9, 15, 12), continuity: trustedClock), CopyFreshness.fresh);
+    expect(payload.copyFreshness(DateTime.utc(2026, 9, 20), continuity: trustedClock), CopyFreshness.stale);
   });
 }

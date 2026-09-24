@@ -160,9 +160,19 @@ class PlaidCallError(RuntimeError):
     something else under that key is dropped rather than printed.
     """
 
-    def __init__(self, message: str, *, error_code: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str | None = None,
+        request_id: str | None = None,
+        item_id: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        # Structured support evidence, never interpolated into exception text.
+        self.request_id = request_id
+        self.item_id = item_id
 
 
 class _PlaidApi(Protocol):
@@ -888,6 +898,7 @@ class PlaidClient:
                 # attribute, which is how measurement (ii) records a code
                 # without widening the promise for everyone else.
                 error_code=code if code is not None and _ERROR_CODE.match(code) else None,
+                request_id=reference,
             ) from None
         except _TRANSPORT_ERRORS as exc:
             raise PlaidCallError(f"{step} failed: {type(exc).__name__}") from None
@@ -1231,13 +1242,23 @@ class PlaidClient:
         )
         access_token = cast("str | None", getattr(response, "access_token", None))
         item_id = cast("str | None", getattr(response, "item_id", None))
-        if not access_token or not item_id:
-            raise PlaidCallError(
-                "item/public_token/exchange returned no access_token or no item_id"
-            )
         reference = cast("str | None", getattr(response, "request_id", None))
-        if not isinstance(reference, str) or not _REQUEST_ID.match(reference):
+        bearers = (access_token, public_token)
+        if (
+            not isinstance(reference, str)
+            or not _REQUEST_ID.match(reference)
+            or reference in bearers
+        ):
             reference = None
+        valid_item = isinstance(item_id, str) and bool(item_id.strip()) and item_id not in bearers
+        if not isinstance(access_token, str) or not access_token or not valid_item:
+            raise PlaidCallError(
+                "item/public_token/exchange returned no access_token or no item_id "
+                "usable for storage",
+                request_id=reference,
+                item_id=item_id if valid_item else None,
+            )
+        assert item_id is not None
         return ExchangedItem(access_token=access_token, item_id=item_id, request_id=reference)
 
     def fetch_realtime_balances(self, access_token: str) -> tuple[BalanceRecord, ...]:

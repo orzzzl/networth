@@ -1,0 +1,104 @@
+{
+  "accounts": [
+    {
+      "account_id": 1,
+      "currency": "USD",
+      "freshness": {
+        "as_of": "2026-09-11T20:15:00.000000Z",
+        "is_carried_forward": true,
+        "market_days_without_advance": 3,
+        "state": "STALE"
+      },
+      "item_state": "NEEDS_REAUTH",
+      "reconciliation_state": "CONFIRMED",
+      "sign": 1,
+      "value_minor": 3120000
+    },
+    {
+      "account_id": 2,
+      "currency": "USD",
+      "freshness": {
+        "as_of": "2026-09-12T02:40:00.000000Z",
+        "is_carried_forward": true,
+        "market_days_without_advance": 2,
+        "state": "STALE"
+      },
+      "item_state": "NEEDS_REAUTH",
+      "reconciliation_state": "CONFIRMED",
+      "sign": 1,
+      "value_minor": 1880000
+    },
+    {
+      "account_id": 3,
+      "currency": "USD",
+      "freshness": null,
+      "item_state": "HEALTHY",
+      "reconciliation_state": "NEW",
+      "sign": 1,
+      "value_minor": null
+    }
+  ],
+  "alerts": [
+    {
+      "kind": "NEEDS_REAUTH",
+      "message": "This connection needs you to sign in again before it can update.",
+      "prompt": true,
+      "subject": {
+        "id": 1,
+        "kind": "ITEM"
+      }
+    },
+    {
+      "kind": "NEEDS_REAUTH",
+      "message": "This connection needs you to sign in again before it can update.",
+      "prompt": false,
+      "subject": {
+        "id": 2,
+        "kind": "ITEM"
+      }
+    },
+    {
+      "kind": "PENDING_RECONCILIATION",
+      "message": "This account is not counted in your total yet, because it still needs to be matched to the account it replaces.",
+      "prompt": true,
+      "subject": {
+        "id": 3,
+        "kind": "ACCOUNT"
+      }
+    }
+  ],
+  "connection_state": "ACTION_NEEDED",
+  "grace_seconds": 21600,
+  "item_budget": {
+    "capacity": 10,
+    "in_flight_count": 0,
+    "orphaned_count": 0,
+    "remaining": 7,
+    "replacement_count": 0,
+    "spent_count": 3,
+    "state": "AVAILABLE",
+    "stranded_count": 0,
+    "usable_count": 3
+  },
+  "pairing_id": "9f1c7d52-3b64-4a0e-8d21-6c5f4b8e7a90",
+  "publish_interval_seconds": 86400,
+  "published_at": "2026-09-15T04:00:00.000000Z",
+  "schema_version": "1",
+  "seq": "57",
+  "total": {
+    "account_count": 3,
+    "age_state": "KNOWN",
+    "as_of": "2026-09-11T20:15:00.000000Z",
+    "assets_minor": 5000000,
+    "currency": "USD",
+    "is_complete": false,
+    "liabilities_minor": 0,
+    "oldest_known_source_as_of": "2026-09-11T20:15:00.000000Z",
+    "reauth_account_count": 2,
+    "stale_account_count": 2,
+    "static_account_count": 0,
+    "unknown_freshness_account_count": 0,
+    "unreconciled_account_count": 1,
+    "value_minor": 5000000
+  }
+}

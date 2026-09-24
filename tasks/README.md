@@ -23,6 +23,17 @@ after the thing it describes has changed. `05` sat at `READY` on `main` through 
 of review on PR #29 (caught 2026-09-01, after a board PR that edited the same table twice
 without noticing).
 
+**Second occurrence, 2026-09-23, and the mechanism is worth naming: the flip needs a
+second PR that nothing forces you to open.** `22` sat at `READY` while PR #92 was open and
+in its second review round — the same shape as `05`, by the same agent that wrote the
+paragraph above. The board is not in the task branch, so "from the moment the PR exists"
+cannot be satisfied by the commit that creates the PR; it takes a separate branch, a
+separate review and a separate merge, and the task PR is finished-feeling without it. So
+**open the board PR in the same session as the task PR** — not at the next natural pause,
+because the window this rule is about is exactly that gap. Caught here by checking the
+table against GitHub's open-PR list rather than against itself: a board that is internally
+consistent says nothing, since every row in it was written by the same reader.
+
 ## The rules that apply to every task
 
 1. **No task may create a Production Plaid Item unless its entry says so explicitly.**
@@ -111,7 +122,7 @@ that row. He caught it, not us.)
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **DONE** (#79, 2026-09-16) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | **DONE** (#82, 2026-09-16) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | **DONE** (#77, 2026-09-16) |
-| 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | **READY** |
+| 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | **WIP** (#92 in review: the five facts and the predicate that reads them; the transport, I6 refusal and the two indicators follow) |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **DONE** (#83, 2026-09-22) |
 | 23a | Record the history the curve draws: app-private, durable, across pairing rotation | 20, 23 | **claude** | codex | **DONE** (#89, 2026-09-22) |
 | 24 | Release signing + APK delivery | 20, 21, 22, 23a | **claude** | codex | BLOCKED |

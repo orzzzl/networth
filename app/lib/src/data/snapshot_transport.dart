@@ -348,68 +348,89 @@ class SnapshotTransport {
       case HttpStatus.ok:
         return _readBody(response);
       case HttpStatus.notFound:
-        await _discard(response);
+        _abandonBody(response);
         return const SnapshotNoPublication();
       case HttpStatus.serviceUnavailable:
-        await _discard(response);
+        _abandonBody(response);
         return const SnapshotSourceUnavailable();
       default:
         final status = response.statusCode;
-        await _discard(response);
+        _abandonBody(response);
         return SnapshotUnexpectedStatus(status);
     }
   }
 
   Future<SnapshotFetchOutcome> _readBody(HttpClientResponse response) async {
     if (response.headers.contentType?.mimeType != ContentType.json.mimeType) {
-      await _discard(response);
+      _abandonBody(response);
       return const SnapshotTransportFailure(SnapshotTransportFault.notThisRoute);
     }
 
     final builder = BytesBuilder(copy: false);
-    await for (final chunk in response) {
-      builder.add(chunk);
-      // Checked per chunk, so the refusal costs one chunk of memory rather than
-      // the whole claim. Reading to the end and *then* measuring would make the
-      // cap a report instead of a limit.
-      if (builder.length > maxBodyBytes) {
-        // **Not drained**, unlike every other early return here — and the
-        // reason is not the one it looks like. Draining *would* be wrong in
-        // principle, since reading the rest of a body the cap just refused
-        // turns the limit into a report. But it is also not possible: this is
-        // inside `await for`, so `drain` finds a stream that has already been
-        // listened to and throws `Bad state` before reading a byte. An earlier
-        // draft called `_discard` here and the only effect was a logged error
-        // on a perfectly normal path, which is worse than either — it spends
-        // the debug channel on a non-event.
-        //
-        // The connection is abandoned instead; `client.close(force: true)` in
-        // `fetch` tears it down.
-        return const SnapshotTransportFailure(
-          SnapshotTransportFault.responseTooLarge,
-        );
-      }
-    }
-
     try {
+      await for (final chunk in response) {
+        builder.add(chunk);
+        // Checked per chunk, so the refusal costs one chunk of memory rather
+        // than the whole claim. Reading to the end and *then* measuring would
+        // make the cap a report instead of a limit.
+        if (builder.length > maxBodyBytes) {
+          // **Not let go of through [_abandonBody]**, unlike every other early
+          // return here, and the reason is not the one it looks like. It would
+          // be wrong in principle — reading the rest of a body the cap just
+          // refused turns the limit into a report — but it is also not
+          // possible: this is inside `await for`, so a second `listen` finds a
+          // stream already being listened to and throws `Bad state` before
+          // touching a byte.
+          //
+          // The connection is abandoned instead; `client.close(force: true)` in
+          // `fetch` tears it down.
+          return const SnapshotTransportFailure(
+            SnapshotTransportFault.responseTooLarge,
+          );
+        }
+      }
       return SnapshotBodyReceived(utf8.decode(builder.takeBytes()));
-    } on FormatException {
-      // Not text at all. The envelope parser would report this as a malformed
-      // document, which would blame the publisher for something that never came
-      // from it.
+    } on FormatException catch (error) {
+      // Two different "these bytes are not what they claim" faults land here,
+      // and both are the network's account of the response rather than the
+      // publisher's — so both are [SnapshotTransportFault.notThisRoute], for
+      // the same reason an HTML body is.
+      //
+      // `utf8.decode` raises it for a body that is not text. The other one is
+      // less visible and was the live defect: `HttpClient` advertises
+      // `Accept-Encoding: gzip` unprompted and inflates the response *inside*
+      // the stream above, so a corrupt deflate member throws out of the
+      // `await for` itself, not out of anything this method calls. `fetch`
+      // catches timeout, socket, HTTP and TLS exceptions, and a
+      // `FormatException` is none of those — so it escaped the whole attempt
+      // and broke the "never throws" contract in precisely the case §9.1 needs
+      // it: the attempt would go unrecorded, and the staleness predicate would
+      // go on comparing the previous attempt's facts as though this one had
+      // never happened.
+      debugLog(() => 'snapshot fetch: undecodable body: $error');
       return const SnapshotTransportFailure(SnapshotTransportFault.notThisRoute);
     }
   }
 
-  /// Drain and drop, so the socket is returned rather than left half-read.
+  /// Let go of a body whose outcome has already been decided.
   ///
-  /// Swallows its own errors on purpose: the outcome is already decided, and a
-  /// host that dies while being ignored must not turn a `404` into a fault.
-  Future<void> _discard(HttpClientResponse response) async {
-    try {
-      await response.drain<void>();
-    } on Object catch (error) {
-      debugLog(() => 'snapshot fetch: discard failed: $error');
-    }
+  /// **Cancels the subscription rather than reading to the end**, and the
+  /// difference is the whole point. The drain this replaced existed to hand the
+  /// socket back half-read, but the client is per-attempt and `fetch` ends in
+  /// `close(force: true)` — there is no pool to hand it back to, so the read
+  /// could only ever spend the deadline. And it did: a host that answered `404`,
+  /// flushed one body byte and then held the body open ran `_attempt` past
+  /// [deadline] with the status already in hand, so `fetch` returned
+  /// [SnapshotTransportFault.timedOut] for a publication it had read the absence
+  /// of. That is the `CANNOT_CHECK`-instead-of-`HOST_NOT_PUBLISHING`
+  /// misattribution [SnapshotNoPublication] exists to prevent, reached through a
+  /// door that was not being watched.
+  ///
+  /// Cancelling cannot block, so the status that was read is the status that is
+  /// returned. Errors are dropped rather than logged: the subscription exists
+  /// only to be cancelled, and a host that dies while being ignored is a
+  /// non-event.
+  void _abandonBody(HttpClientResponse response) {
+    response.listen(null, cancelOnError: true).cancel().ignore();
   }
 }

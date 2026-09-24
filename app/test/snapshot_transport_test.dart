@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -375,6 +376,167 @@ void main() {
       expect(info.active, 0);
       expect(info.idle, 0);
     });
+  });
+
+  group('a body the client itself cannot decode is still a value', () {
+    // `HttpClient` advertises `Accept-Encoding: gzip` on every request and
+    // inflates the response before the app sees a byte, so the decoder sits
+    // *inside* the stream this transport reads. A corrupt deflate member
+    // therefore surfaces as a `FormatException` thrown by `await for` — not by
+    // anything the body-reading code calls — which is a fifth way out of an
+    // attempt that promises to produce only values.
+    test('a malformed gzip body is a fault rather than a thrown exception',
+        () async {
+      final route = _Route((request) async {
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = ContentType.json
+          ..headers.set(HttpHeaders.contentEncodingHeader, 'gzip')
+          // Announced as compressed and not compressed at all.
+          ..add(utf8.encode('oops'));
+        await request.response.close();
+      });
+
+      final outcome = await _fetchFrom(route);
+
+      // `notThisRoute` for the same reason an HTML body gets it: bytes that do
+      // not match their own framing are the network's doing, and reporting them
+      // as a publisher fault would put invented evidence in the one channel
+      // §11 leaves for host-side failure.
+      expect(outcome, isA<SnapshotTransportFailure>());
+      expect((outcome as SnapshotTransportFailure).fault,
+          SnapshotTransportFault.notThisRoute);
+    });
+
+    test('a correctly gzipped body is still accepted', () async {
+      // The control that keeps the fix from being "refuse compression". The
+      // daemon does not compress today, but the client asks for it unprompted,
+      // so a host that starts answering the ask must not break this app.
+      const document = '{"schema_version":"1","seq":"9"}';
+      final route = _Route((request) async {
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = ContentType.json
+          ..headers.set(HttpHeaders.contentEncodingHeader, 'gzip')
+          ..add(gzip.encode(utf8.encode(document)));
+        await request.response.close();
+      });
+
+      final outcome = await _fetchFrom(route);
+
+      expect(outcome, isA<SnapshotBodyReceived>());
+      expect((outcome as SnapshotBodyReceived).body, document);
+    });
+  });
+
+  group('an ignored body cannot overwrite a status already read', () {
+    /// A host that sends its status, flushes one byte, and holds the body open.
+    ///
+    /// The shape that matters because the status arrived *first*: the transport
+    /// has already decided, and anything the body does afterwards is news about
+    /// a question no longer being asked.
+    _Route neverEnding(void Function(HttpResponse response) respond) =>
+        _Route((request) async {
+          respond(request.response);
+          request.response.headers.contentLength = -1;
+          request.response.write('x');
+          await request.response.flush();
+          await Completer<void>().future;
+        });
+
+    /// Short enough that a red run is quick, long enough that returning inside
+    /// [fastEnough] cannot be the deadline firing.
+    const deadline = Duration(seconds: 2);
+    const fastEnough = Duration(seconds: 1);
+
+    Future<SnapshotFetchOutcome> fetchAndAssertPrompt(_Route route) async {
+      final started = DateTime.now();
+      final outcome = await _fetchFrom(route, deadline: deadline);
+      // The outcome alone cannot tell "let the body go" from "waited out a
+      // bounded drain", and the second one spends the attempt's whole budget on
+      // a response it is discarding. Timing is the observable that separates
+      // them, exactly as it is for the over-cap body above.
+      expect(DateTime.now().difference(started), lessThan(fastEnough),
+          reason: 'the ignored body was waited on rather than let go');
+      return outcome;
+    }
+
+    test('404 survives a body that never ends', () async {
+      final outcome = await fetchAndAssertPrompt(
+        neverEnding((response) => response.statusCode = HttpStatus.notFound),
+      );
+
+      // The regression this group is named for: awaiting the drain under the
+      // attempt's own deadline turned a read `404` into `timedOut`, so a host
+      // with nothing published reached the owner as "couldn't check" — the one
+      // misattribution the 404 outcome exists to prevent, arriving by a
+      // different door than the one that was guarded.
+      expect(outcome, isA<SnapshotNoPublication>());
+    });
+
+    test('503 survives a body that never ends', () async {
+      final outcome = await fetchAndAssertPrompt(
+        neverEnding(
+          (response) => response.statusCode = HttpStatus.serviceUnavailable,
+        ),
+      );
+
+      expect(outcome, isA<SnapshotSourceUnavailable>());
+    });
+
+    test('an unexpected status survives a body that never ends', () async {
+      final outcome = await fetchAndAssertPrompt(
+        neverEnding(
+          (response) => response.statusCode = HttpStatus.internalServerError,
+        ),
+      );
+
+      expect(outcome, isA<SnapshotUnexpectedStatus>());
+      expect((outcome as SnapshotUnexpectedStatus).statusCode,
+          HttpStatus.internalServerError);
+    });
+
+    test('a 200 that is not this route survives a body that never ends',
+        () async {
+      // The captive portal again, this time one that keeps the page open. The
+      // content-type check has already decided; the endless body must not
+      // relabel it as a timeout.
+      final outcome = await fetchAndAssertPrompt(
+        neverEnding((response) => response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = ContentType.html),
+      );
+
+      expect((outcome as SnapshotTransportFailure).fault,
+          SnapshotTransportFault.notThisRoute);
+    });
+
+    test('a 404 with an ordinary body is unaffected', () async {
+      // The healthy control: the common case is a short body that ends, and
+      // letting go of it must not change the outcome either.
+      final route = _Route((request) async {
+        request.response
+          ..statusCode = HttpStatus.notFound
+          ..write('no active publication');
+        await request.response.close();
+      });
+
+      expect(await _fetchFrom(route), isA<SnapshotNoPublication>());
+    });
+
+    // **There is deliberately no "the socket is not left behind" test here**,
+    // and the reason is measured rather than assumed. The obvious one —
+    // `connectionsInfo().active == 0` after abandoning an endless body, like
+    // the completed-fetch test above — reads `1` both before and after this
+    // change, so it discriminates nothing. Probing it showed why: `active`
+    // falls to zero when the *server's own handler* returns, and a handler that
+    // holds the body open by construction never does. Two causes for one
+    // absence, which is exactly when an absence stops being evidence.
+    //
+    // The property itself needs no new test: `close(force: true)` runs in
+    // `fetch`'s `finally` on every path and is untouched by this change, so
+    // teardown cannot have regressed with it. A probe writing 100 MiB into an
+    // abandoned response saw the connection already released.
   });
 
   group('classifying a SocketException by shape, not by message', () {
