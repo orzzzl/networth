@@ -1,19 +1,25 @@
 # Task 16: Link scheduling and archive capture decision
 
-Status: proposed for Claude review; no runtime or host change in this PR.
+Status: Claude selected A on PR #115; contract corrections await review.
+No runtime or host change in this PR.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
-## Decision requested
+## Decision: restore the specified capture boundary (A)
 
-Choose **A (recommended): narrow the shared TokenStore lock to coherent capture**,
-or **B: preserve its current scope and add a durable archive/Link admission gate**.
-This is a credential durability and archive coherence boundary, so implementation
-waits for review under AGENTS.md's money/credential rule. No owner decision is
-needed: both choices are internal implementations using existing dependencies.
+Claude selected **A: narrow the shared TokenStore lock to coherent capture**:
+https://github.com/orzzzl/networth/pull/115#issuecomment-5823630580.
+Implementation may proceed on that boundary; the prose corrections are reviewed
+separately. No owner decision is needed.
 
-The dedicated Link service is already an allowed task-16 choice; it is selected
-for either option. The open decision is the shared lock, which a second service
-cannot remove.
+A is already normative: DESIGN.md §14a.1 build ordering step 2 releases the lock
+before manifest creation and sealing in steps 3–4. The wide implementation since
+#46 is a code/design divergence, despite `archive.py` claiming to follow §14a.1
+literally and calling the lock the capture boundary. A restores those claims;
+its control regression must check the previously untested release in step 2.
+
+The dedicated Link service is already an allowed task-16 choice and is selected.
+A second service alone cannot remove the shared lock. The rejected alternative B
+is retained below with its full cost, including the design amendment it required.
 
 ## Measured obstacle on main
 
@@ -60,10 +66,18 @@ For **both** current and probe archives:
 4. Keep existing archive ledger, probe-generation, rename/fsync and recovery
    semantics. No access credential is reaped, replaced or consolidated here.
 
-This makes deliberately slow encryption independent of credential durability
+This makes dependency-free, pure-Python RFC 8439 encryption independent of credential durability
 without dropping the coherent-copy boundary. It does **not** make capture,
 filesystem I/O or arbitrarily many provider calls bounded; those remain explicit
 work and limitations below, not facts licensed by moving one context manager.
+
+Encryption cost is linear in database plus token bytes, not a tunable work
+factor. Claude measured `seal` at 1.41 MiB/s on `zelengs-macbook-air-2`
+(1 MiB in 0.71 s); an empty migrated snapshot was 0.219 MiB. These are that
+review's measurements, not a sync-host bound. Capture itself still copies and
+reads the entire database and every token file: also O(database + token bytes).
+DESIGN.md §14a's "well under a second" is unproven and must be corrected with
+implementation; moving encryption does not establish it.
 
 **Cost:** a small archive refactor plus concurrent integrity and Link tests.
 The archive may describe an earlier capture while Link finishes after capture;
@@ -79,12 +93,13 @@ reconcile gate ownership and retain ambiguous state. The probe command must
 report refusal rather than silently bypassing the gate.
 
 **Cost:** another persisted protocol touching release, backup and crash recovery.
-An unresolved request may delay backups indefinitely. It trades the lock refactor
-for a wider state machine and a worse backup-availability consequence, so A is
-recommended. Neither option changes the 30-minute token deadline or adjudicates
+It would also amend DESIGN.md §14a.1 step 2 and remove §14a's "well under a
+second" claim. An unresolved request may delay backups indefinitely; because
+sealing cost grows with archive size, that can become a steady state when the
+admission budget is exceeded, not merely a tail risk. A is selected. Neither option changes the 30-minute token deadline or adjudicates
 an uncertain exchange as safe to retry.
 
-## Scheduling shape to implement after the decision
+## Scheduling shape to implement
 
 - Three service roles: `networth-sync.service`, `networth-link.service`, and
   read-only `networth-serve.service`. Update DESIGN.md section 13's table,
@@ -106,7 +121,9 @@ an uncertain exchange as safe to retry.
   first exchange attempt on an awake host with functioning storage and responsive
   provider calls. This is a target, not yet a proven bound. The implementation
   must account for multiple requests/results, recovery metadata, request-lock
-  contention, capture duration and bounded transport waits. If those cannot fit,
+  contention, capture duration and bounded transport waits. `TokenStore.deleting()`
+  also holds this lock across its caller's database update; it currently has no
+  production caller, but scheduling a caller must account for that distinct hold. If those cannot fit,
   revise this contract rather than silently weakening the acceptance claim.
 - A blanket process kill during exchange/credential persistence is not the normal
   deadline mechanism: it can strand a returned credential before durability.
@@ -124,11 +141,19 @@ https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html
 
 1. Hold actual archive encryption at an event gate, run multiple Link requests,
    and observe **both** exchange attempts and durable credential writes before
-   releasing encryption. Add a control proving the old lock scope fails.
+   releasing encryption. Name §14a.1 step 2 in the regression and add a control
+   proving the old lock scope fails: this checks the previously untested doc claim.
 2. Verify archived DB/token bindings after a concurrent Link write. Assert that
    processing captured bytes performs no live-store re-read; test current and
-   probe paths, preserving probe refusal and crash cleanup behavior.
-3. Delay database/token capture separately. Measure its contribution and implement
+   probe paths. Keep crash cleanup and builder-lock refusal behavior. Check cooldown
+   before taking the token lock: reuse an existing recent probe even during a token
+   write, without reading tokens. Retain the existing cooldown refusal counter
+   increment (the current REUSED branch already calls `count_probe_refusal()`);
+   reuse is counted once, not also as a token-lock refusal. A real new build still
+   refuses and counts once when the nonblocking token lock is unavailable. Test
+   both paths and unchanged generation on reuse/refusal.
+3. Delay database/token capture separately: `VACUUM INTO`, snapshot `read_bytes()`
+   and every token file are O(database + token bytes). Measure its contribution and implement
    the bounded wait/admission policy before making the five-minute claim. A slow
    encryption test alone must not stand in for this case.
 4. Exercise a slow first request, a second ready request, lock contention, multiple
