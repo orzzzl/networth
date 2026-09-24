@@ -257,6 +257,11 @@ def ingest_poll(
             "UPDATE link_request SET last_poll_at = ?, poll_error = NULL WHERE flow_id = ?",
             (stamp, flow_id),
         )
+        db.execute(
+            "INSERT INTO link_poll_history(flow_id, observed_at, outcome) VALUES (?, ?, "
+            "'OBSERVED')",
+            (flow_id, stamp),
+        )
         db.commit()
     except sqlite3.Error:
         db.rollback()

@@ -7,7 +7,7 @@ import sqlite3
 import sys
 from contextlib import closing
 
-from networth.link_worker import run_request
+from networth.link_lifecycle import run_lifecycle
 from networth.plaid.client import PlaidClient
 from networth.plaid.environment import (
     PlaidEnvironment,
@@ -60,14 +60,14 @@ def run(args: argparse.Namespace) -> int:
             failed = False
             for flow in flows:
                 try:
-                    outcome = run_request(
+                    outcome = run_lifecycle(
                         db,
                         store,
                         client,
                         flow_id=flow,
                         country_codes=tuple(args.country_code),
                     )
-                    failed |= outcome.failed or outcome.held
+                    failed |= outcome.worker.failed or outcome.worker.held
                     print(f"Link pass: {outcome}")
                 except Exception:
                     failed = True

@@ -4210,16 +4210,23 @@ rather than a run whose data nobody questions.
   Mac needs it: an archive it cannot open is not a verified copy, and §14a.1
   criterion 3's drill would have nothing to check.
 - **`networth-link-recovery/<flow_id>.json`, mode `0600` in a `0700` directory —
-  the second copy of a pending Link's `link_token`** (§14a.1). *(Rev 18 names it;
-  rev 17 introduced the record, required it to be reaped, and never said where it
-  lived or with what permissions — a credential this section could not inventory
-  is one it cannot claim to bound.)* It holds `flow_id`, the `link_token`,
-  `minted_at`, `hosted_url_expires_at` and `reap_after`; it holds **no deadline
-  derived from a session that has not happened**, and **no Plaid client
-  credential** — which is what keeps it inert on this machine. Written and
-  `fsync`ed before any URL is printed, deleted by `link.sh` on `EXCHANGED`, and
-  deleted by the puller once `reap_after` has passed. Its normal lifetime is the
-  length of one Link; its bounded worst case is `reap_after`.
+  the second copy of a pending request** (§14a.1). Measurement schema
+  `networth.link-recovery.1` retains the retrieval token; automatic schema
+  `networth.link-recovery.2` also retains the openable hosted URL and a protocol
+  discriminator, in the same combined record. It contains no provider credential
+  or guessed session deadline. Both bearer fields are redacted outside the
+  authenticated pipe and explicit URL display. The driver fsyncs and reads back
+  the record before the authenticated return leg authorizes display; a lost ack
+  resumes this record without minting. The configured URL lifetime is 30 minutes;
+  the combined record's `REAP_AFTER` is seven hours measured on
+  `zelengs-macbook-air-2`. Thus the URL stays at rest roughly 6.5 hours beyond its
+  spendable lifetime; cleanup extends neither URL validity nor exchange deadlines.
+  One local reaper removes the combined record. Automatic records are never
+  deleted because just one child exchanged; measurement version 1 keeps its
+  existing completion cleanup. Version 2 is not inert: a directory compromise
+  already exposes `networth-vps.key`, which reaches `/etc/networth/` provider
+  credentials and can mint URLs. An isolated record disclosure adds a bearer,
+  so redaction and restrictive modes remain required.
 - the Android release keystore and `key.properties` (§17).
 - the pulled archives themselves, in their own directory outside any repo.
 

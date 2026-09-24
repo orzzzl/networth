@@ -148,7 +148,7 @@ set -euo pipefail
 readonly REPO_URL="${NETWORTH_REHEARSAL_ORIGIN:-https://github.com/orzzzl/networth}"
 readonly CREDENTIAL="/etc/networth/plaid-sandbox.env"
 readonly DEFAULT_VERB="rehearse-sandbox"
-readonly ALLOWED_VERBS="rehearse-sandbox probe-hosted-link start-hosted-link complete-hosted-link"
+readonly ALLOWED_VERBS="rehearse-sandbox probe-hosted-link start-hosted-link complete-hosted-link mint-automatic-link authorize-automatic-link"
 # Named without their leading dashes so the allow-list holds plain words and the
 # flag is *built* here from a word that matched one of them. A list of strings
 # that already look like options is one careless expansion away from carrying an

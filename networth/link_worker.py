@@ -322,6 +322,11 @@ def _run_locked(
                 "UPDATE link_request SET poll_error = 'POLL_FAILED' WHERE flow_id = ?",
                 (flow,),
             )
+            db.execute(
+                "INSERT INTO link_poll_history(flow_id, observed_at, outcome) VALUES (?, ?, "
+                "'FAILED')",
+                (flow, _stamp(clock())),
+            )
         return WorkerOutcome(finalized=finalized, failed=True)
     snapshot = reconcile_request(db, store, flow_id=flow, now=clock())
     if snapshot.hold_ids or _held(db, flow):
