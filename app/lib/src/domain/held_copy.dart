@@ -62,9 +62,18 @@ final class HeldCopyUnreadable extends HeldCopyState {
   final String reason;
 }
 
-/// Intact, well-formed, and written at a `schema_version` this build does not
-/// read.
+/// Scoped to this pairing, and carrying a **syntactically valid**
+/// `schema_version` this build does not read.
 ///
+/// **What it does not claim.** Not that the rest of the document is intact:
+/// this build cannot parse a schema it does not know, so it has no way to
+/// inspect the body and does not pretend to. Not, strictly, that an upgrade
+/// happened — only that the version is a well-formed one that is not
+/// [PhonePayload.supportedSchemaVersion]. Everything below is about which
+/// explanation is *worth telling the owner*, and it stays the best one, but the
+/// state is evidence about a single field and nothing wider.
+///
+
 /// **Why this is not [HeldCopyUnreadable].** The two are told apart by the
 /// parser with certainty rather than by inference, and they are opposite kinds
 /// of news. Damage means something went wrong on this device. This means the
@@ -84,12 +93,27 @@ final class HeldCopyUnreadable extends HeldCopyState {
 ///
 /// Both directions land here, deliberately: a copy newer than this build
 /// (an APK rolled back) is as unreadable as an older one, and for the same
-/// reason. The stored version is reported so a log can say which.
+/// reason. The stored version is reported so a log can say which. **Today only
+/// the newer direction is reachable** — `PayloadEnvelope`'s canonical decimal
+/// starts at `1` and this build reads `1`, so no valid older spelling exists
+/// yet. The rule is stated for the version after next rather than describing a
+/// case that can occur now.
+///
+/// A malformed spelling — `0`, `01`, ` 2 `, arbitrary text — is **not** this
+/// state. `FileHeldCopyStore.read` rejects those as [HeldCopyUnreadable] before
+/// reaching here, because they were never written by any build and are evidence
+/// of damage rather than of a release.
 final class HeldCopyOutdated extends HeldCopyState {
   const HeldCopyOutdated({required this.storedVersion, required this.readableVersion});
 
   /// The `schema_version` on disk. A payload field rather than a figure — safe
   /// to log, and the only field of the stored document this state exposes.
+  ///
+  /// **That safety is conditional and the condition is enforced upstream**: the
+  /// store admits only a canonical positive decimal into this state, so the
+  /// value is a short numeric string rather than whatever the document happened
+  /// to carry. Constructing this state from an unvalidated field would turn a
+  /// loggable fact back into a document-text channel.
   final String storedVersion;
 
   /// What this build reads: [PhonePayload.supportedSchemaVersion].

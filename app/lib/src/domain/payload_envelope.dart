@@ -221,11 +221,21 @@ class PayloadEnvelope {
         '$field must be non-empty text without surrounding space',
       );
     }
-    if (decimal && !_decimal.hasMatch(value)) {
+    if (decimal && !isCanonicalDecimal(value)) {
       throw PayloadEnvelopeException('$field must be a canonical positive decimal string');
     }
     return value;
   }
+
+  /// Whether [value] is the canonical positive decimal spelling this envelope
+  /// fixes `schema_version` and `seq` to.
+  ///
+  /// Public because a *second* reader of a document this envelope wrote must
+  /// apply the same rule rather than keep its own copy of the pattern:
+  /// `held_copy_store.dart` classifies a `schema_version` read back off disk,
+  /// and two spellings of this predicate are two ways for a build to disagree
+  /// with a document it wrote itself.
+  static bool isCanonicalDecimal(String value) => _decimal.hasMatch(value);
 
   /// No sign, no leading zero, no zero. A counter with two spellings is a
   /// counter I6's `last_fetch_seq == last_seq` equality cannot be trusted on.

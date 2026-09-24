@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../debug_log.dart';
 import '../domain/held_copy.dart';
+import '../domain/payload_envelope.dart';
 import '../domain/payload_format_exception.dart';
 import '../domain/phone_payload.dart';
 import 'stored_file.dart';
@@ -123,6 +124,25 @@ class FileHeldCopyStore implements HeldCopyStore {
     final storedVersion = decoded['schema_version'];
     if (storedVersion is! String || storedVersion.isEmpty) {
       return const HeldCopyUnreadable('held copy has no schema_version');
+    }
+    if (!PayloadEnvelope.isCanonicalDecimal(storedVersion)) {
+      // **Malformed is not "outdated", and the gap between them is the whole
+      // point of the state.** [HeldCopyOutdated] says the document is a *valid*
+      // one this build cannot read — an APK upgrade, the self-healing case. But
+      // `0`, `01`, ` 2 ` and arbitrary text were never written by any build:
+      // `PayloadEnvelope` has fixed this field to a canonical positive decimal
+      // for as long as the format has existed. A document spelling it any other
+      // way is damaged or forged, and answering "outdated" would tell the owner
+      // to upgrade his way out of corruption — while a real corruption went
+      // unreported.
+      //
+      // **The value does not travel with the refusal**, which is the other half.
+      // [HeldCopyOutdated.storedVersion] is documented as safe to log, and that
+      // is only true of a value this predicate has passed. Letting arbitrary
+      // text reach it would reopen, through the state object, exactly the
+      // document-text channel the `PayloadFormatException` branch below closes
+      // so carefully.
+      return const HeldCopyUnreadable('held copy has a malformed schema_version');
     }
     if (storedVersion != PhonePayload.supportedSchemaVersion) {
       return HeldCopyOutdated(
