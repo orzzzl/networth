@@ -2787,10 +2787,12 @@ name the right culprit.
 why it is stored rather than computed: a `404` leaves `last_fetch_error` empty —
 nothing failed — and supplies no `seq`, so it is indistinguishable on disk from
 a successful fetch that returned nothing new, which is precisely the
-`HOST_NOT_PUBLISHING` claim it must not be allowed to make. Absent means the
-record was written before this key existed; **`false` is refused**, because the
-key is written only when true, so a stored `false` is a record this app did not
-write.)*
+`HOST_NOT_PUBLISHING` claim it must not be allowed to make. **Absent is the
+non-`404` representation and says nothing about when the file was written** —
+the key is written only when true, so every `succeeded` and `failed` record the
+current writer produces omits it, exactly as a record from before the key
+existed does. **A stored `false` is refused**, because nothing this app has ever
+written spells it that way.)*
 
 **Offline** is not a special case: fetches fail, the cached payload keeps aging,
 and it crosses `stale_after` on schedule with the reason "couldn't check". The

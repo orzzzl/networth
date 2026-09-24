@@ -553,9 +553,9 @@ void main() {
       // symmetry.** This test read "by either constructor" while a third
       // constructor existed: deleting `_checkPairing` from
       // `FetchDiagnostics.foundNoPublication` left all 570 tests green, where
-      // the same deletion on `succeeded` reddens this very test. A guard that
-      // three code paths call and one caller pins is two thirds unpinned, and
-      // the name of the test was the only thing that said so.
+      // the same deletion on `succeeded` reddens this very test. Two of the
+      // three callers were pinned here already and the third was not — and the
+      // name of the test was the only thing that said so.
       expect(() => succeeded(pairingId: ''), throwsA(isA<PayloadFormatException>()));
       expect(() => failed(pairingId: ''), throwsA(isA<PayloadFormatException>()));
       expect(

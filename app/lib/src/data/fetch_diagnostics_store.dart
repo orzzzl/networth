@@ -99,12 +99,17 @@ class FileFetchDiagnosticsStore implements FetchDiagnosticsStore {
           'last_fetch_error': _errorWire[error],
         // Written only when true, so a record from before this key existed
         // reads back as what it was: an attempt that either succeeded or
-        // failed. **Absent and `false` are not the same thing here**, and the
-        // asymmetry is deliberate rather than an oversight: absent is what
-        // every already-stored file says and is read as "not a 404", while a
-        // stored `false` is a shape this encoder never produces and [_parse]
-        // refuses it — a record no version of this app wrote is one whose other
-        // fields there is no reason to trust either.
+        // failed. **Absence is the not-a-`404` representation, not a mark of
+        // age** — every `succeeded` and `failed` record this encoder writes
+        // today omits the key too, so absent covers legacy records and current
+        // non-`404` ones alike and nothing downstream may read it as evidence
+        // of when the file was written.
+        //
+        // **Absent and `false` are still not the same thing**, and that
+        // asymmetry is deliberate: a stored `false` is a shape this encoder has
+        // never produced, so [_parse] refuses it — a record no version of this
+        // app wrote is one whose other fields there is no reason to trust
+        // either.
         if (diagnostics.foundNoPublication) noPublicationKey: true,
         if (diagnostics.lastSuccess case final FetchSuccess success) ...<String, Object?>{
           'last_fetch_success_at': success.at.toUtc().toIso8601String(),
