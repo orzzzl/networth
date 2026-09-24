@@ -122,7 +122,7 @@ that row. He caught it, not us.)
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **DONE** (#79, 2026-09-16) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | **DONE** (#82, 2026-09-16) |
 | 21 | Flutter app skeleton | 19 | **claude** | codex | **DONE** (#77, 2026-09-16) |
-| 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | **WIP** (#92 in review: the five facts and the predicate that reads them; the transport, I6 refusal and the two indicators follow) |
+| 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | **WIP** (merged: #92 five facts + predicate, #97 copy row, #98 §6.1 envelope, #99 transport, #100 monotonic clock, #102 alert surface, #103 stack promotion; **#101** in re-review joins transport to envelope. Owed: the `main.dart` acceptance path and the I6 refusal it makes reachable — plus the per-account surface, which is blocked on a field the host does not have; see the acceptance list) |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **DONE** (#83, 2026-09-22) |
 | 23a | Record the history the curve draws: app-private, durable, across pairing rotation | 20, 23 | **claude** | codex | **DONE** (#89, 2026-09-22) |
 | 24 | Release signing + APK delivery | 20, 21, 22, 23a | **claude** | codex | BLOCKED |
@@ -2479,6 +2479,19 @@ sentence.)*
       `last_fetch_success_at`, `last_fetch_error`, `last_fetch_seq`, `last_seq`.
 - [ ] Clock-skew `COPY_UNKNOWN` is handled.
 - [ ] Per-account "fresh" badges are **suppressed under a stale copy**.
+      **BLOCKED, and this box must not be ticked until it is unblocked** *(2026-09-24)*.
+      The payload can name nothing: `publisher.py::_account` sends the host's integer
+      primary key, and one layer down `SnapshotAccount` has no name to send — the columns
+      (`name`, `official_name`, `mask`, `type`, `subtype`) have existed since
+      `0001_initial.sql` and the query layer never lifts them. A breakdown row would read
+      `#3 · UNKNOWN`, which does not satisfy §8.1 R3's *"per-account breakdown one tap
+      down"* and its justification, *"a number the owner has to inspect."*
+      **The trap is that this criterion passes vacuously**: with no per-account surface
+      there are no badges, so none survive a stale copy, and the box closes on an absence
+      with two possible causes. Threading a label through `SnapshotAccount` → `AccountRead`
+      → `_account` is a row-19 data-model change and carries a privacy question against
+      hard rule 0, so it is codex's to decide — asked 2026-09-24, and if the answer is
+      "no surface in v0" that belongs here **in words** rather than as a tick.
 - [ ] **I6 downgrade refusal** — the phone never accepts a lower `seq` within a pairing
       (§9.3).
 
