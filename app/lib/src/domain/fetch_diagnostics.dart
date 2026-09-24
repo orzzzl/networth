@@ -29,6 +29,25 @@ enum FetchFailureClass {
   /// Reached it, it answered, and the answer was unusable — TLS failure, a 5xx,
   /// a body that would not parse. Something is broken, but not simply gone.
   transportError,
+
+  /// The attempt failed and **this phone cannot say where**.
+  ///
+  /// The fifth class, and it is here because the other four each make a claim.
+  /// `SnapshotTransportFault.unclassified` exists for the opposite reason —
+  /// *"deliberately not folded into the nearest neighbour ... guessing one it
+  /// cannot [defend] would put invented evidence into the one channel §11 leaves
+  /// for host-side failure"* — and the adapter that maps the transport's faults
+  /// onto these classes is the first code that has to place it. There was
+  /// nowhere honest: [transportError]'s copy is *"your server answered with
+  /// something this app couldn't use"*, which tells the owner to go look at a
+  /// server that may never have been reached, and [offline] and [hostUnreachable]
+  /// each assert the half of the network the phone has no evidence about.
+  ///
+  /// It passes the test above rather than being an escape hatch: *what should he
+  /// do about it* is **wait and look again**, which is not what any of the other
+  /// four say. An unnamed fault is usually transient, and the one action it must
+  /// not produce is re-pairing a host that is fine.
+  unknownFailure,
 }
 
 /// The last fetch that actually returned a payload.
