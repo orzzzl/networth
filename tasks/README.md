@@ -92,8 +92,8 @@ that row. He caught it, not us.)
 
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
-| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **WIP** (integrated lifecycle implementation under review) |
-| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | BLOCKED (07a) |
+| 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **DONE** (#104, #109; acceptance recorded 2026-09-24) |
+| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | **READY** |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
@@ -109,7 +109,7 @@ that row. He caught it, not us.)
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | **DONE** (#69, 2026-09-10) |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
-| 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | BLOCKED |
+| 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | **READY** |
 | 27 | Periodic nudge to re-confirm a manual share count | 13, 15 | **claude** | codex | **DONE** (#65, 2026-09-09) |
 
 ### Phase 4 — getting the number onto the phone
@@ -1480,7 +1480,7 @@ Production Trial account; the first re-confirmed in Sandbox 2026-09-09 at commit
 completion the same token returned `ITEM_ADDED`, 1 session and 1 public token.
 Preserve the session and its observed timestamps while waiting for a token.
 
-- [ ] Test both measured shapes and the other not-ready forms: absent/null/empty
+- [x] Test both measured shapes and the other not-ready forms: absent/null/empty
       session lists and unfinished sessions. No token yet must not imply no session.
 
 **Approved implementation contract:** [07a flow contract](07a-flow-contract.md),
@@ -1494,25 +1494,27 @@ The worker is merged; the reviewed conservative cleanup boundary and integration
 obligations are in [07a lifecycle closure](07a-lifecycle-contract.md).
 The integrated implementation and operator paths are in
 [07a lifecycle implementation](07a-lifecycle-implementation.md).
-The existing one-row-per-URL schema cannot retain every session identifier or
-represent multiple successful results. The approved request/session/result split
-is the implementation boundary. Remaining decisions are agent review dependencies;
-they do not reopen `06a` or require an owner measurement.
+The request/session/result split replaces the legacy one-row-per-URL boundary.
+The integrated path was approved and merged in PR #109 at `f524de6`.
+[Acceptance evidence and remaining task boundaries](07a-acceptance.md) map the
+criteria below to the merged code and synthetic regressions. No owner measurement
+was repeated; scheduling/live installation remains task 16 and cross-host recovery
+remains task 07b.
 
 **Acceptance:**
 
-- [ ] Ten `link_flow` states, response-driven: `started_at`/`finished_at` are **observed
+- [x] Ten `link_flow` states, response-driven: `started_at`/`finished_at` are **observed
       from the API**, never stamped at mint time. Both deadlines derive from `finished_at`
       and are `NULL` — *unknown*, never *passed* — until the session finishes.
-- [ ] `TOKEN_EXPIRED` and `EXCHANGE_UNCERTAIN` are stranded slots; pending/exchanging
+- [x] `TOKEN_EXPIRED` and `EXCHANGE_UNCERTAIN` are stranded slots; pending/exchanging
       successes and stored Items also count, reconciled by Item identity under the
       approved contract. A URL never opened, or a session exited, spends **no slot**
       (**F2a**) and must not be reported as one. `URL_EXPIRED` is a distinct,
       no-slot-spent fact; parent state never suppresses child success evidence.
-- [ ] The change that first writes a success observation must include an authorized
+- [x] The change that first writes a success observation must include an authorized
       adjudication command in the same PR, so every budget hold has an operator exit.
-- [ ] `ABANDONED` has a reachable definition, and a test reaches it.
-- [ ] Entry to `EXCHANGING` is a **conditional** `UPDATE … WHERE
+- [x] `ABANDONED` has a reachable definition, and a test reaches it.
+- [x] Entry to `EXCHANGING` is a **conditional** `UPDATE … WHERE
       state='SUCCESS_PENDING_EXCHANGE'`; a worker changing **0 rows does not call Plaid**.
       **Scope it honestly in the code comment and in any doc this task writes: this
       serialises workers sharing *this* database file.** It does not reach `07b`, which runs
@@ -1520,40 +1522,40 @@ they do not reopen `06a` or require an owner measurement.
       fencing relies on `07b`'s power-off precondition; the accepted duplicate in
       `06a` means Plaid's single-use wording cannot enforce it. No automatic
       retry is permitted after an uncertain exchange.
-- [ ] `EXCHANGE_UNCERTAIN` is a real terminal outcome, not a retry loop against a
+- [x] `EXCHANGE_UNCERTAIN` is a real terminal outcome, not a retry loop against a
       single-use token.
-- [ ] The `access_token` is written through `TokenStore` **before** the `item` row.
-- [ ] Institution metadata is resolved after credential durability; set `EXCHANGED`
+- [x] The `access_token` is written through `TokenStore` **before** the `item` row.
+- [x] Institution metadata is resolved after credential durability; set `EXCHANGED`
       only in the transaction committing the `item` row. A metadata outage leaves
       `EXCHANGING`; a restart test proves reconciliation finds the material and
       retries metadata without another exchange. Sentinel institution values must
       appear in neither logs nor exception text.
-- [ ] **`item_id` is asserted not to be the material before `put` is called** — issue
+- [x] **`item_id` is asserted not to be the material before `put` is called** — issue
       **#42**, deferred here from `05a` by owner adjudication (issue #28) and tagged **must
       close before the first Production Link**. `TokenStore` cannot tell the two apart by
       inspection (both are opaque provider strings), so the caller that holds both is where
       the check belongs; `put(material=M, item_id=M)` currently reaches
       `item.plaid_item_id`, putting a credential in the database without any
       `Secret.reveal()` call. Carry a regression proving it is refused.
-- [ ] **A pending record that cannot be made durable is `UnverifiedMaterial`, and that is
+- [x] **A pending record that cannot be made durable is `UnverifiedMaterial`, and that is
       neither "found" nor "absent."** `05a`'s reader completes the `fsync` barrier itself
       before answering, and raises when it cannot. Both automatic resolutions spend an Item
       slot — committing the row risks material a power loss discards, and treating it as
       absent sends this worker to Plaid for a replacement Item — so this state is surfaced
       for a human and must not be retried into either answer.
-- [ ] **A stale `EXCHANGING` claim reconciles `TokenStore` before it is classified** (issue
+- [x] **A stale `EXCHANGING` claim reconciles `TokenStore` before it is classified** (issue
       #15). Order: look up durable material for this `flow_id` first; if it exists, finish
       the `item` + `link_flow` transaction from it and **do not call Plaid again**; only if
       it does not exist may the row become `EXCHANGE_UNCERTAIN`. Rev 18 collapsed every
       stale claim into the terminal state, which reports a slot as lost while its
       credential is sitting on disk. A test restarts the worker at that exact boundary and
       asserts the flow reaches `EXCHANGED` with **zero** additional Plaid calls.
-- [ ] **Identifiers are captured when they are visible, not re-derived later** (issue #14):
+- [x] **Identifiers are captured when they are visible, not re-derived later** (issue #14):
       `link_session_id` on the first `/link/token/get` response that carries it, `item_id`
       and `request_id` the moment any exchange response reaches the process, each written
       before any later step can lose them. **`/link/token/get` does not return `item_id`** —
       a test asserts the support path never claims to have one it was not given.
-- [ ] **The VPS-side `link_token` reaper exists and is this task's** (issue #16).
+- [x] **The VPS-side `link_token` reaper exists and is this task's** (issue #16).
       Reaping is **request-scoped, because the `link_token` is**. A session-level
       state never authorizes deleting it: `SESSION_EXITED` alone triggers no
       deletion and still spends no slot. Reap only after request closure under
@@ -1567,7 +1569,7 @@ they do not reopen `06a` or require an owner measurement.
       **material first, then `secret_ref`**. The reaper is **idempotent across all
       three partial states** (material+ref, no-material+ref, material+no-ref) and a
       crash between deletion and reference clearing converges on the next run.
-- [ ] **An empty poll is not proof of no success.** A request whose observation
+- [x] **An empty poll is not proof of no success.** A request whose observation
       history crosses the provider's retention window without a conclusive final
       observation takes a durable coverage hold. Reuse the existing
       `link_observation_adjudication` budget/adjudication path; the budget refuses
@@ -1577,7 +1579,7 @@ they do not reopen `06a` or require an owner measurement.
       rather than clean closure. A native request whose URL was never authorized
       for release has local no-success evidence independent of provider retention;
       migrated requests never inherit that proof from an absent release marker.
-- [ ] Behaviour matches what `06a` **measured** for duplicate exchange and the crash
+- [x] Behaviour matches what `06a` **measured** for duplicate exchange and the crash
       window. Where the measurement contradicts this design, the design changes.
 
 **Must not:**
