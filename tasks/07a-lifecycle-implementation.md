@@ -1,9 +1,9 @@
 # 07a integrated automatic Link lifecycle
 
 Implements the reviewed conservative lifecycle A (PR #106) and combined recovery
-record A (PR #108) over the merged worker. Task 07a remains WIP pending review;
-07b stays blocked. No live call, credential inspection, owner Link run, or
-scheduler installation is part of this change. The 06a heartbeat stays PAUSED.
+record A (PR #108) over the merged worker. Approved and merged in PR #109
+at `f524de6`; [acceptance evidence](07a-acceptance.md) records the task closure.
+No live call, credential inspection, owner Link run, or scheduler installation is part of this change. The 06a heartbeat stays PAUSED.
 
 ## Entry points and ordering
 

@@ -16,12 +16,16 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from collections.abc import Sequence
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from networth.link_finalization import FinalizationError, finalize_durable_result
+from networth.plaid.client import ItemInstitution
 from networth.storage import migrate
 from networth.tokenstore import (
     DIRECTORY_MODE,
@@ -945,59 +949,92 @@ def test_the_one_field_that_cannot_be_refused_is_not_rendered(store: TokenStore)
     assert "item_id=None" in repr(without)
 
 
-def test_no_token_material_reaches_any_database_table(tmp_path: Path) -> None:
-    """05a's last acceptance criterion. It needed task 03's schema to exist.
+@pytest.mark.parametrize("adversarial", [False, True])
+def test_no_token_material_reaches_any_database_table(tmp_path: Path, adversarial: bool) -> None:
+    """Persist the reconciled identity through 07a's real boundary (issue #42).
 
-    §15's rule is that a row holds a *name* and never a value, and that is a fact
-    about this module and the schema **together** — which is why the boundary
-    test above ("no field a caller would persist contains material") could not
-    stand in for it, and why the PR said so rather than faking it while there was
-    no table to look in. Task 03 has merged, so there is.
-
-    Two things make the sweep worth more than the assertion it looks like.
-    `sqlite_master` drives it, not a list of columns, so a table added later is
-    covered the day it is added and not the day someone remembers this test. And
-    the byte scan reads the `-wal` as well as the `.db`, because which of the two
-    holds a committed row is not a fact this test should have to know: measured
-    here, a row committed on an open connection is in `networth.db-wal` and *not*
-    in `networth.db` until the connection closes and checkpoints it. Closing
-    first usually makes the `-wal` moot, and "usually" is the reason both are
-    read rather than the one that ought to be enough.
+    TokenStore permits opaque Item identities, including material itself. The
+    finalizer must refuse that adversarial record before metadata or SQL writes.
+    The safe case must actually commit the reconciled value, never a fixture
+    constant substituted by this test. Scan every table and both SQLite files
+    while the connection is open, so WAL contents cannot escape the byte check.
     """
     store = TokenStore(tmp_path / "tokenstore")
     material = synthetic_material("no-table-holds-this")
-    ref = store.put(SecretKind.ACCESS_TOKEN, FLOW, material, item_id=ITEM)
+    identity = material if adversarial else ITEM
+    ref = store.put(SecretKind.ACCESS_TOKEN, OTHER_FLOW, material, item_id=identity)
+    recovered = store.reconcile(OTHER_FLOW)
+    assert recovered is not None and recovered.item_id == identity
 
+    class Metadata:
+        calls = 0
+
+        def item_institution(
+            self, access_token: str, *, expected_item_id: str, country_codes: Sequence[str]
+        ) -> ItemInstitution:
+            self.calls += 1
+            assert access_token == material
+            assert recovered is not None
+            assert expected_item_id == recovered.item_id
+            return ItemInstitution(
+                expected_item_id, "ins-synthetic-0001", "Synthetic Institution", False
+            )
+
+    metadata = Metadata()
     database = tmp_path / "networth.db"
     connection = sqlite3.connect(database)
     try:
         migrate(connection)
-        # The two rows §7 points at this store with, written the way the schema
-        # expects them: the name, never the value behind it.
         connection.execute(
-            "INSERT INTO institution(plaid_institution_id, name, is_oauth) "
-            "VALUES ('ins-synthetic-0001', 'Synthetic Institution', 0)"
+            "INSERT INTO link_request(flow_id, minted_at, hosted_url_expires_at, state) "
+            "VALUES (?, ?, ?, 'URL_MINTED')",
+            (FLOW, NOW, NOW),
         )
         connection.execute(
-            "INSERT INTO item(institution_id, plaid_item_id, secret_ref, status, "
-            "status_since, created_at) VALUES (1, ?, ?, 'HEALTHY', ?, ?)",
-            (ITEM, ref, NOW, NOW),
-        )
-        connection.execute(
-            "INSERT INTO link_flow(flow_id, secret_ref, minted_at, hosted_url_expires_at, "
-            "state, item_id) VALUES (?, ?, ?, ?, 'EXCHANGED', ?)",
-            (FLOW, ref, NOW, NOW, ITEM),
+            "INSERT INTO link_result(result_id, flow_id, token_digest, state) "
+            "VALUES (?, ?, ?, 'EXCHANGING')",
+            (OTHER_FLOW, FLOW, "synthetic-digest"),
         )
         connection.commit()
 
-        # Without these two the sweep would be run against an empty database and
-        # would pass without ever seeing a row that references the store.
-        assert connection.execute(
-            "SELECT count(*) FROM item WHERE secret_ref = ?", (ref,)
-        ).fetchone() == (1,)
-        assert connection.execute(
-            "SELECT count(*) FROM link_flow WHERE secret_ref = ?", (ref,)
-        ).fetchone() == (1,)
+        def finish() -> int:
+            return finalize_durable_result(
+                connection,
+                store,
+                metadata,
+                result_id=OTHER_FLOW,
+                secret_ref=ref,
+                country_codes=("US",),
+                now=datetime.fromisoformat(NOW),
+            )
+
+        if adversarial:
+            with pytest.raises(FinalizationError, match="credential and captured Item identity"):
+                finish()
+            assert metadata.calls == 0
+            assert connection.execute("SELECT count(*) FROM item").fetchone() == (0,)
+            assert connection.execute("SELECT count(*) FROM institution").fetchone() == (0,)
+            assert connection.execute(
+                "SELECT state, item_id, secret_ref FROM link_result"
+            ).fetchone() == (
+                "EXCHANGING",
+                None,
+                None,
+            )
+        else:
+            finish()
+            assert metadata.calls == 1
+            assert connection.execute("SELECT plaid_item_id, secret_ref FROM item").fetchone() == (
+                recovered.item_id,
+                recovered.secret_ref,
+            )
+            assert connection.execute(
+                "SELECT state, item_id, secret_ref FROM link_result"
+            ).fetchone() == (
+                "EXCHANGED",
+                recovered.item_id,
+                recovered.secret_ref,
+            )
 
         tables = [
             str(row[0])
@@ -1010,12 +1047,11 @@ def test_no_token_material_reaches_any_database_table(tmp_path: Path) -> None:
             for row in connection.execute(f'SELECT * FROM "{table}"'):
                 for value in row:
                     assert material not in str(value), f"table {table!r} holds token material"
+        for path in (database, Path(f"{database}-wal")):
+            if path.exists():
+                assert material.encode() not in path.read_bytes(), f"{path.name} holds material"
     finally:
         connection.close()
-
-    for path in (database, Path(f"{database}-wal")):
-        if path.exists():
-            assert material.encode() not in path.read_bytes(), f"{path.name} holds material"
 
 
 def test_the_store_itself_does_not_render_material(store: TokenStore) -> None:
