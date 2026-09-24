@@ -2706,9 +2706,29 @@ The phone evaluates, in order:
    fresh. Silently trusting a skewed clock is how a six-day-old figure gets shown
    as current.
 2. **`device_now <= stale_after` → `COPY_FRESH`.**
-3. **Otherwise → `COPY_STALE`**, with a *reason*, because two very different
-   faults land here and they have different fixes. The reason is
-   `HOST_NOT_PUBLISHING` **iff all three hold**, and `CANNOT_CHECK` otherwise:
+3. **Otherwise → `COPY_STALE`**, with a *reason*, because very different faults
+   land here and they have different fixes. There are **three** reasons, and one
+   of them is decided before the predicate below is reached:
+
+   **`HOST_SERVING_NOTHING` — the last attempt reached the host and it had no
+   publication to serve at all.** `serve.py`'s `404`. It is checked after a held
+   error (a failed attempt is still `CANNOT_CHECK`) and **before the first
+   conjunct below**, and that order is the whole of it: conjunct 1 asks when the
+   source last *served this copy*, and this record's news is that it no longer
+   serves it at all. Ordered the other way, a host that has dropped the
+   publication is answered with `CANNOT_CHECK`'s *"nothing is wrong yet"*
+   whenever the last success predated the deadline — which is the ordinary case
+   for a copy that has since gone stale.
+
+   It names no cause. `serve.py` answers `404` both when no active envelope
+   exists and when the pairing is not `ACTIVE`, so a revoked pairing and a host
+   whose publisher stopped are the same three digits with different remedies —
+   and task `21`'s review settled the rule that follows from that: copy states
+   what the state guarantees, never one of the ways to reach it, because the
+   named cause reads as the only one.
+
+   Otherwise the reason is `HOST_NOT_PUBLISHING` **iff all three hold**, and
+   `CANNOT_CHECK` otherwise:
 
    ```
    last_fetch_success_at >= stale_after          -- we reached the source AFTER the
@@ -2718,6 +2738,19 @@ The phone evaluates, in order:
    last_fetch_seq        == last_seq              -- and it had nothing newer than we hold
    ```
 
+   - `HOST_SERVING_NOTHING` → *"your server answered <time> and has no snapshot
+     to give."* **Neither of the other two, which is why it is a third.**
+     `CANNOT_CHECK` is wrong because the check *succeeded* — the phone reached
+     the host and got a clear answer — so telling the owner his device "couldn't
+     check" sends him after a network that is working. `HOST_NOT_PUBLISHING` is
+     the closer miss and the more dangerous one: its sentence is *"nothing has
+     been published since <time>"*, which claims the host confirmed the copy the
+     phone holds, and a `404` confirms nothing. *(Added in rev 24 with the
+     transport. Through rev 23 this list had two entries and the `404` had
+     nowhere to go — the record could not represent it either, so it would have
+     been stored as a failed attempt and reported as a network problem: a dead
+     publisher, misattributed, which is the one fault this whole section exists
+     to prevent.)*
    - `HOST_NOT_PUBLISHING` → *"reached the source; nothing has been published
      since <time>."* The phone and the network are fine; the daemon or its sync
      is not. *(Renamed in rev 10 with the host. The state is unchanged — but on
@@ -2743,10 +2776,23 @@ The phone evaluates, in order:
 
 The phone therefore persists `last_fetch_attempt_at`,
 **`last_fetch_success_at`**, `last_fetch_error`, `last_fetch_seq` (the `seq` the
-last *successful* fetch returned) and `last_seq` (the `seq` of the payload
-actually held) — not merely an attempt timestamp. "We tried", "we succeeded and
-there was nothing new" and "we hold this version" are three different facts, and
-the predicate above needs all three to name the right culprit.
+last *successful* fetch returned), `last_seq` (the `seq` of the payload actually
+held) and `last_fetch_found_no_publication` (whether that last attempt reached a
+host with nothing to serve) — not merely an attempt timestamp. "We tried", "we
+succeeded and there was nothing new", "we reached it and it has none" and "we
+hold this version" are different facts, and the predicate above needs them to
+name the right culprit.
+
+*(Rev 24 made it six. The sixth cannot be derived from the other five, which is
+why it is stored rather than computed: a `404` leaves `last_fetch_error` empty —
+nothing failed — and supplies no `seq`, so it is indistinguishable on disk from
+a successful fetch that returned nothing new, which is precisely the
+`HOST_NOT_PUBLISHING` claim it must not be allowed to make. **Absent is the
+non-`404` representation and says nothing about when the file was written** —
+the key is written only when true, so every `succeeded` and `failed` record the
+current writer produces omits it, exactly as a record from before the key
+existed does. **A stored `false` is refused**, because nothing this app has ever
+written spells it that way.)*
 
 **Offline** is not a special case: fetches fail, the cached payload keeps aging,
 and it crosses `stale_after` on schedule with the reason "couldn't check". The

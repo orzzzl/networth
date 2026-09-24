@@ -21,7 +21,7 @@ abstract interface class FetchDiagnosticsStore {
 /// inside it.
 ///
 /// The two files are split on cost-of-corruption rather than on tidiness, and
-/// the costs are not symmetric. Losing *these* four facts degrades a **reason**:
+/// the costs are not symmetric. Losing *these* five facts degrades a **reason**:
 /// the predicate can no longer establish `HOST_NOT_PUBLISHING` and falls to
 /// `CANNOT_CHECK`, which repopulates on the next successful fetch. Losing the
 /// baseline would, without [BaselineUnreadable], re-baseline the one check that
@@ -77,7 +77,7 @@ class FileFetchDiagnosticsStore implements FetchDiagnosticsStore {
     // Writability and readability are one predicate, not two that can drift —
     // `23a`'s precedent. **It cannot throw today**, and that is worth saying
     // rather than leaving as an implied guarantee: every invariant [_parse]
-    // checks is already enforced by the two constructors, so no
+    // checks is already enforced by the three constructors, so no
     // [FetchDiagnostics] exists whose encoding it would refuse. What it defends
     // against is drift — a field added to [_json] and not to [_parse], or a
     // rule added to [_parse] that the constructors do not hold — which is
@@ -99,8 +99,17 @@ class FileFetchDiagnosticsStore implements FetchDiagnosticsStore {
           'last_fetch_error': _errorWire[error],
         // Written only when true, so a record from before this key existed
         // reads back as what it was: an attempt that either succeeded or
-        // failed. Absent and `false` mean the same thing and one of them is
-        // what every already-stored file says.
+        // failed. **Absence is the not-a-`404` representation, not a mark of
+        // age** — every `succeeded` and `failed` record this encoder writes
+        // today omits the key too, so absent covers legacy records and current
+        // non-`404` ones alike and nothing downstream may read it as evidence
+        // of when the file was written.
+        //
+        // **Absent and `false` are still not the same thing**, and that
+        // asymmetry is deliberate: a stored `false` is a shape this encoder has
+        // never produced, so [_parse] refuses it — a record no version of this
+        // app wrote is one whose other fields there is no reason to trust
+        // either.
         if (diagnostics.foundNoPublication) noPublicationKey: true,
         if (diagnostics.lastSuccess case final FetchSuccess success) ...<String, Object?>{
           'last_fetch_success_at': success.at.toUtc().toIso8601String(),
@@ -250,7 +259,7 @@ class FileFetchDiagnosticsStore implements FetchDiagnosticsStore {
     throw PayloadFormatException('stored fetch diagnostics error class is unknown: $stored');
   }
 
-  /// The one key that is not one of §9.1's five facts.
+  /// The stored spelling of §9.1's sixth fact.
   ///
   /// Named here rather than spelled at its three use sites for the reason the
   /// error table below is: the file format must not be changeable by an

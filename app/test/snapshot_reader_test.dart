@@ -358,7 +358,7 @@ void main() {
       // where a plausible implementation gets it wrong: `known_envelope.json`
       // is published under `fixture-pairing` while this phone holds
       // `pairingId`, so an outcome that reported the envelope's id would file
-      // this attempt's five facts under a pairing the phone has never had.
+      // this attempt's §9.1 facts under a pairing the phone has never had.
       final rejected = await _read(
         route: _serving(envelopeFixture('known_envelope.json')),
       );
