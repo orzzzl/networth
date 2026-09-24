@@ -40,6 +40,25 @@ TEST_KEY = bytes(range(32))
 TEST_NONCE = bytes(range(12))
 MISMATCH_NONCE = bytes(range(1, 13))
 NO_TOTAL_NONCE = bytes(range(2, 14))
+PAIRED_NONCE = bytes(range(3, 15))
+PAIRED_MISMATCH_NONCE = bytes(range(4, 16))
+PAIRED_NO_TOTAL_NONCE = bytes(range(5, 17))
+
+# The `pairing_id` a *paired phone* could actually be holding.
+#
+# `known.json` says `fixture-pairing`, and no phone can ever be paired to that:
+# `PairingProvision.parse` requires a UUIDv4, so the shipped fixture's id is one
+# the pairing layer refuses by construction.  That is fine for
+# `payload_envelope_test.dart`, which never has a provision in its hands — but
+# `snapshot_reader_test.dart` joins the two layers, and a happy path built on
+# `fixture-pairing` would be testing a configuration production cannot reach.
+#
+# So this is the same value `app/test/pairing_vault_test.dart` parses, and the
+# duplication is self-checking rather than a comment nobody reads: if the two
+# drift, the reader's happy path stops opening the envelope and starts
+# reporting `SnapshotRejection.otherPairing`, which is a named failure in a
+# named test.
+PAIRED_PAIRING_ID = "00000000-0000-4000-8000-000000000002"
 
 
 def _write(name: str, envelope: object) -> None:
@@ -109,6 +128,51 @@ def main() -> int:
             nonce=NO_TOTAL_NONCE,
         ),
     )
+
+    # The same three documents, published under a pairing id a phone can hold.
+    #
+    # `snapshot_reader_test.dart` joins the envelope layer to the pairing layer,
+    # and above that join it checks the envelope's `pairing_id` against the
+    # phone's before attempting the tag — so against a real provision the three
+    # fixtures above can only ever produce `SnapshotRejection.otherPairing`,
+    # which is one of its cases and therefore cannot also be how it reaches the
+    # other four.
+    #
+    # **Both copies of `pairing_id` are rewritten, header and body**, because
+    # section 6.1 authenticates the two separately and `PayloadEnvelope.open`
+    # refuses an envelope whose copies disagree.  Rewriting only the header
+    # would produce a second header-mismatch fixture rather than a paired one.
+    paired = dict(document)
+    paired["pairing_id"] = PAIRED_PAIRING_ID
+    paired_incomplete = dict(incomplete)
+    paired_incomplete["pairing_id"] = PAIRED_PAIRING_ID
+    for name, source, seq, nonce in (
+        ("paired_envelope.json", paired, document["seq"], PAIRED_NONCE),
+        (
+            "paired_seq_mismatch_envelope.json",
+            paired,
+            str(int(document["seq"]) + 1),
+            PAIRED_MISMATCH_NONCE,
+        ),
+        (
+            "paired_no_total_envelope.json",
+            paired_incomplete,
+            document["seq"],
+            PAIRED_NO_TOTAL_NONCE,
+        ),
+    ):
+        _write(
+            name,
+            seal_payload(
+                json.dumps(source, sort_keys=True, separators=(",", ":")).encode(),
+                TEST_KEY,
+                schema_version=document["schema_version"],
+                pairing_id=PAIRED_PAIRING_ID,
+                seq=seq,
+                published_at=document["published_at"],
+                nonce=nonce,
+            ),
+        )
     return 0
 
 

@@ -34,11 +34,22 @@ void main() {
   /// **A literal scan over a text slice, and only that.** It does not parse
   /// Python: it trusts four-space indentation, one member per line, a
   /// double-quoted value, and `@property` as the end of the member block. A
-  /// member written any other way is simply not seen, and this returns a
-  /// *smaller* set rather than a wrong one — which is the safe direction here,
-  /// because the assertions below compare it against the app's vocabulary and a
-  /// missing host kind cannot manufacture agreement. What it cannot do is prove
-  /// the class it read is the one `publisher.py` imports.
+  /// member written any other way is simply not seen. It also cannot prove the
+  /// class it read is the one `publisher.py` imports.
+  ///
+  /// **A member the regex cannot see is the one false pass this has**, and it is
+  /// not a hypothetical corner — it is the exact drift the test exists to catch.
+  /// A kind added to the host in *single* quotes is absent from this set; the
+  /// assertion compares the set against `AlertKind.values`, and the app is
+  /// missing that kind too, precisely because nobody has noticed it yet. Two
+  /// sets agree by both being short of the same member, and the test is green on
+  /// the day it was meant to go red.
+  ///
+  /// So the direction of failure is asymmetric: **removing or renaming an
+  /// already-matched member is detected, adding an unmatched one is not.** The
+  /// runtime unknown-kind fallback is what keeps that gap from reaching the
+  /// owner as silence, and it is a separate mechanism for this reason rather
+  /// than as belt-and-braces.
   Set<String> hostKinds(String source) {
     final start = source.indexOf('class AlertKind(StrEnum):');
     if (start < 0) {
@@ -66,12 +77,19 @@ void main() {
   ///
   /// It is still worth having, because the drift it exists to catch is a
   /// *vocabulary* change — a key added to or renamed on the wire — and that does
-  /// show up in the bag of literals. Its assertion is an exact set equality
-  /// against a written-out set, so a discrepancy in **either** direction goes
-  /// red: a stray literal from a comment or a nested dict is a false red, and a
-  /// real key the regex cannot match (anything not lower-snake-case, or built
-  /// from a variable) is also red. False reds cost a reading; neither direction
-  /// is a false pass.
+  /// show up in the bag of literals whenever the regex can see it.
+  ///
+  /// **The same asymmetry as [hostKinds], and an earlier version of this comment
+  /// got it wrong.** It claimed that because the assertion is an exact set
+  /// equality, drift goes red in either direction and neither is a false pass.
+  /// That is only true of drift the regex matches. A key the pattern cannot see
+  /// — built from a variable, spelled in single quotes, not lower-snake-case —
+  /// leaves every previously matched literal intact, so the set is unchanged and
+  /// the equality still holds. **Removing a matched literal is detectable;
+  /// adding an unmatched one is not.** Today's wire happens to be spelled the
+  /// way the pattern reads, which is why this passes honestly rather than
+  /// vacuously — but that is a property of the current source, not a guarantee
+  /// of the check.
   ///
   /// The gap that *is* a false pass is structural: the same bag of literals
   /// arranged differently — `id` moved out of `subject`, say — compares equal
