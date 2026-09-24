@@ -21,7 +21,7 @@ from networth.link_lifecycle import (
     run_lifecycle,
 )
 from networth.link_observations import adjudicate_observation
-from networth.link_recovery import AUTOMATIC_PROTOCOL, MintResult, RecoveryRecord, store_and_verify
+from networth.link_recovery import MintResult, RecoveryRecord, store_and_verify
 from networth.mac_identity import REQUIRED_HOLDER
 from networth.plaid.client import (
     ExchangedItem,
@@ -124,7 +124,7 @@ def test_mint_durable_request_and_immediate_poll_before_release(setup: Any) -> N
     assert store.get("link-token." + mint.flow_id).reveal() == LINK
     assert db.execute(
         "SELECT lifecycle_protocol, url_release_authorized_at FROM link_request"
-    ).fetchone() == (AUTOMATIC_PROTOCOL, None)
+    ).fetchone() == ("networth.automatic-link.1", None)
     assert db.execute("SELECT outcome FROM link_poll_history").fetchall() == [("OBSERVED",)]
     dump = "\n".join(db.iterdump())
     assert LINK not in dump and URL not in dump

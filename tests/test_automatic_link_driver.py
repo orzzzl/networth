@@ -23,6 +23,7 @@ from networth.link_recovery import (
     CorruptRecord,
     MintResult,
     RecoveryRecord,
+    SecondCopyUnverified,
 )
 from networth.mac_identity import REQUIRED_HOLDER
 from networth.tokenstore import Secret
@@ -36,6 +37,34 @@ COMMIT = "a" * 40
 
 def mint() -> MintResult:
     return MintResult(FLOW, Secret(TOKEN), NOW, NOW + timedelta(minutes=30), 1800, URL)
+
+
+def test_literal_v2_record_remains_readable(tmp_path: Path) -> None:
+    # Persisted bytes must survive a future reader; do not derive the fixture
+    # from the current writer or its schema/protocol constants.
+    path = tmp_path / (FLOW + ".json")
+    path.write_text(
+        """{
+            "schema": "networth.link-recovery.2",
+            "protocol": "networth.automatic-link.1",
+            "flow_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "link_token": "synthetic-driver-token-sentinel",
+            "hosted_url": "https://synthetic.invalid/driver-url-sentinel",
+            "minted_at": "2026-09-24T12:00:00+00:00",
+            "link_token_expires_at": "2026-09-24T12:30:00+00:00",
+            "url_lifetime_seconds": 1800,
+            "reap_after": "2026-09-24T19:00:00+00:00",
+            "second_copy_verified_at": "2026-09-24T12:00:00+00:00",
+            "second_copy_holder": "zelengs-macbook-air-2"
+        }""",
+        encoding="utf-8",
+    )
+    record = link_recovery.load(tmp_path, FLOW)
+    assert record.flow_id == FLOW
+    assert record.link_token.reveal() == TOKEN
+    assert record.hosted_url is not None and record.hosted_url.reveal() == URL
+    assert record.protocol == "networth.automatic-link.1"
+    assert json.loads(record.to_json())["schema"] == "networth.link-recovery.2"
 
 
 @pytest.mark.parametrize("automatic", [False, True])
@@ -230,6 +259,30 @@ def test_resume_reestablishes_file_and_directory_barriers(
     assert resumed.hosted_url is not None and len(observed) == 2
     assert (env.stat().st_mode & 0o777) == 0o700
     assert ((env / (FLOW + ".json")).stat().st_mode & 0o777) == 0o600
+
+
+def test_foreign_holder_resume_refused_before_remote_invocation(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    link_recovery.store_and_verify(
+        env,
+        mint().as_record(now=NOW, automatic=True),
+        holder="synthetic-foreign-holder",
+        now=NOW,
+    )
+    calls: list[str] = []
+
+    def remote(source: str, commit: str, verb: str, material: str = "") -> list[str]:
+        calls.append(verb)
+        return [ACK + FLOW]
+
+    monkeypatch.setattr(driver, "_remote", remote)
+    with pytest.raises(SecondCopyUnverified, match="cannot authorize resume"):
+        link_recovery.verify_for_resume(env, FLOW, holder=REQUIRED_HOLDER, now=NOW)
+    assert driver.run(args(FLOW)) == 2
+    assert calls == []
+    output = capsys.readouterr()
+    assert TOKEN not in output.out + output.err and URL not in output.out + output.err
 
 
 def test_recovery_reaper_deletes_combined_v2_record(env: Path) -> None:
