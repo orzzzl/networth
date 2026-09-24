@@ -44,7 +44,7 @@ void main() {
     test('opens to exactly the shipped fixture', () {
       final envelope = PayloadEnvelope.fromJsonString(readEnvelope('known_envelope.json'));
 
-      final opened = envelope.open(key: testKey);
+      final opened = envelope.open(key: testKey).payload;
       final expected = PhonePayload.fromJsonString(readFixture(knownFixture));
 
       expect(opened.schemaVersion, expected.schemaVersion);
@@ -59,6 +59,29 @@ void main() {
       expect(opened.total.liabilities, expected.total.liabilities);
       expect(opened.total.staticAccountCount, expected.total.staticAccountCount);
       expect(opened.total.isComplete, expected.total.isComplete);
+    });
+
+    test('the text it returns is the text it parsed, byte for byte', () {
+      // **The correspondence `OpenedPayload` exists to make unbreakable.** The
+      // held copy is stored as `text` and everything else reads `payload`, so a
+      // build in which those two describe different publications would show one
+      // thing now and a different thing after a restart — on the figures this
+      // product exists to state carefully.
+      //
+      // Checked both ways round, because either alone passes on a defect: that
+      // the text parses to the same payload rules out `text` being some other
+      // document, and that it is *not* a re-encoding rules out the plausible
+      // "fix" of returning `jsonEncode(decoded)`, which would parse identically
+      // and still not be the bytes the tag authenticated.
+      final envelope = PayloadEnvelope.fromJsonString(readEnvelope('known_envelope.json'));
+
+      final opened = envelope.open(key: testKey);
+      final reparsed = PhonePayload.fromJsonString(opened.text);
+
+      expect(reparsed.seq, opened.payload.seq);
+      expect(reparsed.publishedAt, opened.payload.publishedAt);
+      expect(reparsed.total.amount, opened.payload.total.amount);
+      expect(opened.text, readFixture(knownFixture));
     });
 
     test('the clear header is the one the body carries', () {

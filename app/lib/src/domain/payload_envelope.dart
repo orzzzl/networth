@@ -50,6 +50,39 @@ class PayloadHeaderMismatchException implements Exception {
       'PayloadHeaderMismatchException: envelope and body disagree on "$field"';
 }
 
+/// One verified open: the exact authenticated bytes, and what they parsed to.
+///
+/// **Two representations of one publication, and the point is that nothing can
+/// hold one without the other.** The held copy (section 9.2) is stored verbatim
+/// — `held_copy_store.dart` argues at length why the file *is* the payload
+/// rather than a record containing one — while I6, the history record and every
+/// display read the parsed [payload]. A caller handed the text alone could
+/// store bytes it never parsed; a caller handed the payload alone would have to
+/// re-serialise it to store anything, which is the second derivation that store
+/// exists to refuse.
+///
+/// So this is constructed in exactly one place, [PayloadEnvelope.open], after
+/// the tag has verified and the header/body agreement has been established. The
+/// constructor is private to this library for that reason: there is no way to
+/// assemble a text and a payload that did not come out of the same open.
+///
+/// **[payload] is authoritative.** Where the two could be read as disagreeing —
+/// they cannot, having been produced together — the parsed value decides, and
+/// [text] is only ever handed to storage.
+@immutable
+final class OpenedPayload {
+  const OpenedPayload._({required this.text, required this.payload});
+
+  /// The decrypted body, byte for byte as it came out of the envelope.
+  ///
+  /// Never logged and never interpolated into a message: it is the owner's
+  /// balances in clear text.
+  final String text;
+
+  /// [text], parsed.
+  final PhonePayload payload;
+}
+
 /// The host-to-phone envelope from DESIGN section 6.1, as the phone reads it.
 ///
 /// Four clear-text header fields, authenticated through one canonical
@@ -166,7 +199,11 @@ class PayloadEnvelope {
   /// holder of `key`, [PayloadHeaderMismatchException] if the two authenticated
   /// copies of the header disagree, and [PayloadFormatException] if the body is
   /// not a shape this build reads.
-  PhonePayload open({required Uint8List key}) {
+  ///
+  /// Returns both the verified text and its parse, for the reason
+  /// [OpenedPayload] gives: this is the only place the two can be paired, and
+  /// pairing them anywhere else would be a claim rather than a fact.
+  OpenedPayload open({required Uint8List key}) {
     final plaintext = aes256GcmOpen(payload, key: key, nonce: nonce, aad: aad);
 
     final String text;
@@ -193,7 +230,11 @@ class PayloadEnvelope {
     _requireAgreement(decoded, 'seq', seq);
     _requireAgreement(decoded, 'published_at', publishedAt);
 
-    return PhonePayload.fromJson(decoded);
+    // `text` and not a re-encoding of `decoded`: `jsonEncode` would reorder
+    // nothing on a `Map` but would normalise spacing and escapes, and the copy
+    // this phone keeps has to be the bytes that were authenticated rather than
+    // a spelling of them this build happened to produce.
+    return OpenedPayload._(text: text, payload: PhonePayload.fromJson(decoded));
   }
 
   /// Byte-for-byte string equality, deliberately, rather than comparing parsed

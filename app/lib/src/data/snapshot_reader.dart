@@ -65,21 +65,51 @@ sealed class SnapshotReadOutcome {
   const SnapshotReadOutcome();
 }
 
-/// Authenticated, opened, and parsed.
-final class SnapshotReadPayload extends SnapshotReadOutcome {
-  const SnapshotReadPayload(this.payload);
+/// An attempt that was actually made, and the pairing it was made under.
+///
+/// **The pairing is on the outcome rather than looked up again afterwards, and
+/// §9.1's records are why.** Everything the caller persists about an attempt —
+/// the four fetch facts, the I6 baseline, the held copy — is scoped to a
+/// `pairing_id`, and a second `vault.read()` after the attempt is a different
+/// read: `networth pair` rotates the pairing in one local transaction
+/// (§6.3.1), so a rotation landing mid-attempt would file this attempt's facts
+/// under the *new* pairing. `FetchDiagnostics` spells out what that costs —
+/// two pairings' `seq` counters are unrelated numbers free to coincide, so a
+/// `last_fetch_seq` from one compared against a `last_seq` from the other can
+/// satisfy `HOST_NOT_PUBLISHING` about a host that is publishing perfectly
+/// well. The state that has no pairing to name — [SnapshotReadNotPaired] and
+/// [SnapshotReadPairingUnreadable] — is exactly the state in which no attempt
+/// was made, so the split is the same fact twice rather than two rules.
+sealed class SnapshotAttempted extends SnapshotReadOutcome {
+  const SnapshotAttempted(this.pairingId);
 
-  /// Carries `seq`, `published_at`, `publish_interval` and `grace` itself, so
-  /// the envelope is not returned alongside it: the header/body agreement check
-  /// in [PayloadEnvelope.open] has already established that the two copies say
-  /// the same thing, and handing back both would re-open the question of which
-  /// one I6 and the history record should read.
-  final PhonePayload payload;
+  /// The `pairing_id` from the provision this attempt used.
+  final String pairingId;
+}
+
+/// Authenticated, opened, and parsed.
+final class SnapshotReadPayload extends SnapshotAttempted {
+  const SnapshotReadPayload(super.pairingId, this.opened);
+
+  /// The verified bytes and their parse, from one open.
+  ///
+  /// [OpenedPayload.payload] carries `seq`, `published_at`, `publish_interval`
+  /// and `grace` itself, so the envelope is not returned alongside it: the
+  /// header/body agreement check in [PayloadEnvelope.open] has already
+  /// established that the two copies say the same thing, and handing back both
+  /// would re-open the question of which one I6 and the history record should
+  /// read. [OpenedPayload.text] is the one thing the parse cannot supply — the
+  /// exact document `HeldCopyStore.hold` keeps — and it travels *with* the
+  /// parse rather than beside it for the reason that class states.
+  final OpenedPayload opened;
+
+  /// The parse, which is authoritative everywhere but storage.
+  PhonePayload get payload => opened.payload;
 }
 
 /// The host sent no body — or nothing that could be reached.
-final class SnapshotReadNotDelivered extends SnapshotReadOutcome {
-  SnapshotReadNotDelivered(this.transport)
+final class SnapshotReadNotDelivered extends SnapshotAttempted {
+  SnapshotReadNotDelivered(super.pairingId, this.transport)
       : assert(
           transport is! SnapshotBodyReceived,
           'a received body is not a non-delivery',
@@ -101,8 +131,8 @@ final class SnapshotReadNotDelivered extends SnapshotReadOutcome {
 }
 
 /// Bytes arrived and are not a payload this phone may accept.
-final class SnapshotReadRejected extends SnapshotReadOutcome {
-  const SnapshotReadRejected(this.reason);
+final class SnapshotReadRejected extends SnapshotAttempted {
+  const SnapshotReadRejected(super.pairingId, this.reason);
 
   final SnapshotRejection reason;
 }
@@ -207,9 +237,13 @@ class PairedSnapshotReader {
       return const SnapshotReadNotPaired();
     }
 
+    // Fixed once, here, and read for every outcome below: the provision this
+    // attempt was made under cannot change halfway through it.
+    final pairingId = provision.pairingId;
+
     final fetched = await _openTransport(provision).fetch();
     if (fetched is! SnapshotBodyReceived) {
-      return SnapshotReadNotDelivered(fetched);
+      return SnapshotReadNotDelivered(pairingId, fetched);
     }
 
     final PayloadEnvelope envelope;
@@ -217,14 +251,14 @@ class PairedSnapshotReader {
       envelope = PayloadEnvelope.fromJsonString(fetched.body);
     } on PayloadEnvelopeException catch (error) {
       debugLog(() => 'snapshot rejected: $error');
-      return const SnapshotReadRejected(SnapshotRejection.notAnEnvelope);
+      return SnapshotReadRejected(pairingId, SnapshotRejection.notAnEnvelope);
     }
 
-    if (envelope.pairingId != provision.pairingId) {
+    if (envelope.pairingId != pairingId) {
       // Not logged with either id: the pairing id is the durable half of the
       // pairing bundle, and the bundle's other half is the payload key.
       debugLog(() => 'snapshot rejected: envelope names a different pairing');
-      return const SnapshotReadRejected(SnapshotRejection.otherPairing);
+      return SnapshotReadRejected(pairingId, SnapshotRejection.otherPairing);
     }
 
     try {
@@ -234,15 +268,15 @@ class PairedSnapshotReader {
       // the better half of that trade anyway: if some later expansion did
       // expand in place, the view throws on the first write, where a copy would
       // have let it quietly corrupt the key for the rest of the attempt.
-      return SnapshotReadPayload(envelope.open(key: provision.payloadKey));
+      return SnapshotReadPayload(pairingId, envelope.open(key: provision.payloadKey));
     } on AesGcmAuthenticationException {
-      return const SnapshotReadRejected(SnapshotRejection.notAuthentic);
+      return SnapshotReadRejected(pairingId, SnapshotRejection.notAuthentic);
     } on PayloadHeaderMismatchException catch (error) {
       debugLog(() => 'snapshot rejected: $error');
-      return const SnapshotReadRejected(SnapshotRejection.headerDisagreement);
+      return SnapshotReadRejected(pairingId, SnapshotRejection.headerDisagreement);
     } on PayloadFormatException catch (error) {
       debugLog(() => 'snapshot rejected: $error');
-      return const SnapshotReadRejected(SnapshotRejection.payloadNotReadable);
+      return SnapshotReadRejected(pairingId, SnapshotRejection.payloadNotReadable);
     }
   }
 }
