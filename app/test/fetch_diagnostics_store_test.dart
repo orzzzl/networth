@@ -54,6 +54,17 @@ void main() {
         after: after,
       );
 
+  FetchDiagnostics reachedHostWithNothing({
+    String pairingId = 'pairing-a',
+    DateTime? at,
+    FetchSuccess? after,
+  }) =>
+      FetchDiagnostics.foundNoPublication(
+        pairingId: pairingId,
+        at: at ?? utc(21, 9),
+        after: after,
+      );
+
   FetchDiagnostics held(DiagnosticsState state) {
     expect(state, isA<DiagnosticsHeld>());
     return (state as DiagnosticsHeld).diagnostics;
@@ -533,12 +544,24 @@ void main() {
   });
 
   group('a record with no pairing to scope it', () {
-    test('cannot be constructed, by either constructor', () {
+    test('cannot be constructed, by any of the three constructors', () {
       // The scoping rule is enforced where a record is *made*, not where it is
       // written, because an unscoped record has no meaning to hold in memory
       // either: every fact in it is "under which pairing".
+      //
+      // **The third case was added because it was measured missing, not for
+      // symmetry.** This test read "by either constructor" while a third
+      // constructor existed: deleting `_checkPairing` from
+      // `FetchDiagnostics.foundNoPublication` left all 570 tests green, where
+      // the same deletion on `succeeded` reddens this very test. A guard that
+      // three code paths call and one caller pins is two thirds unpinned, and
+      // the name of the test was the only thing that said so.
       expect(() => succeeded(pairingId: ''), throwsA(isA<PayloadFormatException>()));
       expect(() => failed(pairingId: ''), throwsA(isA<PayloadFormatException>()));
+      expect(
+        () => reachedHostWithNothing(pairingId: ''),
+        throwsA(isA<PayloadFormatException>()),
+      );
     });
   });
 
@@ -546,12 +569,24 @@ void main() {
     test('and today that is a property of the round trip, not of a reachable throw', () async {
       // `write` runs the bytes through `read`'s parser before touching the disk,
       // the `23a` precedent. Here that guard is **unreachable by construction**:
-      // every invariant it checks is already enforced by the two constructors,
-      // so there is no [FetchDiagnostics] whose encoding the parser would
-      // refuse. Saying so beats a test that cannot fail — what is actually
-      // pinned is the equivalence the guard exists to keep true, that anything
-      // the encoder writes the parser reads back unchanged, and the drift it
-      // catches is a future field added to one side only.
+      // every invariant it checks is already enforced by the three
+      // constructors, so there is no [FetchDiagnostics] whose encoding the
+      // parser would refuse. Saying so beats a test that cannot fail — what is
+      // actually pinned is the equivalence the guard exists to keep true, that
+      // anything the encoder writes the parser reads back unchanged, and the
+      // drift it catches is a future field added to one side only.
+      //
+      // The list therefore has to cover every constructor, or the equivalence
+      // is pinned for the shapes that happen to be listed rather than for the
+      // encoder. The `404` shapes were the ones missing.
+      //
+      // **Measured, and stated as what it is**: on the one mutation available
+      // today — `_parse` dropping the carried success on the `404` branch — the
+      // group above reddens too, so these two entries are the list's
+      // completeness rather than new coverage. What they add is generic:
+      // whole-record equality catches a field added to one side of the encoder
+      // without anyone remembering to assert it by name, which is the drift
+      // this test says it exists for.
       final records = <FetchDiagnostics>[
         succeeded(at: utc(20, 9), seq: '7'),
         succeeded(at: utc(20, 9), seq: '10'),
@@ -559,6 +594,11 @@ void main() {
         failed(
           at: utc(21, 9),
           error: FetchFailureClass.credentialRejected,
+          after: FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7')),
+        ),
+        reachedHostWithNothing(at: utc(21, 9)),
+        reachedHostWithNothing(
+          at: utc(21, 9),
           after: FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7')),
         ),
       ];

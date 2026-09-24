@@ -106,7 +106,7 @@ enum ClockDisagreement {
   clockContinuityUnknown,
 }
 
-/// Why the copy is stale — §9.1's two reasons, which have different fixes.
+/// Why the copy is stale — §9.1's three reasons, which have different fixes.
 sealed class StaleReason {
   const StaleReason();
 }

@@ -176,12 +176,13 @@ final class SnapshotReadPairingUnreadable extends SnapshotReadOutcome {
 /// It is deliberately *not* a [SnapshotSource](snapshot_source.dart). That
 /// interface is `Future<PhonePayload> load()`, which has no channel for the
 /// outcomes above and would force each of them to become a throw — and §9.1
-/// requires the phone to persist five facts about **every** attempt, successes
+/// requires the phone to persist six facts about **every** attempt, successes
 /// and failures alike, so they have to survive as values to be recorded at all.
-/// The adapter onto `SnapshotSource` therefore lands with the recorder, in the
-/// change that also decides where `HOST_NOT_PUBLISHING` sits in
-/// `FetchDiagnostics`. This class is the part of that work which does not
-/// depend on the answer.
+/// The adapter onto `SnapshotSource` therefore lands with the recorder. This
+/// class is the part of that work which did not depend on where the `404` sits
+/// in `FetchDiagnostics` — a question this doc comment used to defer and which
+/// is now answered: its own last-attempt state, its own `StaleReason`, decided
+/// before the first conjunct. See `FetchDiagnostics.foundNoPublication`.
 ///
 /// **Holds no secret of its own.** The payload key is read from the vault per
 /// attempt and passed to [PayloadEnvelope.open]; nothing here caches it, so an

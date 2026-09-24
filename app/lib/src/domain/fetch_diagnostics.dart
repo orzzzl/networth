@@ -34,7 +34,7 @@ enum FetchFailureClass {
 /// The last fetch that actually returned a payload.
 ///
 /// The instant and the `seq` are one value rather than two nullable fields
-/// because §9.1's five facts contain a both-or-neither pair: `last_fetch_seq` is
+/// because §9.1's facts contain a both-or-neither pair: `last_fetch_seq` is
 /// *"the `seq` the last successful fetch returned"*, so it exists exactly when
 /// that fetch does. Separate nullables would make "succeeded but returned no
 /// `seq`" representable, and the predicate's third conjunct
@@ -61,7 +61,7 @@ class FetchSuccess {
 
 /// What this phone knows about its own fetching, under one pairing.
 ///
-/// Four of §9.1's five facts live here; the fifth (`last_seq`, the `seq` the
+/// Five of §9.1's six facts live here; the sixth (`last_seq`, the `seq` the
 /// phone actually *holds*) is I6's baseline and lives in [SeqBaselineStore].
 ///
 /// **Scoped to a `pairing_id`, and that is not symmetry with the baseline —
@@ -234,9 +234,9 @@ class FetchDiagnostics {
 ///
 /// The reason is not the one [BaselineState] has, and the difference is worth
 /// stating so this type is not read as inheriting a security argument it does
-/// not have. Damaging *this* file cannot bypass a check: without the four facts
-/// no conjunct of `HOST_NOT_PUBLISHING` can be established, so the predicate
-/// falls to `CANNOT_CHECK` and the phone accuses nobody.
+/// not have. Damaging *this* file cannot bypass a check: without the facts it
+/// holds no conjunct of `HOST_NOT_PUBLISHING` can be established, so the
+/// predicate falls to `CANNOT_CHECK` and the phone accuses nobody.
 ///
 /// It exists for the other half of the same requirement — **a missing fact must
 /// never be readable as a satisfied one.** §9.1 ends `CANNOT_CHECK` with an
