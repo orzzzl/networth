@@ -60,6 +60,18 @@ DiagnosticsState _failedAt(
       ),
     );
 
+/// A phone whose last attempt reached a host with no publication, at [at].
+DiagnosticsState _foundNoPublicationAt(DateTime at, {DateTime? afterSuccessAt}) =>
+    DiagnosticsHeld(
+      FetchDiagnostics.foundNoPublication(
+        pairingId: _pairing,
+        at: at,
+        after: afterSuccessAt == null
+            ? null
+            : FetchSuccess(at: afterSuccessAt, seq: _held),
+      ),
+    );
+
 CannotCheckCause _cannotCheck(CopyState state) {
   final stale = state as CopyStale;
   return (stale.reason as CannotCheck).cause;
@@ -394,6 +406,61 @@ void main() {
         ),
       );
       expect((state as CopyStale).reason, isA<HostNotPublishing>());
+    });
+
+    test('a host that answered with no publication is its own reason', () {
+      // §9.1's third reason, and the two it is not. `CannotCheck` would send
+      // the owner after a network that answered him; `HostNotPublishing` says
+      // *"your server last confirmed this copy"*, and a `404` confirms nothing
+      // — it disowns the publication the phone is showing.
+      final state = _evaluate(
+        deviceNow: now,
+        diagnostics: _foundNoPublicationAt(now, afterSuccessAt: afterDue),
+      );
+
+      final reason = (state as CopyStale).reason as HostServingNothing;
+      expect(reason.lastPublishedAt, _published);
+      expect(reason.reachedAt, now);
+      expect(reason, isNot(isA<CannotCheck>()));
+      expect(reason, isNot(isA<HostNotPublishing>()));
+    });
+
+    test('and it outranks conjunct 1, which would otherwise excuse the host', () {
+      // The discriminating case for the *order*: the last success is before the
+      // deadline, so evaluating conjunct 1 first answers `NotCheckedSinceDue` —
+      // *"nothing is wrong yet and nobody is blamed"* — about a host that has
+      // just told this phone it has nothing. That is the ordinary shape for a
+      // copy that went stale after the last good fetch, not a corner.
+      final state = _evaluate(
+        deviceNow: now,
+        diagnostics: _foundNoPublicationAt(
+          now,
+          afterSuccessAt: _deadline.subtract(const Duration(hours: 2)),
+        ),
+      );
+
+      expect((state as CopyStale).reason, isA<HostServingNothing>());
+    });
+
+    test('and a phone that never succeeded still reports what the host said', () {
+      // No `after`, so there is no confirmation instant anywhere in the record.
+      // The claim being made is about the host's answer now, which needs none.
+      final state = _evaluate(deviceNow: now, diagnostics: _foundNoPublicationAt(now));
+
+      expect(((state as CopyStale).reason as HostServingNothing).reachedAt, now);
+    });
+
+    test('and it does not outrank a clock this device cannot trust', () {
+      // Rule 1 is still first: `HostServingNothing` is a claim about the host
+      // reached through a deadline this device computed, so an untrustworthy
+      // clock blocks it exactly as it blocks `HOST_NOT_PUBLISHING`.
+      final state = _evaluate(
+        deviceNow: now,
+        continuity: const ContinuityUnknown(ContinuityGap.noAnchor),
+        diagnostics: _foundNoPublicationAt(now, afterSuccessAt: afterDue),
+      );
+
+      expect(state, isA<CopyUnknown>());
     });
 
     test('never fetched is the absence of a record, and says so', () {

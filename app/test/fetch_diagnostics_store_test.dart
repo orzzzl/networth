@@ -219,6 +219,135 @@ void main() {
     });
   });
 
+  group('an attempt that reached a host with nothing to serve', () {
+    FetchDiagnostics noPublication({DateTime? at, FetchSuccess? after}) =>
+        FetchDiagnostics.foundNoPublication(
+          pairingId: 'pairing-a',
+          at: at ?? utc(21, 9),
+          after: after,
+        );
+
+    test('is neither a failure nor a success, across the disk', () async {
+      final success = FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7'));
+
+      await store.write(noPublication(after: success));
+
+      final record = held(await store.read('pairing-a'));
+      expect(record.foundNoPublication, isTrue);
+      // Not a failure: reading it as one is what drops §9.1's reason to
+      // `CANNOT_CHECK` and reports a dead publisher as a network problem.
+      expect(record.lastError, isNull);
+      // Not a success either: the attempt that returned a payload is still the
+      // older one, and its `seq` is the phone's evidence about what it holds.
+      expect(record.lastAttemptAt, utc(21, 9));
+      expect(record.lastSuccess?.at, utc(20, 9));
+      expect(record.lastSuccess?.seq.wire, '7');
+    });
+
+    test('and its key on disk is exactly this, which is a format', () async {
+      // Asserted as a literal for the reason the error spellings above are: the
+      // round trip cannot see a rename, because write and read consult the same
+      // constant. What a rename breaks is the other side of an app update — a
+      // phone whose record was written by the previous build reads the key it
+      // no longer knows, falls through to the success branch, and finds an
+      // attempt that neither succeeded nor failed. Its own record then reads as
+      // damaged, and `RecordsUnusable` is what the owner is told about a `404`.
+      await store.write(noPublication());
+
+      expect(jsonDecode(await file.readAsString()), <String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-21T09:00:00.000Z',
+        'last_fetch_found_no_publication': true,
+      });
+      expect(FileFetchDiagnosticsStore.noPublicationKey, 'last_fetch_found_no_publication');
+    });
+
+    test('and the key is absent, not false, on every other record', () async {
+      // So a file written before this key existed reads back as what it was.
+      // Writing `false` would also work today and would make the absence
+      // ambiguous the moment anything reads the key directly.
+      await store.write(succeeded());
+      expect(
+        (jsonDecode(await file.readAsString()) as Map<String, Object?>).containsKey(
+          FileFetchDiagnosticsStore.noPublicationKey,
+        ),
+        isFalse,
+      );
+
+      await store.write(failed());
+      expect(
+        (jsonDecode(await file.readAsString()) as Map<String, Object?>).containsKey(
+          FileFetchDiagnosticsStore.noPublicationKey,
+        ),
+        isFalse,
+      );
+    });
+
+    test('and an out-of-order stamp is this record\'s clock evidence too', () {
+      // The same argument as the failed-attempt case: a `404` stamped at or
+      // before the success it followed came from a clock corrected backwards.
+      // Written as `lastError != null`, `clockMovedBackwards` would have gone
+      // silent for this whole state.
+      final success = FetchSuccess(at: utc(20, 9), seq: PublicationSeq.parse('7'));
+
+      expect(noPublication(at: utc(19, 9), after: success).clockMovedBackwards, isTrue);
+      expect(noPublication(at: utc(20, 9), after: success).clockMovedBackwards, isTrue);
+      expect(noPublication(at: utc(21, 9), after: success).clockMovedBackwards, isFalse);
+    });
+
+    test('and a record claiming both is refused rather than half-believed', () async {
+      // The two halves are opposite advice — "your network is down" against
+      // "your server has nothing" — so picking one is picking what to tell the
+      // owner on no evidence.
+      await file.writeAsString(jsonEncode(<String, Object?>{
+        'pairing_id': 'pairing-a',
+        'last_fetch_attempt_at': '2026-09-21T09:00:00.000Z',
+        'last_fetch_error': 'OFFLINE',
+        'last_fetch_found_no_publication': true,
+      }));
+
+      expect(await store.read('pairing-a'), isA<DiagnosticsUnreadable>());
+    });
+
+    test('and a key this store never writes is damage, including false', () async {
+      // **The record around it is otherwise valid, and that is the whole test.**
+      // Written without the success below, every one of these values reaches
+      // `DiagnosticsUnreadable` through a different door — "an attempt that
+      // neither succeeded nor failed" — so the test passes whether or not the
+      // value is checked at all. Mutation found exactly that: deleting this
+      // guard left the first version of this test green. With the success
+      // present, an unguarded read returns a held *success*, which is a record
+      // this build never wrote being reported as one it did.
+      for (final value in <Object?>[false, 'true', 1, 0]) {
+        await file.writeAsString(jsonEncode(<String, Object?>{
+          'pairing_id': 'pairing-a',
+          'last_fetch_attempt_at': '2026-09-21T09:00:00.000Z',
+          'last_fetch_success_at': '2026-09-21T09:00:00.000Z',
+          'last_fetch_seq': '7',
+          'last_fetch_found_no_publication': value,
+        }));
+
+        expect(
+          await store.read('pairing-a'),
+          isA<DiagnosticsUnreadable>(),
+          reason: 'a $value here was written by nothing in this build',
+        );
+      }
+    });
+
+    test('and the store will not write a shape its own reader refuses', () async {
+      // `write` parses the bytes it is about to commit, so the strictness above
+      // is not a rule the writer could quietly diverge from: a `_json` that
+      // started emitting the key unconditionally would fail here rather than on
+      // the next launch of a phone that had already stored one.
+      await store.write(succeeded());
+      await store.write(noPublication());
+
+      final stored = jsonDecode(await file.readAsString()) as Map<String, Object?>;
+      expect(stored[FileFetchDiagnosticsStore.noPublicationKey], isTrue);
+    });
+  });
+
   group('the record is replaced, never appended to', () {
     test('so only the current attempt is kept', () async {
       await store.write(succeeded(at: utc(20, 9), seq: '7'));

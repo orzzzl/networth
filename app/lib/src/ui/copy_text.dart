@@ -59,6 +59,13 @@ String? copyReasonText(AppLocalizations l10n, CopyState copy) => switch (copy) {
       // suffix would restate the same instant twice.
       CopyStale(reason: HostNotPublishing(:final confirmedAt)) =>
         l10n.copyReasonHostNotPublishing(formatInstantUtc(l10n, confirmedAt)),
+      // The second branch allowed to speak about the server, and it says a
+      // different thing: not *"nothing newer than yours"* but *"none at all"*.
+      // Its own instant is inside its sentence for the same reason the branch
+      // above takes no `last checked` suffix — the `404` **is** the last check,
+      // so the suffix would print the same instant twice.
+      CopyStale(reason: HostServingNothing(:final reachedAt)) =>
+        l10n.copyReasonHostServingNothing(formatInstantUtc(l10n, reachedAt)),
       CopyStale(reason: CannotCheck(:final cause, :final since)) =>
         _withLastChecked(l10n, _cannotCheckText(l10n, cause), since),
     };

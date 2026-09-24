@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/data/snapshot_reader.dart';
 import 'package:networth_app/src/data/snapshot_transport.dart';
+import 'package:networth_app/src/domain/phone_payload.dart';
 import 'package:networth_app/src/pairing/pairing_provision.dart';
 import 'package:networth_app/src/pairing/pairing_vault.dart';
 
@@ -233,7 +234,7 @@ void main() {
       // carry in its type. Without this, the only thing standing behind that
       // paragraph is the narrowing in `read`.
       expect(
-        () => SnapshotReadNotDelivered(const SnapshotBodyReceived('{}')),
+        () => SnapshotReadNotDelivered('p', const SnapshotBodyReceived('{}')),
         throwsA(isA<AssertionError>()),
       );
     });
@@ -350,6 +351,40 @@ void main() {
       // `DatedTotal` is sealed on the age state, so the variant *is* the
       // `age_state` the host sent.
       expect(payload.total.runtimeType, expected.total.runtimeType);
+    });
+
+    test('the pairing an attempt names is the one it was made under', () async {
+      // **The phone's, never the envelope's**, and the `otherPairing` case is
+      // where a plausible implementation gets it wrong: `known_envelope.json`
+      // is published under `fixture-pairing` while this phone holds
+      // `pairingId`, so an outcome that reported the envelope's id would file
+      // this attempt's five facts under a pairing the phone has never had.
+      final rejected = await _read(
+        route: _serving(envelopeFixture('known_envelope.json')),
+      );
+      final delivered = await _read(route: _answering(HttpStatus.notFound));
+      final opened = await _read(
+        route: _serving(envelopeFixture('paired_envelope.json')),
+      );
+
+      expect((rejected as SnapshotAttempted).pairingId, pairingId);
+      expect((delivered as SnapshotAttempted).pairingId, pairingId);
+      expect((opened as SnapshotAttempted).pairingId, pairingId);
+      // And the envelope really did claim a different one, so the assertion
+      // above is discriminating rather than two names that happen to match.
+      expect(
+        PhonePayload.fromJsonString(readFixture(knownFixture)).pairingId,
+        isNot(pairingId),
+      );
+    });
+
+    test('an attempt that was never made names no pairing', () async {
+      // The other half of the split: these two are exactly the states in which
+      // no fetch happened, so there is nothing to file and no id to file it
+      // under. A `SnapshotAttempted` here would be a record of an attempt that
+      // does not exist.
+      expect(await _read(store: _MemoryStore()), isNot(isA<SnapshotAttempted>()));
+      expect(await _read(store: _FailingStore()), isNot(isA<SnapshotAttempted>()));
     });
 
     test('every attempt reads the vault again, so a rotation takes effect', () async {
