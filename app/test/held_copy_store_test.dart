@@ -213,6 +213,29 @@ void main() {
       expect(file.existsSync(), isFalse);
     });
 
+    test('the copy is committed by rename, so an interrupted write cannot truncate it', () async {
+      // **Pins the mechanism, because the crash it prevents cannot be
+      // injected.** The property that matters is that the destination always
+      // holds one complete document — the old one or the new one — so a power
+      // loss mid-write costs the owner nothing. Nothing in this suite can
+      // interrupt a write, and a mutation replacing the temp-file-and-rename
+      // with a direct `writeAsString` survived every other test here.
+      //
+      // So the discriminator is deterministic instead: occupy the temporary
+      // name with a directory. An implementation that stages its bytes there
+      // fails and leaves the previous copy standing; one that writes straight
+      // to the destination sails past and replaces it. The suffix is named
+      // here because `seq_baseline_store.dart` established it as this
+      // directory's convention, not because this test invented it.
+      final good = await shippedPayload();
+      await store.hold(good);
+      await Directory('${file.path}.writing').create();
+
+      await expectLater(() => store.hold(withField(good, 'seq', '42')), throwsA(isA<Object>()));
+
+      expect(await file.readAsString(), good);
+    });
+
     test('a refused write leaves the previous copy intact', () async {
       // The copy is what the phone shows when it cannot fetch, so a bad payload
       // must not cost the owner the screen he still had.
