@@ -1551,13 +1551,29 @@ they do not reopen `06a` or require an owner measurement.
       before any later step can lose them. **`/link/token/get` does not return `item_id`** —
       a test asserts the support path never claims to have one it was not given.
 - [ ] **The VPS-side `link_token` reaper exists and is this task's** (issue #16).
-      `SESSION_EXITED`, `URL_EXPIRED` and `ABANDONED` spend no slot and are reaped
-      **immediately**; `TOKEN_EXPIRED` and `EXCHANGE_UNCERTAIN` retain only through the
-      diagnostics window and are then reaped. Deletion order stays **material first, then
-      `secret_ref`**. The reaper is **idempotent across all three partial states**
-      (material+ref, no-material+ref, material+no-ref) and a crash injected between the two
-      deletions converges on the next run. Without this, every terminal flow leaves
-      credential material on the VPS forever — §15 defines only the Mac-side reaper.
+      Reaping is **request-scoped, because the `link_token` is**. A session-level
+      state never authorizes deleting it: `SESSION_EXITED` alone triggers no
+      deletion and still spends no slot. Reap only after request closure under
+      `07a-flow-contract.md` and `07a-lifecycle-contract.md`; `URL_EXPIRED` and
+      `ABANDONED` must be proven no-success outcomes, with no live session, no
+      `SUCCESS_PENDING_EXCHANGE`/`EXCHANGING` child, and no unresolved coverage,
+      success-observation or material hold. `TOKEN_EXPIRED` and `EXCHANGE_UNCERTAIN`
+      children retain link material through the latest child's diagnostics deadline;
+      an unknown deadline prevents deletion. Keep polling closure distinct from
+      deletion, and never delete successful child credentials. Deletion order stays
+      **material first, then `secret_ref`**. The reaper is **idempotent across all
+      three partial states** (material+ref, no-material+ref, material+no-ref) and a
+      crash between deletion and reference clearing converges on the next run.
+- [ ] **An empty poll is not proof of no success.** A request whose observation
+      history crosses the provider's retention window without a conclusive final
+      observation takes a durable coverage hold. Reuse the existing
+      `link_observation_adjudication` budget/adjudication path; the budget refuses
+      an available count until audited adjudication, and a later empty poll never
+      clears the hold. Record actual poll intervals, including restart/outage gaps;
+      a named regression skips a poll past the retention window and asserts a hold
+      rather than clean closure. A native request whose URL was never authorized
+      for release has local no-success evidence independent of provider retention;
+      migrated requests never inherit that proof from an absent release marker.
 - [ ] Behaviour matches what `06a` **measured** for duplicate exchange and the crash
       window. Where the measurement contradicts this design, the design changes.
 

@@ -1,7 +1,8 @@
-# 07a lifecycle closure — proposed boundary, awaiting review
+# 07a lifecycle closure — reviewed conservative boundary
 
 The polling/exchange worker is merged in PR #104 (`95123ee`). Task 07a remains
-WIP. This proposal resolves the destructive cleanup boundary before implementing
+WIP. Claude approved option A on the merits in [PR #106](https://github.com/orzzzl/networth/pull/106#issuecomment-5814064075).
+This contract resolves the destructive cleanup boundary before implementing
 mint/attestation, terminal classification, and the VPS reaper together. No runtime
 material was read and no Plaid call was made to investigate it.
 
@@ -26,7 +27,7 @@ Current code makes neither destructive decision: `ingest_poll` records evidence
 without closing requests, and `run_request` does not reap. The missing decision
 must be resolved before adding those paths, per AGENTS.md's credential/budget rule.
 
-## Recommended A: conservative closure with explicit coverage holds
+## Selected A: conservative closure with explicit coverage holds
 
 1. Preserve the existing 06a measurement verbs. Add a distinct automatic lifecycle
    driver so a measurement flow can never silently opt into exchange. Production
@@ -57,8 +58,18 @@ must be resolved before adding those paths, per AGENTS.md's credential/budget ru
    a conclusive final observation gets a durable coverage hold. It has no invented
    successful result or invented number of spent slots. The budget reader refuses
    an available count until explicit audited adjudication resolves the possible
-   missing evidence. A later empty poll cannot clear this hold.
-8. A native request whose URL was never authorized for release and has no success
+   missing evidence. Reuse the merged `link_observation_adjudication`,
+   `_adjudicated_slots`, and `adjudicate-link-observation` path; this does not
+   rewrite task 26a. A later empty poll cannot clear this hold. Record the
+   actual poll intervals over the URL lifetime, including restart/outage gaps.
+   Any proposed automatic exposed-request closure must require a maximum gap
+   strictly under six hours with margin, and separately justify completeness;
+   frequent polling alone does not turn the retention limit into a guarantee.
+   The implementation must include a named regression that skips a poll past
+   the retention window and asserts a durable hold rather than clean closure.
+8. **Never-released native requests have a local no-success proof independent
+   of provider retention:** their URLs were never displayed by the driver.
+   A native request whose URL was never authorized for release and has no success
    evidence can become ABANDONED (explicit intent) or URL_EXPIRED (expiry) and be
    cleaned up. For exposed requests, automatic zero-success closure requires a
    reviewed, explicit criterion for the final observation. **No maximum gap or
@@ -94,12 +105,13 @@ B could remove routine closure adjudication, but it blocks automatic exposed-flo
 cleanup until the stronger guarantee is obtained. Existing material must remain
 intact in the meantime. Do not use a repeat of a consumed 06a flow as evidence.
 
-## Decision requested from Claude
+## Review decision and binding acceptance
 
-Approve A's conservative coverage/release boundary, or supply B's discriminating
-closure contract. In either case confirm how the old "immediate SESSION_EXITED
-cleanup" acceptance is narrowed to request-safe cleanup. This is a cross-agent
-implementation/design decision, not an owner escalation.
+Claude selected A; B is not the implementation path. The task 07a acceptance
+list and issue #16 now narrow cleanup to the request boundary above:
+`SESSION_EXITED` still spends no slot, but never authorizes deletion of the
+parent request's token. This is a cross-agent implementation/design decision;
+no owner action is needed.
 
 After approval, implement the minter, return attestation, poll/abandon/coverage
 classification and reaper together, with named crash and multi-session regressions.
