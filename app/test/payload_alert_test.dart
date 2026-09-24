@@ -131,6 +131,27 @@ void main() {
       expect(_parse([_alert(prompt: true)]), hasLength(1));
     });
 
+    test('a subject is identified by both its scope and its id', () {
+      // **Written because a mutation round could not kill the behavioural test.**
+      // "The same id under two scopes is two subjects" is enforced twice over —
+      // `hashCode` puts them in different buckets and `==` would separate them
+      // even in one — so neither field on its own is observable through the
+      // `Set` in `summarizeAlerts`, and a mutant that breaks exactly one of them
+      // leaves every test green. That is redundancy rather than a defect, but it
+      // means each half needs pinning where it can actually be seen.
+      const item = AlertSubject(scope: AlertSubjectScope.item, id: 1);
+      const account = AlertSubject(scope: AlertSubjectScope.account, id: 1);
+
+      expect(item, isNot(account));
+      expect(item, const AlertSubject(scope: AlertSubjectScope.item, id: 1));
+      expect(item.hashCode, const AlertSubject(scope: AlertSubjectScope.item, id: 1).hashCode);
+      // Unequal hashes are **not** promised by the `==`/`hashCode` contract —
+      // collisions are always legal. It is asserted because it is what makes the
+      // `Set` discriminate cheaply: a hash ignoring the scope would drop both
+      // into one bucket and leave the whole distinction resting on `==`.
+      expect(item.hashCode, isNot(account.hashCode));
+    });
+
     test('the parsed list cannot be mutated by its holder', () {
       final alerts = _parse([_alert()]);
 
