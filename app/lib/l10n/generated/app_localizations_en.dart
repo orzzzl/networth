@@ -181,6 +181,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'your server answered with something this app couldn\'t use';
 
   @override
+  String get copyReasonUnknownFailure =>
+      'it couldn\'t check, and this device can\'t say why';
+
+  @override
   String get copyReasonNotCheckedSinceDue =>
       'this device hasn\'t needed to check again yet';
 

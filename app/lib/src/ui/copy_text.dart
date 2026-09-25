@@ -6,12 +6,19 @@ import 'instant.dart';
 /// The words for §9.1's copy verdict — the whole matrix, as two pure functions.
 ///
 /// **Its own file, and public, because the widget path cannot reach most of it.**
-/// There are twelve distinct sentences here, and this build performs no fetches,
-/// so its diagnostics are [DiagnosticsAbsent] and a widget test can only ever
-/// drive four: fresh, the three clock disagreements, and `NeverFetched`. The
-/// other eight — every [FetchFailureClass], `NotCheckedSinceDue`,
-/// `RecordsUnusable`, `ServedPayloadNotHeld` and `HostNotPublishing` — become
+/// There are fourteen distinct sentences here, and this build performs no
+/// fetches, so its diagnostics are [DiagnosticsAbsent] and a widget test can only
+/// ever drive four: the three clock disagreements and `NeverFetched`. The other
+/// ten — every [FetchFailureClass], `NotCheckedSinceDue`, `RecordsUnusable`,
+/// `ServedPayloadNotHeld`, `HostNotPublishing` and `HostServingNothing` — become
 /// reachable on screen only when this task's transport starts writing records.
+///
+/// *(It said **twelve** and **eight** until [FetchFailureClass.unknownFailure]
+/// forced a recount, and the recount found the number had been wrong before this
+/// change too: `HostServingNothing` was added with the `404`'s own state and the
+/// sentence above was not touched. A count in prose that nothing checks is the
+/// defect this file's own task keeps finding elsewhere, so the count is now
+/// asserted in `copy_text_test.dart` rather than maintained by hand.)*
 ///
 /// Left private inside the view they would have been eight strings nothing could
 /// pin until then, which is how the sentence this change exists to delete got
@@ -91,5 +98,6 @@ String _cannotCheckText(AppLocalizations l10n, CannotCheckCause cause) => switch
           FetchFailureClass.hostUnreachable => l10n.copyReasonHostUnreachable,
           FetchFailureClass.credentialRejected => l10n.copyReasonCredentialRejected,
           FetchFailureClass.transportError => l10n.copyReasonTransportError,
+          FetchFailureClass.unknownFailure => l10n.copyReasonUnknownFailure,
         },
     };

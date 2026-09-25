@@ -274,6 +274,7 @@ class FileFetchDiagnosticsStore implements FetchDiagnosticsStore {
     FetchFailureClass.hostUnreachable: 'HOST_UNREACHABLE',
     FetchFailureClass.credentialRejected: 'CREDENTIAL_REJECTED',
     FetchFailureClass.transportError: 'TRANSPORT_ERROR',
+    FetchFailureClass.unknownFailure: 'UNKNOWN_FAILURE',
   };
 }
 

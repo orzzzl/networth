@@ -262,6 +262,12 @@ abstract class AppLocalizations {
   /// **'your server answered with something this app couldn\'t use'**
   String get copyReasonTransportError;
 
+  /// FetchFailureClass.unknownFailure — the attempt failed and the phone has no evidence for where. Claims nothing about the network or the server, because the fault that produces it is the one the transport classifier refused to name; the other four reasons each assert a half of the path this one cannot see. Gives him no remedy on purpose: the action is to look again, and re-pairing a server that may be fine is the one thing this must not suggest.
+  ///
+  /// In en, this message translates to:
+  /// **'it couldn\'t check, and this device can\'t say why'**
+  String get copyReasonUnknownFailure;
+
   /// NotCheckedSinceDue: fetching is fine, the last success simply predates the copy's own deadline. Nothing is wrong and nobody is blamed, so the sentence blames nobody.
   ///
   /// In en, this message translates to:

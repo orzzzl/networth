@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:networth_app/l10n/generated/app_localizations_en.dart';
@@ -7,7 +9,7 @@ import 'package:networth_app/src/ui/copy_text.dart';
 
 /// Every sentence §9.1's verdict can produce, pinned without a widget.
 ///
-/// **Eight of these are unreachable from `SnapshotView` in this build** — it
+/// **Ten of these are unreachable from `SnapshotView` in this build** — it
 /// performs no fetches, so its diagnostics are `DiagnosticsAbsent` and the
 /// predicate can only reach fresh, the three clock disagreements and
 /// `NeverFetched`. The rest become reachable when this task's transport starts
@@ -34,6 +36,70 @@ void main() {
 
   CopyState cannotCheck(CannotCheckCause cause, {DateTime? since}) =>
       CopyStale(CannotCheck(cause: cause, since: since));
+
+  /// Every verdict the predicate can hand this file, built once.
+  final everyCopyState = <CopyState>[
+    const CopyFresh(),
+    for (final disagreement in ClockDisagreement.values) CopyUnknown(disagreement),
+    CopyStale(HostNotPublishing(lastPublishedAt: published, confirmedAt: confirmed)),
+    CopyStale(HostServingNothing(lastPublishedAt: published, reachedAt: confirmed)),
+    for (final cause in <CannotCheckCause>[
+      const NeverFetched(),
+      const NotCheckedSinceDue(),
+      const ServedPayloadNotHeld(),
+      const RecordsUnusable('anchor file is not JSON'),
+      for (final c in FetchFailureClass.values) FetchFailed(c),
+    ])
+      cannotCheck(cause),
+  ];
+
+  test("the count in the file's own doc comment is the count there is", () {
+    // **The doc comment said twelve and eight, and both were wrong before this
+    // test existed** — `HostServingNothing` arrived with the `404`'s own state
+    // and nothing recounted. That is the same defect this task keeps finding in
+    // its own prose: a number stated in a sentence, load-bearing for a reader
+    // deciding what a widget test can cover, and checked by nobody. Adding a
+    // fifth `FetchFailureClass` is what forced the recount and exposed it.
+    //
+    // So the sentence is pinned to the measurement rather than to a literal:
+    // the only way to keep this green is to recount and rewrite the comment.
+    const words = <int, String>{
+      8: 'eight',
+      9: 'nine',
+      10: 'ten',
+      11: 'eleven',
+      12: 'twelve',
+      13: 'thirteen',
+      14: 'fourteen',
+      15: 'fifteen',
+      16: 'sixteen',
+      17: 'seventeen',
+    };
+    // `reason` is `null` for a fresh copy — no second line at all, which is not
+    // a sentence and must not be counted as one.
+    final sentences = everyCopyState.map(reason).whereType<String>().toSet();
+
+    // The four a widget test in this build can actually drive: the three clock
+    // disagreements and `NeverFetched`.
+    const reachableFromTheWidget = 4;
+    // A count outside the table would otherwise interpolate `null` into both
+    // matchers and fail as "the comment is wrong" — which it would not be.
+    expect(words.keys, contains(sentences.length));
+    expect(words.keys, contains(sentences.length - reachableFromTheWidget));
+
+    final source = File('lib/src/ui/copy_text.dart').readAsStringSync();
+    expect(
+      source,
+      contains('There are ${words[sentences.length]} distinct sentences here'),
+      reason: 'copy_text.dart states a total; there are ${sentences.length}',
+    );
+    expect(
+      source,
+      contains('The other\n/// ${words[sentences.length - reachableFromTheWidget]}'),
+      reason: 'copy_text.dart states how many are out of the widget path; '
+          'there are ${sentences.length - reachableFromTheWidget}',
+    );
+  });
 
   group('the claim on the first line names no cause', () {
     test('a fresh copy says when it was published', () {
@@ -117,7 +183,7 @@ void main() {
         const RecordsUnusable('anchor file is not JSON'),
         for (final c in FetchFailureClass.values) FetchFailed(c),
       ];
-      expect(causes, hasLength(8));
+      expect(causes, hasLength(9));
       for (final cause in causes) {
         final line = reason(cannotCheck(cause, since: confirmed))!;
         expect(line, isNot(contains('has been published')), reason: '$cause');
@@ -150,11 +216,12 @@ void main() {
         reason(cannotCheck(const FetchFailed(FetchFailureClass.credentialRejected))),
         'your server refused this device — it needs pairing again',
       );
-      for (final other in [
-        FetchFailureClass.offline,
-        FetchFailureClass.hostUnreachable,
-        FetchFailureClass.transportError,
-      ]) {
+      // Derived from the enum rather than listed, and the fifth class is why:
+      // written out by hand, the three names here stayed green while a class
+      // that had never been read against this rule was added beside them. The
+      // property is "every class but one", so it is spelled that way.
+      for (final other
+          in FetchFailureClass.values.where((c) => c != FetchFailureClass.credentialRejected)) {
         expect(
           reason(cannotCheck(FetchFailed(other)))!,
           isNot(contains('pairing')),
@@ -168,6 +235,25 @@ void main() {
       expect(line, "your server answered with something this app couldn't use");
       for (final jargon in ['TLS', '500', 'JSON', 'parse']) {
         expect(line, isNot(contains(jargon)));
+      }
+    });
+
+    test('an unnamed fault claims neither the network nor the server', () {
+      // The class exists because the transport's `unclassified` fault could not
+      // be placed among the other four without asserting something this phone
+      // has no evidence for. So the sentence is checked for what it must NOT
+      // say: the two halves of the path, and the remedy.
+      final line = reason(cannotCheck(const FetchFailed(FetchFailureClass.unknownFailure)))!;
+      expect(line, "it couldn't check, and this device can't say why");
+      expect(line, isNot(contains('network')));
+      expect(line, isNot(contains('server')));
+      expect(line, isNot(contains('pairing')));
+
+      // And it is not any of the other four, which is the whole point of adding
+      // it rather than reusing the nearest one.
+      for (final other
+          in FetchFailureClass.values.where((c) => c != FetchFailureClass.unknownFailure)) {
+        expect(reason(cannotCheck(FetchFailed(other))), isNot(line), reason: '$other');
       }
     });
 
