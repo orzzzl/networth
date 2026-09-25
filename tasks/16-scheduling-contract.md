@@ -1,7 +1,8 @@
 # Task 16: Link scheduling and archive capture decision
 
 Status: A approved and merged in PR #115; capture-boundary implementation
-is in review. Scheduler implementation and live acceptance remain owed.
+merged in PR #118. Socket timeout/no-retry policy is the next review slice.
+Scheduler implementation and live acceptance remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
 ## Decision: restore the specified capture boundary (A)
@@ -50,6 +51,34 @@ A second inspection found `PlaidClient._call()` calls `method(request)` with no
 explicit request timeout; `_build_api()` sets no finite timeout policy. Transport
 bounds also need implementation and SDK-specific verification before any
 exchange-latency claim is accepted.
+
+## Transport policy implementation
+
+The SDK wrapper supplies a 10-second connect timeout and a 30-second read
+inactivity timeout for Link create/get/exchange. Other calls, including health
+and metadata, use 10/120 seconds so slower data fetches have a separate budget.
+These are explicit operating limits, not measured provider latency guarantees;
+an exchange that reaches one remains uncertain and is never retried by the
+worker. The real SDK transport disables retries **and redirects**, including
+connection-error retries; one wrapper invocation cannot hide another send.
+
+Verified against the locked plaid-python 43.0.0 and urllib3 2.7.0 path, with
+synthetic loopback responses and a failing connection factory. The tests observe
+what reaches urllib3 through SDK serialization, count actual redirect requests,
+and exercise a silent exchange response followed by worker restart with no replay.
+The earlier capture regression also now counts live reads from before the build,
+covering PR118 review's previously unguarded interval before the encryption gate.
+
+**These limits do not establish the five-minute wall-clock target.** urllib3's
+connect/read timeouts do not bound blocking name resolution or a response that
+keeps supplying bytes inside the inactivity interval. Multiple resolved addresses
+can also spend multiple connect waits. See the upstream
+[Timeout notes](https://urllib3.readthedocs.io/en/2.7.0/reference/urllib3.util.html#urllib3.util.Timeout).
+The scheduler still owes capture admission, request/result fairness, recovery
+metadata accounting, and an explicit latency envelope. Do not add the two socket
+numbers and call the sum a whole-operation deadline. No process kill is added:
+a returned credential must still reach durability, and a timed-out exchange
+remains subject to the existing uncertain-send fence.
 
 ## A: capture under lock; seal the immutable copy after release
 

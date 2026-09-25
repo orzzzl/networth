@@ -31,13 +31,13 @@ class MetadataApi(FakeSandboxApi):
         )
         self.metadata_requests: list[dict[str, Any]] = []
 
-    def item_get(self, item_get_request: Any) -> Any:
+    def item_get(self, item_get_request: Any, **kwargs: Any) -> Any:
         self.metadata_requests.append(model_to_dict(item_get_request))
         if isinstance(self.item_response, Exception):
             raise self.item_response
         return self.item_response
 
-    def institutions_get_by_id(self, request: Any) -> Any:
+    def institutions_get_by_id(self, request: Any, **kwargs: Any) -> Any:
         self.metadata_requests.append(model_to_dict(request))
         if isinstance(self.institution_response, Exception):
             raise self.institution_response

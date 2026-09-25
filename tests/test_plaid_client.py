@@ -110,37 +110,41 @@ class FakeApi:
         self.outcome = outcome
         self.calls: list[str] = []
 
-    def item_get(self, item_get_request: Any) -> Any:
+    def item_get(self, item_get_request: Any, **kwargs: Any) -> Any:
         self.calls.append(item_get_request.access_token)
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
 
-    def institutions_get_by_id(self, request: Any) -> Any:
+    def institutions_get_by_id(self, request: Any, **kwargs: Any) -> Any:
         raise AssertionError("this test must not call /institutions/get_by_id")
 
-    def institutions_get(self, institutions_get_request: Any) -> Any:
+    def institutions_get(self, institutions_get_request: Any, **kwargs: Any) -> Any:
         raise AssertionError("an item-status test must not call /institutions/get")
 
-    def sandbox_public_token_create(self, sandbox_public_token_create_request: Any) -> Any:
+    def sandbox_public_token_create(
+        self, sandbox_public_token_create_request: Any, **kwargs: Any
+    ) -> Any:
         raise AssertionError("an item-status test must not call /sandbox/public_token/create")
 
-    def item_public_token_exchange(self, item_public_token_exchange_request: Any) -> Any:
+    def item_public_token_exchange(
+        self, item_public_token_exchange_request: Any, **kwargs: Any
+    ) -> Any:
         raise AssertionError("an item-status test must not call /item/public_token/exchange")
 
-    def link_token_create(self, link_token_create_request: Any) -> Any:
+    def link_token_create(self, link_token_create_request: Any, **kwargs: Any) -> Any:
         raise AssertionError("an item-status test must not call /link/token/create")
 
-    def link_token_get(self, link_token_get_request: Any) -> Any:
+    def link_token_get(self, link_token_get_request: Any, **kwargs: Any) -> Any:
         raise AssertionError("an item-status test must not call /link/token/get")
 
-    def accounts_balance_get(self, accounts_balance_get_request: Any) -> Any:
+    def accounts_balance_get(self, accounts_balance_get_request: Any, **kwargs: Any) -> Any:
         raise AssertionError("an item-status test must not call /accounts/balance/get")
 
-    def accounts_get(self, accounts_get_request: Any) -> Any:
+    def accounts_get(self, accounts_get_request: Any, **kwargs: Any) -> Any:
         raise AssertionError("an item-status test must not call /accounts/get")
 
-    def investments_holdings_get(self, investments_holdings_get_request: Any) -> Any:
+    def investments_holdings_get(self, investments_holdings_get_request: Any, **kwargs: Any) -> Any:
         raise AssertionError("an item-status test must not call /investments/holdings/get")
 
 
@@ -528,7 +532,7 @@ def test_an_institution_without_an_id_is_a_failure() -> None:
 
 
 def raising_sandbox_client(exc: Exception) -> PlaidClient:
-    def boom(_request: Any) -> Any:
+    def boom(_request: Any, **kwargs: Any) -> Any:
         raise exc
 
     return PlaidClient(CREDENTIALS, api=SimpleNamespace(institutions_get=boom))
@@ -933,7 +937,7 @@ def test_exchange_identity_cannot_echo_bearer_material(field: str) -> None:
 
 
 def test_http_failure_carries_request_id_as_structured_evidence() -> None:
-    def boom(_request: Any) -> Any:
+    def boom(_request: Any, **kwargs: Any) -> Any:
         raise api_exception(400, json.dumps({"request_id": "abc123XYZ"}))
 
     client = PlaidClient(CREDENTIALS, api=SimpleNamespace(item_public_token_exchange=boom))

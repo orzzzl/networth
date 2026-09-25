@@ -90,6 +90,12 @@ from networth.plaid.observation import RecordSet, record_set
 # is re-raised explicitly below.
 _TRANSPORT_ERRORS = (urllib3.exceptions.HTTPError, OSError)
 
+# Socket limits, not a wall-clock deadline: DNS and a response that keeps
+# delivering bytes can outlive these values. Task 16 must budget those separately.
+_REQUEST_TIMEOUT = (10.0, 120.0)
+_LINK_REQUEST_TIMEOUT = (10.0, 30.0)
+_LINK_STEPS = frozenset({"link/token/create", "link/token/get", "item/public_token/exchange"})
+
 # Distinguishes "the attribute is absent" from "the attribute is None". For
 # `item.error` those are opposite facts: absent means the response was not the
 # shape we understand, None means Plaid affirmatively reported no error.
@@ -183,23 +189,27 @@ class _PlaidApi(Protocol):
     inherits: the suite makes no live call).
     """
 
-    def item_get(self, item_get_request: ItemGetRequest) -> Any: ...
-    def institutions_get(self, institutions_get_request: InstitutionsGetRequest) -> Any: ...
-    def institutions_get_by_id(self, request: InstitutionsGetByIdRequest) -> Any: ...
+    def item_get(self, item_get_request: ItemGetRequest, **kwargs: Any) -> Any: ...
+    def institutions_get(
+        self, institutions_get_request: InstitutionsGetRequest, **kwargs: Any
+    ) -> Any: ...
+    def institutions_get_by_id(self, request: InstitutionsGetByIdRequest, **kwargs: Any) -> Any: ...
     def sandbox_public_token_create(
-        self, sandbox_public_token_create_request: SandboxPublicTokenCreateRequest
+        self, sandbox_public_token_create_request: SandboxPublicTokenCreateRequest, **kwargs: Any
     ) -> Any: ...
     def item_public_token_exchange(
-        self, item_public_token_exchange_request: ItemPublicTokenExchangeRequest
+        self, item_public_token_exchange_request: ItemPublicTokenExchangeRequest, **kwargs: Any
     ) -> Any: ...
-    def link_token_create(self, link_token_create_request: LinkTokenCreateRequest) -> Any: ...
-    def link_token_get(self, link_token_get_request: LinkTokenGetRequest) -> Any: ...
+    def link_token_create(
+        self, link_token_create_request: LinkTokenCreateRequest, **kwargs: Any
+    ) -> Any: ...
+    def link_token_get(self, link_token_get_request: LinkTokenGetRequest, **kwargs: Any) -> Any: ...
     def accounts_balance_get(
-        self, accounts_balance_get_request: AccountsBalanceGetRequest
+        self, accounts_balance_get_request: AccountsBalanceGetRequest, **kwargs: Any
     ) -> Any: ...
-    def accounts_get(self, accounts_get_request: AccountsGetRequest) -> Any: ...
+    def accounts_get(self, accounts_get_request: AccountsGetRequest, **kwargs: Any) -> Any: ...
     def investments_holdings_get(
-        self, investments_holdings_get_request: InvestmentsHoldingsGetRequest
+        self, investments_holdings_get_request: InvestmentsHoldingsGetRequest, **kwargs: Any
     ) -> Any: ...
 
 
@@ -875,7 +885,12 @@ class PlaidClient:
     def _call(self, step: str, method: Any, request: Any) -> Any:
         """Every raising call goes through here, so every one redacts alike."""
         try:
-            return method(request)
+            return method(
+                request,
+                _request_timeout=(
+                    _LINK_REQUEST_TIMEOUT if step in _LINK_STEPS else _REQUEST_TIMEOUT
+                ),
+            )
         except urllib3.exceptions.LocationValueError:
             # Our bug, not the environment's — the URL *we* built is not a URL.
             # The same carve-out `item_get` documents below: reported as a call
@@ -914,7 +929,7 @@ class PlaidClient:
         """
         request = ItemGetRequest(access_token=access_token)
         try:
-            response = self._api.item_get(request)
+            response = self._api.item_get(request, _request_timeout=_REQUEST_TIMEOUT)
         except ApiException as exc:
             code, kind = _api_exception_fields(exc)
             if code is None and kind is None:
@@ -1347,4 +1362,8 @@ def _build_api(credentials: PlaidCredentials) -> _PlaidApi:
             "secret": credentials.secret,
         },
     )
+    # One wrapper invocation is one send attempt. In particular, a redirect
+    # must not re-POST a public-token exchange behind its durable SQL claim.
+    # False disables connect/read/status retries and redirects in urllib3.
+    configuration.retries = False
     return cast("_PlaidApi", plaid_api.PlaidApi(plaid.ApiClient(configuration)))

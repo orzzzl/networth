@@ -93,14 +93,14 @@ class _Finished(FakeSandboxApi):
         super().__init__(**kw)
         self._public_tokens = public_tokens
 
-    def link_token_get(self, link_token_get_request: Any) -> Any:
+    def link_token_get(self, link_token_get_request: Any, **kwargs: Any) -> Any:
         return self._answer(
             "link_token_get",
             link_sessions_response(sessions=[completed_session(public_tokens=self._public_tokens)]),
             link_token_get_request,
         )
 
-    def item_get(self, item_get_request: Any) -> Any:
+    def item_get(self, item_get_request: Any, **kwargs: Any) -> Any:
         # Overridden deliberately: the base fake refuses, so a test that reaches
         # /item/get has to say it meant to. Measurement (ii)'s second half is the
         # only caller, and it is the half that decides 07a's recovery.
@@ -303,7 +303,9 @@ def test_exchange_twice_records_the_refusal_and_still_probes_the_first_token(
             super().__init__()
             self._exchanges = 0
 
-        def item_public_token_exchange(self, request: Any) -> Any:
+        def item_public_token_exchange(
+            self, item_public_token_exchange_request: Any, **kwargs: Any
+        ) -> Any:
             self._exchanges += 1
             if self._exchanges > 1:
                 # A real Plaid refusal, so the wrapper's redaction runs: the body
@@ -312,7 +314,7 @@ def test_exchange_twice_records_the_refusal_and_still_probes_the_first_token(
                 exc = ApiException(status=400, reason="Bad Request")
                 exc.body = '{"error_code":"INVALID_PUBLIC_TOKEN","secret":"never-print-me"}'
                 raise exc
-            return super().item_public_token_exchange(request)
+            return super().item_public_token_exchange(item_public_token_exchange_request, **kwargs)
 
     api = _RefusesTheSecond()
     _over_a_fake_sdk(monkeypatch, api)

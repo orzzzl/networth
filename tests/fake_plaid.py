@@ -197,30 +197,34 @@ class FakeSandboxApi:
             raise answer
         return answer
 
-    def item_get(self, item_get_request: Any) -> Any:
+    def item_get(self, item_get_request: Any, **kwargs: Any) -> Any:
         # Present because the SDK protocol has it, and raising because no test that
         # uses this fake should be reaching the item poller: a silently-answered
         # call is how a test stops testing what its name says.
         raise AssertionError("the Link rehearsal must not call /item/get")
 
-    def institutions_get_by_id(self, request: Any) -> Any:
+    def institutions_get_by_id(self, request: Any, **kwargs: Any) -> Any:
         raise AssertionError("this test must not call /institutions/get_by_id")
 
-    def institutions_get(self, institutions_get_request: Any) -> Any:
+    def institutions_get(self, institutions_get_request: Any, **kwargs: Any) -> Any:
         return self._answer(
             "institutions_get",
             SimpleNamespace(institutions=[SimpleNamespace(institution_id=INSTITUTION)]),
             institutions_get_request,
         )
 
-    def sandbox_public_token_create(self, sandbox_public_token_create_request: Any) -> Any:
+    def sandbox_public_token_create(
+        self, sandbox_public_token_create_request: Any, **kwargs: Any
+    ) -> Any:
         return self._answer(
             "sandbox_public_token_create",
             SimpleNamespace(public_token=PUBLIC_TOKEN),
             sandbox_public_token_create_request,
         )
 
-    def item_public_token_exchange(self, item_public_token_exchange_request: Any) -> Any:
+    def item_public_token_exchange(
+        self, item_public_token_exchange_request: Any, **kwargs: Any
+    ) -> Any:
         return self._answer(
             "item_public_token_exchange",
             # `request_id` is a *required* field of the SDK's response model —
@@ -235,7 +239,7 @@ class FakeSandboxApi:
             item_public_token_exchange_request,
         )
 
-    def link_token_create(self, link_token_create_request: Any) -> Any:
+    def link_token_create(self, link_token_create_request: Any, **kwargs: Any) -> Any:
         return self._answer(
             "link_token_create",
             SimpleNamespace(
@@ -247,7 +251,7 @@ class FakeSandboxApi:
             link_token_create_request,
         )
 
-    def link_token_get(self, link_token_get_request: Any) -> Any:
+    def link_token_get(self, link_token_get_request: Any, **kwargs: Any) -> Any:
         # The default is the **pre-start** shape — minted, nobody has opened the
         # URL — which is the half of task 06a's F7 criterion 2 that has been
         # asserted against the live API (criterion 2a, Sandbox 2026-09-09): no
@@ -266,15 +270,15 @@ class FakeSandboxApi:
             link_token_get_request,
         )
 
-    def accounts_balance_get(self, accounts_balance_get_request: Any) -> Any:
+    def accounts_balance_get(self, accounts_balance_get_request: Any, **kwargs: Any) -> Any:
         return self._answer(
             "accounts_balance_get", _accounts_response(), accounts_balance_get_request
         )
 
-    def accounts_get(self, accounts_get_request: Any) -> Any:
+    def accounts_get(self, accounts_get_request: Any, **kwargs: Any) -> Any:
         return self._answer("accounts_get", _accounts_response(), accounts_get_request)
 
-    def investments_holdings_get(self, investments_holdings_get_request: Any) -> Any:
+    def investments_holdings_get(self, investments_holdings_get_request: Any, **kwargs: Any) -> Any:
         return self._answer(
             "investments_holdings_get", _holdings_response(), investments_holdings_get_request
         )
