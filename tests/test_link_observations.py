@@ -447,7 +447,7 @@ def test_migration_preserves_prior_adjudication_when_reopening(tmp_path: Path) -
         (AUDIT, FLOW, STAMP, STAMP),
     )
     db.commit()
-    assert migrate(db) == (7, 8, 9)
+    assert migrate(db) == (7, 8, 9, 10)
     assert (
         db.execute("SELECT resolution_note FROM link_observation_adjudication").fetchone()[0]
         == "Synthetic prior review"
