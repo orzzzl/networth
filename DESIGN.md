@@ -3817,8 +3817,13 @@ one.)*
    - **A shared lock:** token writes and archive builds both take an exclusive
      `flock` on `/etc/networth/.tokenstore.lock`. The builder holds it across
      `VACUUM INTO` **and** the token-file copy, so no Link can land between the
-     two halves. It is held for well under a second and blocks nothing but
-     another token write.
+     two halves, and releases it before manifest creation and encryption (§14a.1
+     steps 2–4). Capture copies and reads the full database and token files;
+     its duration grows with their size and storage latency. No sub-second bound
+     has been established. It can delay another capture, token write, or
+     `TokenStore.deleting()` caller (which holds the lock across its DB update).
+     Task 16 must measure and bound those holds before claiming its Link latency
+     target; encryption outside the lock alone does not establish that bound.
 
 **The archive is published atomically on both sides**, and the build side is the
 one that is easy to forget. On the VPS the builder writes to a temporary name in

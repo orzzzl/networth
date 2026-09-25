@@ -532,3 +532,121 @@ def test_release_reads_server_clock_after_acquiring_request_lock(
     with pytest.raises(LifecycleError):
         authorize_release(db, store, record, clock=lambda: instant)
     assert db.execute("SELECT url_release_authorized_at FROM link_request").fetchone() == (None,)
+
+
+@pytest.mark.parametrize("probe", [False, True], ids=["current", "probe"])
+@pytest.mark.parametrize("stage", ["_manifest_for", "seal"], ids=["manifest", "encryption"])
+def test_archive_releases_capture_lock_before_two_link_exchanges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: bool, stage: str
+) -> None:
+    """DESIGN §14a.1 step 2 releases before steps 3–4, for both archive kinds.
+
+    The wide-lock control stalls the first credential write and cannot start the
+    second exchange until the gate opens. Existing Items in the captured DB make
+    verification exercise real bindings, not an empty digest; later Items must
+    not leak into that copy's manifest or token-file list.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import networth.backup.archive as archive
+    from networth.filelock import exclusive_file_lock
+
+    class DistinctClient(Client):
+        def item_public_token_exchange(self, token: str) -> ExchangedItem:
+            self.exchanges += 1
+            return ExchangedItem(
+                f"synthetic-access-{self.exchanges}",
+                f"synthetic-item-{self.exchanges}",
+                "syntheticrequest",
+            )
+
+    database = tmp_path / "db.sqlite"
+    tokens = TokenStore(tmp_path / "tokens")
+    client = DistinctClient()
+    db = sqlite3.connect(database)
+    migrate(db)
+
+    def mint_pair() -> list[str]:
+        client.poll = LinkSessionPoll(LinkSessionShape.SESSIONS_ABSENT, ())
+        flows = [
+            mint_request(db, tokens, client, country_codes=("US",), clock=lambda: NOW).flow_id
+            for _ in range(2)
+        ]
+        client.poll = LinkSessionPoll(
+            LinkSessionShape.ITEM_ADDED,
+            (LinkSessionRecord("synthetic-session", NOW, NOW, ("synthetic-public",), 1),),
+        )
+        return flows
+
+    for flow in mint_pair():
+        run_lifecycle(db, tokens, client, flow_id=flow, country_codes=("US",), clock=lambda: NOW)
+    assert db.execute("SELECT count(*) FROM item").fetchone() == (2,)
+    flows = mint_pair()
+    db.close()
+
+    entered, release = threading.Event(), threading.Event()
+    original = getattr(archive, stage)
+
+    def gated(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert release.wait(timeout=10), "archive gate was never released"
+        return original(*args, **kwargs)
+
+    def no_live_read(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("archive reread the live store after capture")
+
+    def process() -> list[str]:
+        connection = sqlite3.connect(database)
+        try:
+            for flow in flows:
+                result = run_lifecycle(
+                    connection,
+                    tokens,
+                    client,
+                    flow_id=flow,
+                    country_codes=("US",),
+                    clock=lambda: NOW,
+                )
+                assert not result.worker.failed
+            refs = [row[0] for row in connection.execute("SELECT secret_ref FROM item")]
+            assert len(refs) == 4
+            return refs
+        finally:
+            connection.close()
+
+    key = bytes(range(32))
+    builder = archive.BackupBuilder(
+        database=database, token_store=tokens, archive_dir=tmp_path / "archives", backup_key=key
+    )
+    monkeypatch.setattr(archive, stage, gated)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        build = executor.submit(
+            lambda: builder.build_probe(now=NOW) if probe else builder.build_current(now=NOW)
+        )
+        try:
+            assert entered.wait(timeout=5)
+            # This is another thread's flock, not the wrapper's reentrant path.
+            with exclusive_file_lock(tokens.lock_path, blocking=False):
+                pass
+            monkeypatch.setattr(archive, "_snapshot_database", no_live_read)
+            monkeypatch.setattr(archive, "_read_token_files", no_live_read)
+            worker = executor.submit(process)
+            refs = worker.result(timeout=5)
+            assert client.exchanges == 4
+            # Reopen independently: both returned credentials are durable while
+            # the archive is still held at the event, before gate release.
+            reopened = TokenStore(tokens.directory)
+            assert {reopened.get(ref).reveal() for ref in refs} == {
+                f"synthetic-access-{number}" for number in range(1, 5)
+            }
+            assert not build.done()
+        finally:
+            release.set()
+        result = build.result(timeout=5)
+    verified = archive.verify_archive(result.path, key)
+    assert verified.manifest.item_count == 2
+    # Four retained link tokens are not Item credentials. Later access tokens
+    # must not be included as new orphans by a post-capture live read.
+    assert verified.orphan_token_count == 4
+    assert verified.manifest.db_row_counts["item"] == 2

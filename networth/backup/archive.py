@@ -633,8 +633,12 @@ class BackupBuilder:
         kind: ArchiveKind,
         built_at: datetime,
         probe_generation: int,
+        blocking: bool = True,
     ) -> tuple[bytes, ArchiveManifest]:
-        captured = _capture(self.database, self.token_store, self.archive_dir, archive_id)
+        # DESIGN §14a.1 step 2: capture coherently, then release before deriving
+        # the manifest and sealing. Only these immutable bytes feed steps 3–4.
+        with exclusive_file_lock(self.token_store.lock_path, blocking=blocking):
+            captured = _capture(self.database, self.token_store, self.archive_dir, archive_id)
         manifest = _manifest_for(
             captured,
             backup_key=self._backup_key,
@@ -656,13 +660,12 @@ class BackupBuilder:
         with exclusive_file_lock(self._build_lock_path):
             self._cleanup_stale()
             with closing(open_database(self.database)) as connection:
-                with exclusive_file_lock(self.token_store.lock_path):
-                    envelope, manifest = self._build_bytes(
-                        archive_id=archive_id,
-                        kind=ArchiveKind.CURRENT,
-                        built_at=built_at,
-                        probe_generation=0,
-                    )
+                envelope, manifest = self._build_bytes(
+                    archive_id=archive_id,
+                    kind=ArchiveKind.CURRENT,
+                    built_at=built_at,
+                    probe_generation=0,
+                )
                 temporary = self.archive_dir / f".tmp-{archive_id}"
                 _write_temp(temporary, envelope)
                 sealed_on_disk = temporary.read_bytes()
@@ -699,46 +702,45 @@ class BackupBuilder:
                 refused.commit()
             raise ProbeBusyError("probe build refused: another archive build is active") from None
         try:
-            try:
-                token_lock = exclusive_file_lock(self.token_store.lock_path, blocking=False)
-                token_lock.__enter__()
-            except LockUnavailable:
-                with closing(open_database(self.database)) as refused:
-                    BackupStateStore(refused).count_probe_refusal()
-                    refused.commit()
-                raise ProbeBusyError("probe build refused: another token write is active") from None
-            try:
-                self._cleanup_stale()
-                with closing(open_database(self.database)) as connection:
-                    state_store = BackupStateStore(connection)
-                    state = state_store.probe()
-                    probe_path = self.archive_dir / PROBE_ARCHIVE
-                    if (
-                        state.built_at is not None
-                        and built_at - state.built_at < PROBE_COOLDOWN
-                        and probe_path.is_file()
-                    ):
-                        state_store.count_probe_refusal()
-                        connection.commit()
-                        return ProbeResult(state.generation, ProbeOutcome.REUSED, probe_path)
+            self._cleanup_stale()
+            with closing(open_database(self.database)) as connection:
+                state_store = BackupStateStore(connection)
+                state = state_store.probe()
+                probe_path = self.archive_dir / PROBE_ARCHIVE
+                if (
+                    state.built_at is not None
+                    and built_at - state.built_at < PROBE_COOLDOWN
+                    and probe_path.is_file()
+                ):
+                    # Reuse reads no token material, so it needs no token lock.
+                    # Keep the existing cooldown count, even during token writes.
+                    state_store.count_probe_refusal()
+                    connection.commit()
+                    return ProbeResult(state.generation, ProbeOutcome.REUSED, probe_path)
 
-                    generation = state.generation + 1
-                    archive_id = uuid.uuid4().hex
+                generation = state.generation + 1
+                archive_id = uuid.uuid4().hex
+                try:
                     envelope, _ = self._build_bytes(
                         archive_id=archive_id,
                         kind=ArchiveKind.PROBE,
                         built_at=built_at,
                         probe_generation=generation,
+                        blocking=False,
                     )
-                    temporary = self.archive_dir / f".tmp-probe-{archive_id}"
-                    _write_temp(temporary, envelope)
-                    os.replace(temporary, probe_path)
-                    _fsync_directory(self.archive_dir)
-                    state_store.mark_probe_built(generation=generation, built_at=built_at)
+                except LockUnavailable:
+                    state_store.count_probe_refusal()
                     connection.commit()
-                    return ProbeResult(generation, ProbeOutcome.BUILT, probe_path)
-            finally:
-                token_lock.__exit__(None, None, None)
+                    raise ProbeBusyError(
+                        "probe build refused: another token write is active"
+                    ) from None
+                temporary = self.archive_dir / f".tmp-probe-{archive_id}"
+                _write_temp(temporary, envelope)
+                os.replace(temporary, probe_path)
+                _fsync_directory(self.archive_dir)
+                state_store.mark_probe_built(generation=generation, built_at=built_at)
+                connection.commit()
+                return ProbeResult(generation, ProbeOutcome.BUILT, probe_path)
         finally:
             build_lock.__exit__(None, None, None)
 
