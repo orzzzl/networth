@@ -20,11 +20,17 @@ import 'instant.dart';
 /// defect this file's own task keeps finding elsewhere, so the count is now
 /// asserted in `copy_text_test.dart` rather than maintained by hand.)*
 ///
-/// Left private inside the view they would have been eight strings nothing could
-/// pin until then, which is how the sentence this change exists to delete got
-/// into the shipped build in the first place: it was *computed* correctly and
-/// then rendered by a branch no test looked at. Mapping a verdict to a sentence
-/// is a unit; laying it out is the widget's job.
+/// Left private inside the view they would have been strings nothing could pin
+/// until then, which is how the sentence this change exists to delete got into
+/// the shipped build in the first place: it was *computed* correctly and then
+/// rendered by a branch no test looked at. Mapping a verdict to a sentence is a
+/// unit; laying it out is the widget's job.
+///
+/// *(That sentence carried a second count — "eight" — which the recount above
+/// missed because the assertion in `copy_text_test.dart` reads the first
+/// paragraph only. The fix is to stop restating the number, not to widen a test
+/// that parses this file's prose: one count, pinned where the reader needs it,
+/// and none anywhere else.)*
 
 /// The copy row's own claim: what is on screen, and how old it is.
 ///

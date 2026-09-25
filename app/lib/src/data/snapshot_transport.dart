@@ -36,12 +36,12 @@ const Duration snapshotFetchDeadline = Duration(seconds: 10);
 /// Why an attempt produced no body — **what the transport observed**, not what
 /// the owner should be told.
 ///
-/// That distinction is the reason this enum exists next to §9.1's four error
-/// classes instead of being them. `FetchFailureClass` answers *what should he do
-/// about it* and its values are deliberately coarse; the mapping onto it is
-/// lossy, and it is written once, in one named place, where it can be argued
-/// with and tested. Classifying at the socket would spread that argument across
-/// every `catch`.
+/// That distinction is the reason this enum exists next to §9.1's error classes
+/// instead of being them. `FetchFailureClass` answers *what should he do about
+/// it* and its values are deliberately coarse; the mapping onto it is lossy, and
+/// it is written once, in one named place — `snapshot_refresh.dart`'s
+/// `classifyTransportFault` — where it can be argued with and tested.
+/// Classifying at the socket would spread that argument across every `catch`.
 enum SnapshotTransportFault {
   /// The tailnet name did not resolve.
   ///

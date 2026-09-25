@@ -11,6 +11,7 @@ import 'package:networth_app/src/data/history_store.dart';
 import 'package:networth_app/src/domain/clock_continuity.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
+import 'package:networth_app/src/pairing/pairing_vault.dart';
 
 /// A clock this device has proved continuous: the same interval measured two
 /// ways, agreeing exactly. The neutral value for tests whose subject is *not*
@@ -195,3 +196,113 @@ List<String> renderedText(WidgetTester tester, Finder root) {
       .where((value) => value.isNotEmpty)
       .toList();
 }
+
+// ---------------------------------------------------------------------------
+// The pairing layer's shared fixtures.
+//
+// Here rather than in `snapshot_reader_test.dart`, where they were written,
+// because `snapshot_refresh_test.dart` drives the same reader and needs the
+// same bundle, the same sealed envelopes and the same loopback route. A second
+// copy of an in-memory keystore or of a route that answers `404` is the twin
+// this file's own note warns about: two of them drift, and the one that drifts
+// is the one nobody is reading.
+// ---------------------------------------------------------------------------
+
+/// The pairing this phone holds. The third copy of these values is
+/// `scripts/seal-app-test-envelope.py` (`PAIRED_PAIRING_ID`), and the second is
+/// `pairing_vault_test.dart`; a drift between them does not pass quietly,
+/// because the happy path below stops opening `paired_envelope.json` and starts
+/// reporting [SnapshotRejection.otherPairing].
+const pairingId = '00000000-0000-4000-8000-000000000002';
+const encodedKey = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8';
+const tailnetName = 'vps.synthetic-tailnet.ts.net';
+const encoded = 'networth-pairing:v1:$pairingId:$encodedKey:$tailnetName';
+
+/// The same bundle with a different 32 bytes — a phone whose pairing id matches
+/// what the host is publishing and whose key does not.
+const otherKey = 'Hx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwYFBAMCAQA';
+const encodedWithOtherKey =
+    'networth-pairing:v1:$pairingId:$otherKey:$tailnetName';
+
+class MemoryPairingStore implements SecureStringStore {
+  MemoryPairingStore([this.stored]);
+
+  String? stored;
+
+  @override
+  Future<String?> read({required String key}) async => stored;
+
+  @override
+  Future<void> write({required String key, required String value}) async {
+    stored = value;
+  }
+
+  @override
+  Future<void> delete({required String key}) async {
+    stored = null;
+  }
+}
+
+/// Protected storage that fails rather than answers.
+///
+/// On a device this is a platform channel, so its failure is a `PlatformException`
+/// the keystore layer assembles. What reaches the reader is only that the call
+/// threw, which is what this reproduces.
+class FailingPairingStore implements SecureStringStore {
+  @override
+  Future<String?> read({required String key}) async =>
+      throw const KeystoreUnavailable();
+
+  @override
+  Future<void> write({required String key, required String value}) async =>
+      throw const KeystoreUnavailable();
+
+  @override
+  Future<void> delete({required String key}) async =>
+      throw const KeystoreUnavailable();
+}
+
+class KeystoreUnavailable implements Exception {
+  const KeystoreUnavailable();
+}
+
+/// A real HTTP server on the loopback, for the same reason
+/// `snapshot_transport_test.dart` uses one: the bytes the reader opens should
+/// arrive the way the daemon's bytes arrive, through the transport that ships,
+/// rather than through a stub standing where it goes.
+class TestRoute {
+  TestRoute(this._handle);
+
+  final Future<void> Function(HttpRequest request) _handle;
+  late HttpServer _server;
+
+  Future<int> start() async {
+    _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    _server.listen((request) async {
+      try {
+        await _handle(request);
+      } on Object {
+        // A handler that kills its own socket must not take the server down.
+      }
+    });
+    return _server.port;
+  }
+
+  Future<void> stop() => _server.close(force: true);
+}
+
+TestRoute serving(String body, {ContentType? contentType}) => TestRoute((request) async {
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..headers.contentType = contentType ?? ContentType.json
+        ..write(body);
+      await request.response.close();
+    });
+
+TestRoute answering(int status) => TestRoute((request) async {
+      request.response.statusCode = status;
+      await request.response.close();
+    });
+
+String envelopeFixture(String name) =>
+    File('test/fixtures/$name').readAsStringSync();

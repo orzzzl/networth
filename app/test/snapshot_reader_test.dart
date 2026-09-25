@@ -10,109 +10,10 @@ import 'package:networth_app/src/pairing/pairing_vault.dart';
 
 import 'fixtures.dart';
 
-/// The pairing this phone holds. The third copy of these values is
-/// `scripts/seal-app-test-envelope.py` (`PAIRED_PAIRING_ID`), and the second is
-/// `pairing_vault_test.dart`; a drift between them does not pass quietly,
-/// because the happy path below stops opening `paired_envelope.json` and starts
-/// reporting [SnapshotRejection.otherPairing].
-const pairingId = '00000000-0000-4000-8000-000000000002';
-const encodedKey = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8';
-const tailnetName = 'vps.synthetic-tailnet.ts.net';
-const encoded = 'networth-pairing:v1:$pairingId:$encodedKey:$tailnetName';
-
-/// The same bundle with a different 32 bytes — a phone whose pairing id matches
-/// what the host is publishing and whose key does not.
-const otherKey = 'Hx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwYFBAMCAQA';
-const encodedWithOtherKey =
-    'networth-pairing:v1:$pairingId:$otherKey:$tailnetName';
-
-class _MemoryStore implements SecureStringStore {
-  _MemoryStore([this.stored]);
-
-  String? stored;
-
-  @override
-  Future<String?> read({required String key}) async => stored;
-
-  @override
-  Future<void> write({required String key, required String value}) async {
-    stored = value;
-  }
-
-  @override
-  Future<void> delete({required String key}) async {
-    stored = null;
-  }
-}
-
-/// Protected storage that fails rather than answers.
-///
-/// On a device this is a platform channel, so its failure is a `PlatformException`
-/// the keystore layer assembles. What reaches the reader is only that the call
-/// threw, which is what this reproduces.
-class _FailingStore implements SecureStringStore {
-  @override
-  Future<String?> read({required String key}) async =>
-      throw const _KeystoreUnavailable();
-
-  @override
-  Future<void> write({required String key, required String value}) async =>
-      throw const _KeystoreUnavailable();
-
-  @override
-  Future<void> delete({required String key}) async =>
-      throw const _KeystoreUnavailable();
-}
-
-class _KeystoreUnavailable implements Exception {
-  const _KeystoreUnavailable();
-}
-
-/// A real HTTP server on the loopback, for the same reason
-/// `snapshot_transport_test.dart` uses one: the bytes the reader opens should
-/// arrive the way the daemon's bytes arrive, through the transport that ships,
-/// rather than through a stub standing where it goes.
-class _Route {
-  _Route(this._handle);
-
-  final Future<void> Function(HttpRequest request) _handle;
-  late HttpServer _server;
-
-  Future<int> start() async {
-    _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    _server.listen((request) async {
-      try {
-        await _handle(request);
-      } on Object {
-        // A handler that kills its own socket must not take the server down.
-      }
-    });
-    return _server.port;
-  }
-
-  Future<void> stop() => _server.close(force: true);
-}
-
-_Route _serving(String body, {ContentType? contentType}) => _Route((request) async {
-      request.response
-        ..statusCode = HttpStatus.ok
-        ..headers.contentType = contentType ?? ContentType.json
-        ..write(body);
-      await request.response.close();
-    });
-
-_Route _answering(int status) => _Route((request) async {
-      request.response.statusCode = status;
-      await request.response.close();
-    });
-
-String envelopeFixture(String name) =>
-    File('test/fixtures/$name').readAsStringSync();
-
 /// Builds a reader whose transport talks to [route], and returns its one
 /// outcome. [store] holds whatever the phone has been paired with.
 Future<SnapshotReadOutcome> _read({
-  _Route? route,
+  TestRoute? route,
   SecureStringStore? store,
   List<PairingProvision>? seen,
 }) async {
@@ -121,7 +22,7 @@ Future<SnapshotReadOutcome> _read({
     addTearDown(route.stop);
   }
   final reader = PairedSnapshotReader(
-    vault: PairingVault(store: store ?? _MemoryStore(encoded)),
+    vault: PairingVault(store: store ?? MemoryPairingStore(encoded)),
     openTransport: (provision) {
       seen?.add(provision);
       return SnapshotTransport(
@@ -139,7 +40,7 @@ void main() {
     test('an unpaired phone is not a failed fetch, and fetches nothing', () async {
       final seen = <PairingProvision>[];
 
-      final outcome = await _read(store: _MemoryStore(), seen: seen);
+      final outcome = await _read(store: MemoryPairingStore(), seen: seen);
 
       expect(outcome, isA<SnapshotReadNotPaired>());
       // The distinction is only worth anything if nothing was attempted: a
@@ -151,7 +52,7 @@ void main() {
     test('protected storage that throws is not "you are not paired"', () async {
       final seen = <PairingProvision>[];
 
-      final outcome = await _read(store: _FailingStore(), seen: seen);
+      final outcome = await _read(store: FailingPairingStore(), seen: seen);
 
       expect(outcome, isA<SnapshotReadPairingUnreadable>());
       expect(seen, isEmpty);
@@ -161,7 +62,7 @@ void main() {
       // The vault stores one string and parses it on the way out, so this is
       // what a truncated write leaves behind. Telling the owner he is unpaired
       // here would invite a re-pair, which rotates the key on a working host.
-      final outcome = await _read(store: _MemoryStore(encoded.substring(0, 30)));
+      final outcome = await _read(store: MemoryPairingStore(encoded.substring(0, 30)));
 
       expect(outcome, isA<SnapshotReadPairingUnreadable>());
     });
@@ -178,7 +79,7 @@ void main() {
     test('the provision handed to the transport is the stored one', () async {
       final seen = <PairingProvision>[];
 
-      await _read(route: _answering(HttpStatus.notFound), seen: seen);
+      await _read(route: answering(HttpStatus.notFound), seen: seen);
 
       expect(seen, hasLength(1));
       expect(seen.single.pairingId, pairingId);
@@ -188,7 +89,7 @@ void main() {
 
   group('the host delivered no body', () {
     test('404 arrives as the transport named it: no publication', () async {
-      final outcome = await _read(route: _answering(HttpStatus.notFound));
+      final outcome = await _read(route: answering(HttpStatus.notFound));
 
       expect(outcome, isA<SnapshotReadNotDelivered>());
       expect(
@@ -199,7 +100,7 @@ void main() {
 
     test('503 stays "the host is up and broken"', () async {
       final outcome = await _read(
-        route: _answering(HttpStatus.serviceUnavailable),
+        route: answering(HttpStatus.serviceUnavailable),
       );
 
       expect(
@@ -209,7 +110,7 @@ void main() {
     });
 
     test('a status the route does not define keeps its number', () async {
-      final outcome = await _read(route: _answering(418));
+      final outcome = await _read(route: answering(418));
 
       final transport = (outcome as SnapshotReadNotDelivered).transport;
       expect((transport as SnapshotUnexpectedStatus).statusCode, 418);
@@ -219,7 +120,7 @@ void main() {
       // A `200` of HTML. Reported as the publisher's fault it would blame the
       // host for the coffee shop; the transport's `notThisRoute` is the truth.
       final outcome = await _read(
-        route: _serving('<html>sign in</html>', contentType: ContentType.html),
+        route: serving('<html>sign in</html>', contentType: ContentType.html),
       );
 
       final transport = (outcome as SnapshotReadNotDelivered).transport;
@@ -242,7 +143,7 @@ void main() {
 
   group('bytes arrived and are not this phone\'s payload', () {
     test('a body that is not an envelope at all', () async {
-      final outcome = await _read(route: _serving('{"not":"an envelope"}'));
+      final outcome = await _read(route: serving('{"not":"an envelope"}'));
 
       expect(
         (outcome as SnapshotReadRejected).reason,
@@ -256,7 +157,7 @@ void main() {
       // are the *current* pairing's. Reported as `notAuthentic` this reads as
       // an attack; the answer is to pair again.
       final outcome = await _read(
-        route: _serving(envelopeFixture('known_envelope.json')),
+        route: serving(envelopeFixture('known_envelope.json')),
       );
 
       expect(
@@ -272,8 +173,8 @@ void main() {
       // alarming answer — for the ordinary event of having re-paired
       // elsewhere. Checking it first is what makes the advice *pair again*.
       final outcome = await _read(
-        route: _serving(envelopeFixture('known_envelope.json')),
-        store: _MemoryStore(encodedWithOtherKey),
+        route: serving(envelopeFixture('known_envelope.json')),
+        store: MemoryPairingStore(encodedWithOtherKey),
       );
 
       expect(
@@ -284,8 +185,8 @@ void main() {
 
     test('the right pairing and the wrong key does not verify', () async {
       final outcome = await _read(
-        route: _serving(envelopeFixture('paired_envelope.json')),
-        store: _MemoryStore(encodedWithOtherKey),
+        route: serving(envelopeFixture('paired_envelope.json')),
+        store: MemoryPairingStore(encodedWithOtherKey),
       );
 
       expect(
@@ -296,7 +197,7 @@ void main() {
 
     test('an authentic envelope whose two headers disagree is refused', () async {
       final outcome = await _read(
-        route: _serving(envelopeFixture('paired_seq_mismatch_envelope.json')),
+        route: serving(envelopeFixture('paired_seq_mismatch_envelope.json')),
       );
 
       expect(
@@ -307,7 +208,7 @@ void main() {
 
     test('an authentic envelope with no total is a payload fault', () async {
       final outcome = await _read(
-        route: _serving(envelopeFixture('paired_no_total_envelope.json')),
+        route: serving(envelopeFixture('paired_no_total_envelope.json')),
       );
 
       expect(
@@ -330,7 +231,7 @@ void main() {
       final expected = loadFixture(knownFixture);
 
       final outcome = await _read(
-        route: _serving(envelopeFixture('paired_envelope.json')),
+        route: serving(envelopeFixture('paired_envelope.json')),
       );
 
       expect(outcome, isA<SnapshotReadPayload>());
@@ -360,11 +261,11 @@ void main() {
       // `pairingId`, so an outcome that reported the envelope's id would file
       // this attempt's §9.1 facts under a pairing the phone has never had.
       final rejected = await _read(
-        route: _serving(envelopeFixture('known_envelope.json')),
+        route: serving(envelopeFixture('known_envelope.json')),
       );
-      final delivered = await _read(route: _answering(HttpStatus.notFound));
+      final delivered = await _read(route: answering(HttpStatus.notFound));
       final opened = await _read(
-        route: _serving(envelopeFixture('paired_envelope.json')),
+        route: serving(envelopeFixture('paired_envelope.json')),
       );
 
       expect((rejected as SnapshotAttempted).pairingId, pairingId);
@@ -383,15 +284,15 @@ void main() {
       // no fetch happened, so there is nothing to file and no id to file it
       // under. A `SnapshotAttempted` here would be a record of an attempt that
       // does not exist.
-      expect(await _read(store: _MemoryStore()), isNot(isA<SnapshotAttempted>()));
-      expect(await _read(store: _FailingStore()), isNot(isA<SnapshotAttempted>()));
+      expect(await _read(store: MemoryPairingStore()), isNot(isA<SnapshotAttempted>()));
+      expect(await _read(store: FailingPairingStore()), isNot(isA<SnapshotAttempted>()));
     });
 
     test('every attempt reads the vault again, so a rotation takes effect', () async {
       // Nothing caches the key. A reader that outlived a re-pair and kept using
       // the old one would fail every fetch after it with `notAuthentic`.
-      final store = _MemoryStore(encodedWithOtherKey);
-      final route = _serving(envelopeFixture('paired_envelope.json'));
+      final store = MemoryPairingStore(encodedWithOtherKey);
+      final route = serving(envelopeFixture('paired_envelope.json'));
       final port = await route.start();
       addTearDown(route.stop);
       final reader = PairedSnapshotReader(
