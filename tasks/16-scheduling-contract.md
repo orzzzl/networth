@@ -66,9 +66,10 @@ For **both** current and probe archives:
    semantics. No access credential is reaped, replaced or consolidated here.
 
 This makes dependency-free, pure-Python RFC 8439 encryption independent of
-credential durability without dropping the coherent-copy boundary. It does **not** make capture,
-filesystem I/O or arbitrarily many provider calls bounded; those remain explicit
-work and limitations below, not facts licensed by moving one context manager.
+credential durability without dropping the coherent-copy boundary. It does
+**not** make capture, filesystem I/O or arbitrarily many provider calls bounded;
+those remain explicit work and limitations below, not facts licensed by moving
+one context manager.
 
 Encryption cost is linear in database plus token bytes, not a tunable work
 factor. Claude measured `seal` at 1.41 MiB/s on `zelengs-macbook-air-2`
@@ -156,8 +157,7 @@ https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html
 3. Delay database/token capture separately: `VACUUM INTO`, snapshot `read_bytes()`
    and every token file are O(database + token bytes). Measure its contribution
    and implement the bounded wait/admission policy before making the five-minute
-   claim. A slow
-   encryption test alone must not stand in for this case.
+   claim. A slow encryption test alone must not stand in for this case.
 4. Exercise a slow first request, a second ready request, lock contention, multiple
    results, transport timeout, and uncertain exchange with no replay. Verify any
    SDK retry policy cannot repeat an exchange behind the claim.
