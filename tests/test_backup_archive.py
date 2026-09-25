@@ -301,3 +301,126 @@ def test_losing_probe_cannot_clean_the_active_builders_temporary_file(
     assert not worker.is_alive()
     assert failure == []
     assert outcome == [ProbeOutcome.BUILT]
+
+
+def test_probe_cooldown_reuses_during_token_write_and_counts_once(tmp_path: Path) -> None:
+    from networth.backup.state import BackupStateStore
+    from networth.filelock import exclusive_file_lock
+
+    database, tokens, connection = _seed(tmp_path)
+    builder = _builder(tmp_path, database, tokens)
+    initial = builder.build_probe(now=NOW)
+    entered, release = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        with exclusive_file_lock(tokens.lock_path):
+            entered.set()
+            assert release.wait(timeout=5)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            holder = executor.submit(hold)
+            try:
+                assert entered.wait(timeout=2)
+                reused = builder.build_probe(now=NOW + timedelta(seconds=1))
+                assert reused.outcome is ProbeOutcome.REUSED
+                assert reused.probe_generation == initial.probe_generation
+                state = BackupStateStore(connection).probe()
+                assert state.refusal_count == 1
+                # Once outside cooldown, a new build needs the token lock.
+                with pytest.raises(ProbeBusyError, match="token write"):
+                    builder.build_probe(now=NOW + timedelta(seconds=61))
+                after = BackupStateStore(connection).probe()
+                assert after.refusal_count == 2
+                assert after.generation == state.generation
+                assert after.built_at == state.built_at
+            finally:
+                release.set()
+            holder.result(timeout=2)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("probe", [False, True], ids=["current", "probe"])
+def test_delayed_capture_still_holds_token_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: bool
+) -> None:
+    """Moving encryption does not bound VACUUM plus DB/token reads under flock."""
+    import networth.backup.archive as archive
+    from networth.filelock import LockUnavailable, exclusive_file_lock
+
+    database, tokens, connection = _seed(tmp_path)
+    builder = _builder(tmp_path, database, tokens)
+    entered, release = threading.Event(), threading.Event()
+    original = archive._read_token_files
+
+    def delayed(store: TokenStore) -> dict[str, bytes]:
+        # The DB copy is already taken; keep the other half of capture pending.
+        entered.set()
+        assert release.wait(timeout=5)
+        return original(store)
+
+    monkeypatch.setattr(archive, "_read_token_files", delayed)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            build = executor.submit(
+                lambda: builder.build_probe(now=NOW) if probe else builder.build_current(now=NOW)
+            )
+            try:
+                assert entered.wait(timeout=2)
+                with (
+                    pytest.raises(LockUnavailable),
+                    exclusive_file_lock(tokens.lock_path, blocking=False),
+                ):
+                    pass
+            finally:
+                release.set()
+            result = build.result(timeout=5)
+        assert verify_archive(result.path, KEY).manifest.item_count == 2
+        with exclusive_file_lock(tokens.lock_path, blocking=False):
+            pass
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("probe", [False, True], ids=["current", "probe"])
+@pytest.mark.parametrize("stage", ["_read_token_files", "seal"])
+def test_failed_archive_releases_both_locks_and_next_build_cleans_temps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: bool, stage: str
+) -> None:
+    import networth.backup.archive as archive
+    from networth.backup.state import BackupStateStore
+    from networth.filelock import exclusive_file_lock
+
+    database, tokens, connection = _seed(tmp_path)
+    builder = _builder(tmp_path, database, tokens)
+    abandoned = builder.archive_dir / ".tmp-injected-failure"
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        abandoned.write_bytes(b"synthetic unfinished build")
+        raise RuntimeError("synthetic failure")
+
+    build = builder.build_probe if probe else builder.build_current
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(archive, stage, fail)
+            with pytest.raises(RuntimeError, match="synthetic failure"):
+                build(now=NOW)
+        assert connection.execute("SELECT count(*) FROM backup_archive").fetchone() == (0,)
+        assert BackupStateStore(connection).probe().generation == 0
+
+        # Another thread is necessary to detect leaked wrapper ownership too.
+        def acquire() -> None:
+            with (
+                exclusive_file_lock(tokens.lock_path, blocking=False),
+                exclusive_file_lock(builder._build_lock_path, blocking=False),
+            ):
+                pass
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(acquire).result(timeout=2)
+        result = build(now=NOW)
+        assert not abandoned.exists()
+        assert verify_archive(result.path, KEY).manifest.item_count == 2
+    finally:
+        connection.close()

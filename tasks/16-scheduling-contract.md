@@ -1,15 +1,14 @@
 # Task 16: Link scheduling and archive capture decision
 
-Status: Claude selected A on PR #115; contract corrections await review.
-No runtime or host change in this PR.
+Status: A approved and merged in PR #115; capture-boundary implementation
+is in review. Scheduler implementation and live acceptance remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
 ## Decision: restore the specified capture boundary (A)
 
 Claude selected **A: narrow the shared TokenStore lock to coherent capture**:
 https://github.com/orzzzl/networth/pull/115#issuecomment-5823630580.
-Implementation may proceed on that boundary; the prose corrections are reviewed
-separately. No owner decision is needed.
+Implementation proceeds on that approved boundary. No owner decision is needed.
 
 A is already normative: DESIGN.md §14a.1 build ordering step 2 releases the lock
 before manifest creation and sealing in steps 3–4. The wide implementation since
@@ -66,8 +65,8 @@ For **both** current and probe archives:
 4. Keep existing archive ledger, probe-generation, rename/fsync and recovery
    semantics. No access credential is reaped, replaced or consolidated here.
 
-This makes dependency-free, pure-Python RFC 8439 encryption independent of credential durability
-without dropping the coherent-copy boundary. It does **not** make capture,
+This makes dependency-free, pure-Python RFC 8439 encryption independent of
+credential durability without dropping the coherent-copy boundary. It does **not** make capture,
 filesystem I/O or arbitrarily many provider calls bounded; those remain explicit
 work and limitations below, not facts licensed by moving one context manager.
 
@@ -96,8 +95,9 @@ report refusal rather than silently bypassing the gate.
 It would also amend DESIGN.md §14a.1 step 2 and remove §14a's "well under a
 second" claim. An unresolved request may delay backups indefinitely; because
 sealing cost grows with archive size, that can become a steady state when the
-admission budget is exceeded, not merely a tail risk. A is selected. Neither option changes the 30-minute token deadline or adjudicates
-an uncertain exchange as safe to retry.
+admission budget is exceeded, not merely a tail risk. A is selected. Neither
+option changes the 30-minute token deadline or adjudicates an uncertain exchange
+as safe to retry.
 
 ## Scheduling shape to implement
 
@@ -123,8 +123,9 @@ an uncertain exchange as safe to retry.
   must account for multiple requests/results, recovery metadata, request-lock
   contention, capture duration and bounded transport waits. `TokenStore.deleting()`
   also holds this lock across its caller's database update; it currently has no
-  production caller, but scheduling a caller must account for that distinct hold. If those cannot fit,
-  revise this contract rather than silently weakening the acceptance claim.
+  production caller, but scheduling a caller must account for that distinct hold.
+  If those cannot fit, revise this contract rather than silently weakening the
+  acceptance claim.
 - A blanket process kill during exchange/credential persistence is not the normal
   deadline mechanism: it can strand a returned credential before durability.
   Transport timeout follows existing uncertain-send handling; it never authorizes
@@ -153,8 +154,9 @@ https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html
    refuses and counts once when the nonblocking token lock is unavailable. Test
    both paths and unchanged generation on reuse/refusal.
 3. Delay database/token capture separately: `VACUUM INTO`, snapshot `read_bytes()`
-   and every token file are O(database + token bytes). Measure its contribution and implement
-   the bounded wait/admission policy before making the five-minute claim. A slow
+   and every token file are O(database + token bytes). Measure its contribution
+   and implement the bounded wait/admission policy before making the five-minute
+   claim. A slow
    encryption test alone must not stand in for this case.
 4. Exercise a slow first request, a second ready request, lock contention, multiple
    results, transport timeout, and uncertain exchange with no replay. Verify any
