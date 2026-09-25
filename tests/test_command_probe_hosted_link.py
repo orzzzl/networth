@@ -61,7 +61,7 @@ class _EmptySessionList(FakeSandboxApi):
     criterion 2 is measured live rather than fixtured.
     """
 
-    def link_token_get(self, link_token_get_request: Any) -> Any:
+    def link_token_get(self, link_token_get_request: Any, **kwargs: Any) -> Any:
         return link_sessions_response(sessions=[])
 
 

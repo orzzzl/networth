@@ -593,8 +593,20 @@ def test_archive_releases_capture_lock_before_two_link_exchanges(
         assert release.wait(timeout=10), "archive gate was never released"
         return original(*args, **kwargs)
 
-    def no_live_read(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("archive reread the live store after capture")
+    reads: dict[str, int] = {"_snapshot_database": 0, "_read_token_files": 0}
+
+    def counted(name: str, call: Any) -> Any:
+        def once(*args: Any, **kwargs: Any) -> Any:
+            reads[name] += 1
+            assert reads[name] == 1, "archive reread the live store after capture"
+            return call(*args, **kwargs)
+
+        return once
+
+    # Installed before capture starts, so the interval before the stage gate
+    # is covered too (PR118 review's surviving post-lock reread mutation).
+    for name in reads:
+        monkeypatch.setattr(archive, name, counted(name, getattr(archive, name)))
 
     def process() -> list[str]:
         connection = sqlite3.connect(database)
@@ -629,8 +641,6 @@ def test_archive_releases_capture_lock_before_two_link_exchanges(
             # This is another thread's flock, not the wrapper's reentrant path.
             with exclusive_file_lock(tokens.lock_path, blocking=False):
                 pass
-            monkeypatch.setattr(archive, "_snapshot_database", no_live_read)
-            monkeypatch.setattr(archive, "_read_token_files", no_live_read)
             worker = executor.submit(process)
             refs = worker.result(timeout=5)
             assert client.exchanges == 4
@@ -644,6 +654,7 @@ def test_archive_releases_capture_lock_before_two_link_exchanges(
         finally:
             release.set()
         result = build.result(timeout=5)
+    assert reads == {"_snapshot_database": 1, "_read_token_files": 1}
     verified = archive.verify_archive(result.path, key)
     assert verified.manifest.item_count == 2
     # Four retained link tokens are not Item credentials. Later access tokens

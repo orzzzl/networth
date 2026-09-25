@@ -109,7 +109,7 @@ that row. He caught it, not us.)
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | **DONE** (#69, 2026-09-10) |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
-| 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | **WIP** (capture boundary implementation in review; scheduler implementation and live acceptance remain owed) |
+| 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | **WIP** (capture boundary merged #118; socket timeout/no-retry policy in progress; scheduler implementation and live acceptance remain owed) |
 | 27 | Periodic nudge to re-confirm a manual share count | 13, 15 | **claude** | codex | **DONE** (#65, 2026-09-09) |
 
 ### Phase 4 — getting the number onto the phone
