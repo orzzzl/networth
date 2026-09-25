@@ -7,6 +7,9 @@ import 'package:networth_app/src/data/seq_baseline_store.dart';
 import 'package:networth_app/src/data/snapshot_reader.dart';
 import 'package:networth_app/src/data/snapshot_refresh.dart';
 import 'package:networth_app/src/data/snapshot_transport.dart';
+import 'dart:async';
+
+import 'package:networth_app/src/domain/copy_freshness.dart';
 import 'package:networth_app/src/domain/fetch_diagnostics.dart';
 import 'package:networth_app/src/domain/held_copy.dart';
 import 'package:networth_app/src/domain/publication_seq.dart';
@@ -45,6 +48,47 @@ class _UnwritableHeldCopyStore implements HeldCopyStore {
   Future<void> hold(String source) async => throw const FileSystemException('no space left');
 }
 
+/// A baseline store whose writes fail, the other half of the same disk.
+class _UnwritableBaselineStore implements SeqBaselineStore {
+  _UnwritableBaselineStore(this.inner);
+
+  final SeqBaselineStore inner;
+
+  @override
+  Future<BaselineState> read(String pairingId) => inner.read(pairingId);
+
+  @override
+  Future<void> write(SeqBaseline baseline) async =>
+      throw const FileSystemException('no space left');
+}
+
+/// Parks the first `hold` until released, and counts them.
+///
+/// The count is what makes the serialization assertion a presence rather than a
+/// timing guess: while the first refresh is parked inside this store, a second
+/// that had started would have to reach it, and the count would be two.
+class _GatedHeldCopyStore implements HeldCopyStore {
+  _GatedHeldCopyStore(this.inner);
+
+  final HeldCopyStore inner;
+  final Completer<void> entered = Completer<void>();
+  final Completer<void> release = Completer<void>();
+  int holds = 0;
+
+  @override
+  Future<HeldCopyState> read(String pairingId) => inner.read(pairingId);
+
+  @override
+  Future<void> hold(String source) async {
+    holds += 1;
+    if (holds == 1) {
+      entered.complete();
+      await release.future;
+    }
+    await inner.hold(source);
+  }
+}
+
 void main() {
   late Directory directory;
   late FileFetchDiagnosticsStore diagnostics;
@@ -77,16 +121,17 @@ void main() {
   /// `snapshot_reader_test.dart` gives: the outcomes this file maps should be
   /// the outcomes the transport actually produces, not a hand-built set of them
   /// standing where they go.
-  Future<SnapshotRefreshOutcome> refresh({
+  Future<SnapshotRefresher> refresher({
     TestRoute? route,
     SecureStringStore? store,
     HeldCopyStore? copies,
+    SeqBaselineStore? baselineStore,
   }) async {
     final port = route == null ? 0 : await route.start();
     if (route != null) {
       addTearDown(route.stop);
     }
-    final refresher = SnapshotRefresher(
+    return SnapshotRefresher(
       reader: PairedSnapshotReader(
         vault: PairingVault(store: store ?? MemoryPairingStore(encoded)),
         openTransport: (provision) => SnapshotTransport(
@@ -96,12 +141,25 @@ void main() {
         ),
       ),
       diagnostics: diagnostics,
-      baselines: baselines,
+      baselines: baselineStore ?? baselines,
       heldCopies: copies ?? heldCopies,
       clock: () => at,
     );
-    return refresher.refresh();
   }
+
+  Future<SnapshotRefreshOutcome> refresh({
+    TestRoute? route,
+    SecureStringStore? store,
+    HeldCopyStore? copies,
+    SeqBaselineStore? baselineStore,
+  }) async =>
+      (await refresher(
+        route: route,
+        store: store,
+        copies: copies,
+        baselineStore: baselineStore,
+      ))
+          .refresh();
 
   TestRoute thePairedHost() => serving(envelopeFixture('paired_envelope.json'));
 
@@ -495,7 +553,7 @@ void main() {
   });
 
   group('a copy the phone could not keep', () {
-    test('the baseline is rolled back rather than left ahead of the copy', () async {
+    test('nothing is advanced, because nothing is written before the copy', () async {
       await givenBaseline(seqOf(-1));
 
       final outcome = await refresh(
@@ -504,27 +562,122 @@ void main() {
       );
 
       expect((outcome as RefreshKeptHeldCopy).refusal, RefreshRefusal.notStored);
-      // Left advanced, `last_fetch_seq == last_seq` would hold over a copy that
-      // never landed, and §9.1 would report `HOST_NOT_PUBLISHING` — *"nothing
-      // has been published since"* — about a host that had just published
-      // something this phone failed to keep.
+      // The order is the whole of it. With the baseline written first there was
+      // a window in which it named a `seq` no copy on disk carried, and the
+      // rollback that closed it could not run at all if the process was killed
+      // instead of the write failing.
       expect((await storedBaseline()).lastSeq, seqOf(-1));
       expect((await storedDiagnostics()).lastSuccess?.seq, servedSeq);
     });
 
-    test('a first payload that cannot be kept leaves the baseline as a floor', () async {
+    test('the copy on screen is never reported as confirmed by the host', () async {
+      // Codex's review probe on PR #119, adopted as a regression. The defect it
+      // found: with the baseline advanced and the copy write failed, conjunct 3
+      // compared 41 against 41 and §9.1 said `HOST_NOT_PUBLISHING` — *"nothing
+      // has been published since"* — over a copy the host had in fact just
+      // published past.
+      await refresh(route: thePairedHost());
+      final held = (await heldCopies.read(pairingId) as HeldCopyHeld).payload;
+      await givenBaseline(seqOf(-1));
+      await diagnostics.write(
+        FetchDiagnostics.succeeded(pairingId: pairingId, at: at, seq: servedSeq),
+      );
+
+      final state = evaluateCopyState(
+        publishedAt: held.publishedAt,
+        publishInterval: held.publishInterval,
+        grace: held.grace,
+        deviceNow: at.add(const Duration(days: 30)),
+        diagnostics: await diagnostics.read(pairingId),
+        baseline: await baselines.read(pairingId),
+        continuity: trustedClock,
+      ) as CopyStale;
+
+      expect(state.reason, isA<CannotCheck>());
+      expect((state.reason as CannotCheck).cause, isA<ServedPayloadNotHeld>());
+    });
+
+    test('a first payload that cannot be kept leaves no baseline at all', () async {
       final outcome = await refresh(
         route: thePairedHost(),
         copies: _UnwritableHeldCopyStore(heldCopies),
       );
 
       expect((outcome as RefreshKeptHeldCopy).refusal, RefreshRefusal.notStored);
-      // Nothing is rolled back here and nothing needs to be: the false host
-      // claim the rollback exists to prevent is a sentence about a rendered
-      // copy, and this phone has none. What is left refuses anything below it,
-      // which over-claims to nobody.
-      expect((await storedBaseline()).lastSeq, servedSeq);
+      expect(await baselines.read(pairingId), isA<BaselineAbsent>());
       expect(await heldCopies.read(pairingId), isA<HeldCopyAbsent>());
+    });
+
+    test('a baseline behind the copy is repaired, and does not clear a warning', () async {
+      // **The replay floor is the higher of the two records**, and this is where
+      // that is observable. The fixture serves one `seq`, so the refusal
+      // direction cannot be driven directly; the warning can. With the floor
+      // read from the baseline alone, `servedSeq > seqOf(-1)` would make this a
+      // newer publication and clear the warning — papering over an unexplained
+      // downgrade with a fetch that brought nothing new, which is the one thing
+      // §9.3 point 1 forbids.
+      await refresh(route: thePairedHost());
+      final warning = DowngradeWarning(
+        cause: DowngradeCause.olderPublication,
+        at: at.subtract(const Duration(days: 1)),
+        refusedSeq: seqOf(-4),
+      );
+      await givenBaseline(seqOf(-1), warning: warning);
+
+      expect(await refresh(route: thePairedHost()), isA<RefreshAccepted>());
+
+      final baseline = await storedBaseline();
+      expect(baseline.lastSeq, servedSeq, reason: 'the lagging baseline is repaired');
+      expect(baseline.warning, warning, reason: 'nothing newer than the copy arrived');
+    });
+
+    test('a baseline that cannot be written still accepts the copy on disk', () async {
+      final outcome = await refresh(
+        route: thePairedHost(),
+        baselineStore: _UnwritableBaselineStore(baselines),
+      );
+
+      // The copy is on disk, so the payload was accepted and the screen shows
+      // it. The floor does not lag with the baseline, because it is read from
+      // the copy — reporting a refusal here would say the phone kept the old
+      // copy while it is holding the new one.
+      expect(outcome, isA<RefreshAccepted>());
+      expect(await heldCopies.read(pairingId), isA<HeldCopyHeld>());
+      expect(await baselines.read(pairingId), isA<BaselineAbsent>());
+    });
+  });
+
+  group('two refreshes at once', () {
+    test('the second does not start until the first has finished', () async {
+      // Review's finding, and the reason it is a class rather than an instance:
+      // Dart has one isolate, so this is not thread-safety — every `await` in a
+      // refresh is a point where a second one can run to completion in between,
+      // read a baseline the first has already advanced, and act on it. The
+      // reproduction that found it had the first refresh roll back over a copy
+      // the second had accepted, leaving the replay floor below it.
+      await givenBaseline(seqOf(-1));
+      final gate = _GatedHeldCopyStore(heldCopies);
+      // **One refresher, deliberately.** The serialization is a property of the
+      // instance that owns the three stores, and two instances over one
+      // directory are outside its stated contract — a test that used two would
+      // be asserting something this class does not claim.
+      final one = await refresher(route: thePairedHost(), copies: gate);
+
+      final first = one.refresh();
+      await gate.entered.future;
+      final second = one.refresh();
+      // The gate is what proves serialization rather than a timing guess: the
+      // second refresh cannot have reached the copy store while the first is
+      // parked inside it.
+      await pumpEventQueue();
+      expect(gate.holds, 1);
+
+      gate.release.complete();
+      expect(await first, isA<RefreshAccepted>());
+      expect(await second, isA<RefreshAccepted>());
+      expect(gate.holds, 2);
+      expect((await storedBaseline()).lastSeq, servedSeq);
+      expect(await heldCopies.read(pairingId), isA<HeldCopyHeld>());
     });
   });
 }

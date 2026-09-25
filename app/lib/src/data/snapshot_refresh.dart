@@ -1,5 +1,6 @@
 import '../debug_log.dart';
 import '../domain/fetch_diagnostics.dart';
+import '../domain/held_copy.dart';
 import '../domain/payload_envelope.dart';
 import '../domain/payload_format_exception.dart';
 import '../domain/phone_payload.dart';
@@ -161,9 +162,13 @@ enum RefreshRefusal {
   /// corruption the bypass.
   baselineUnreadable,
 
-  /// I6 accepted it and the phone could not keep it — the baseline write or the
-  /// copy write failed. The records are left describing the copy that is still
-  /// on disk.
+  /// I6 accepted it and **the copy could not be written**. Nothing else was
+  /// advanced, because the copy is written first, so every record still
+  /// describes the copy that is on disk.
+  ///
+  /// A *baseline* write that fails after the copy landed is deliberately not
+  /// this: the payload is on disk and on screen, and the replay floor is read
+  /// from it — see [SnapshotRefresher].
   notStored,
 }
 
@@ -209,11 +214,39 @@ class SnapshotRefresher {
   /// a secret from that caller.
   final DateTime Function() clock;
 
+  /// Refreshes run one at a time, and the three stores are why.
+  ///
+  /// **This is a transaction across three files with no lock between them**, so
+  /// its read-decide-write has to be serialised by the thing that owns it.
+  /// Nothing here is thread-safety in the usual sense — Dart has one isolate —
+  /// and that is exactly the trap: every `await` in [_refresh] is a point where
+  /// a second `refresh()` can run to completion in between. Review reproduced
+  /// it: two refreshes of the same publication, the first parked in
+  /// `HeldCopyStore.hold`, and the second reading a baseline the first had
+  /// already advanced and acting on it. One refresh at a time removes the whole
+  /// class rather than the instance that was found.
+  ///
+  /// **The contract this cannot enforce, stated rather than implied:** it
+  /// serialises *this instance*. The three stores must have exactly one writer,
+  /// and this class is it; a second [SnapshotRefresher] over the same directory
+  /// is outside the contract, and on the phone there is one.
+  ///
+  /// Errors are swallowed from the chain, not from the caller: [_refresh] never
+  /// throws by contract, and a chain that a throw could poison would turn one
+  /// defect into a refresher that never runs again.
+  Future<SnapshotRefreshOutcome> refresh() {
+    final next = _queue.then((_) => _refresh());
+    _queue = next.then((_) {}, onError: (Object _) {});
+    return next;
+  }
+
+  Future<void> _queue = Future<void>.value();
+
   /// One refresh. **Never throws** — the same contract as the two layers under
   /// it, for the same reason: an attempt that escaped as an exception is an
   /// attempt no record learned about, and §9.1's predicate would go on comparing
   /// the previous attempt's facts as though nothing had been tried.
-  Future<SnapshotRefreshOutcome> refresh() async {
+  Future<SnapshotRefreshOutcome> _refresh() async {
     final outcome = await reader.read();
     // **One reading, taken after the attempt returned.** One instant for the
     // whole attempt means `FetchDiagnostics.succeeded` gets its two coinciding
@@ -353,119 +386,192 @@ class SnapshotRefresher {
     }
 
     final state = await baselines.read(pairingId);
-    switch (state) {
-      case BaselineUnreadable(:final reason):
-        // **Never accept-on-trust.** §9.3's accept-on-trust case is a phone with
-        // *no* baseline for its pairing; a stored one that will not parse is a
-        // different phone, and treating the two alike would make damaging one
-        // file the way to disable I6. The fetch still succeeded, so it is
-        // recorded as one — the predicate then reports `RecordsUnusable`, which
-        // is the true statement about this phone.
-        debugLog(() => 'baseline unreadable, payload not accepted: $reason');
-        await _writeSuccess(pairingId: pairingId, at: at, seq: seq);
-        return const RefreshKeptHeldCopy(RefreshRefusal.baselineUnreadable);
+    if (state case BaselineUnreadable(:final reason)) {
+      // **Never accept-on-trust.** §9.3's accept-on-trust case is a phone with
+      // *no* baseline for its pairing; a stored one that will not parse is a
+      // different phone, and treating the two alike would make damaging one
+      // file the way to disable I6. The fetch still succeeded, so it is recorded
+      // as one — the predicate then reports `RecordsUnusable`, which is the true
+      // statement about this phone.
+      debugLog(() => 'baseline unreadable, payload not accepted: $reason');
+      await _writeSuccess(pairingId: pairingId, at: at, seq: seq);
+      return const RefreshKeptHeldCopy(RefreshRefusal.baselineUnreadable);
+    }
+    final stored = state is BaselineHeld ? state.baseline : null;
+    final floor = await _replayFloor(pairingId, stored);
 
-      case BaselineHeld(:final baseline) when seq < baseline.lastSeq:
-        // I6's refusal. The baseline does **not** move — the phone keeps the
-        // newer copy it already holds — and the warning is persistent, clearing
-        // only when a greater `seq` actually arrives (§9.3 point 1).
-        await _warn(
-          pairingId: pairingId,
-          cause: DowngradeCause.olderPublication,
-          at: at,
-          refused: seq,
-          holding: baseline.lastSeq,
-        );
-        await _writeSuccess(pairingId: pairingId, at: at, seq: seq);
-        return const RefreshKeptHeldCopy(RefreshRefusal.downgradeRefused);
+    if (floor != null && seq < floor) {
+      // I6's refusal. The floor does **not** move down — the phone keeps the
+      // newer copy it already holds — and the warning is persistent, clearing
+      // only when a greater `seq` actually arrives (§9.3 point 1). Writing the
+      // floor back as `last_seq` also repairs a baseline that a partial write
+      // left behind the copy.
+      await _warn(
+        pairingId: pairingId,
+        cause: DowngradeCause.olderPublication,
+        at: at,
+        refused: seq,
+        holding: floor,
+      );
+      await _writeSuccess(pairingId: pairingId, at: at, seq: seq);
+      return const RefreshKeptHeldCopy(RefreshRefusal.downgradeRefused);
+    }
 
-      case BaselineAbsent():
-        return _accept(pairingId: pairingId, at: at, seq: seq, opened: opened, previous: null);
+    return _accept(
+      pairingId: pairingId,
+      at: at,
+      seq: seq,
+      opened: opened,
+      stored: stored,
+      floor: floor,
+    );
+  }
 
-      case BaselineHeld(:final baseline):
-        return _accept(
-          pairingId: pairingId,
-          at: at,
-          seq: seq,
-          opened: opened,
-          previous: baseline,
-        );
+  /// The `seq` at or below which a payload is a downgrade — **the higher of the
+  /// two records, not the baseline alone.**
+  ///
+  /// The baseline and the held copy are two files and one fact, and there is no
+  /// transaction between them: a write failure or a process kill between the two
+  /// leaves them disagreeing, and review found that the rollback this replaced
+  /// could not cover the second of those at all — nothing runs after a kill. So
+  /// the skew is treated as a *state to read correctly* rather than one to
+  /// prevent, and the reading is the maximum. `SeqBaseline.lastSeq` is *"the
+  /// `seq` of the payload the phone actually holds"*; when it is behind the copy
+  /// it is simply a stale reading of that, and the copy's own `seq` is the
+  /// fresher one. Taking the maximum means a half-finished accept can never
+  /// *lower* the bar an earlier accept set, which is the only direction that
+  /// costs anything.
+  ///
+  /// `null` means neither record names one — a phone with no baseline and no
+  /// readable copy, which is §9.3 point 3's accept-on-trust case.
+  ///
+  /// **A copy this build cannot read contributes nothing**, deliberately: an
+  /// unreadable or outdated copy has no `seq` to offer, and that is precisely
+  /// why the baseline is a separate file that survives it.
+  Future<PublicationSeq?> _replayFloor(String pairingId, SeqBaseline? stored) async {
+    final held = await _heldSeq(pairingId);
+    final baseline = stored?.lastSeq;
+    if (baseline == null || (held != null && held > baseline)) {
+      return held ?? baseline;
+    }
+    return baseline;
+  }
+
+  Future<PublicationSeq?> _heldSeq(String pairingId) async {
+    final HeldCopyState state;
+    try {
+      state = await heldCopies.read(pairingId);
+    } on Object catch (error) {
+      debugLog(() => 'held copy not read for the replay floor: $error');
+      return null;
+    }
+    if (state is! HeldCopyHeld) {
+      return null;
+    }
+    try {
+      return PublicationSeq.parse(state.payload.seq);
+    } on PayloadFormatException catch (error) {
+      // The copy is stored as the payload document, and `PhonePayload` does not
+      // fix the spelling of `seq` the way `PayloadEnvelope` does — so a damaged
+      // copy can carry one this cannot read. It contributes nothing rather than
+      // throwing; the baseline is still there.
+      debugLog(() => 'held copy seq unusable for the replay floor: $error');
+      return null;
     }
   }
 
-  /// §9.3's two accepting rows: `seq > last_seq` replaces the copy and advances
-  /// the baseline, `seq == last_seq` is *"nothing new"*.
+  /// §9.3's two accepting rows: a greater `seq` replaces the copy and advances
+  /// the floor, an equal one is *"nothing new"*.
   ///
-  /// **The baseline is written before the copy, and the copy write rolls it
-  /// back.** Baseline-first is the fail-safe order: a baseline ahead of the copy
-  /// refuses a replay, one behind it accepts one, and I6 is the invariant, not
-  /// the screen. But the field is defined as *"the `seq` of the payload the
-  /// phone **actually holds**"*, and conjunct 3 reads it that way — so a
-  /// baseline left advanced over a copy that never landed would satisfy
-  /// `last_fetch_seq == last_seq` and produce `HOST_NOT_PUBLISHING`: *"nothing
-  /// has been published since"* about a host that had just published something
-  /// this phone failed to keep. The rollback closes that window without
-  /// conceding the order; what is left needs two writes to fail in opposite
-  /// directions, and it is logged when it happens.
+  /// **The copy is written first and there is no rollback**, which reverses the
+  /// order this file shipped with, and the reason is the failure that order
+  /// could not cover. Baseline-first plus a rollback was chosen because a
+  /// baseline ahead of the copy refuses a replay while one behind accepts one —
+  /// true, but it treated the skew as something to undo, and **a process killed
+  /// between the two writes runs no rollback at all.** Review reached the same
+  /// place from the other side: when the rollback itself failed, the advanced
+  /// baseline satisfied `last_fetch_seq == last_seq` over a copy that never
+  /// landed and produced `HOST_NOT_PUBLISHING` — *"nothing has been published
+  /// since"* about a host that had just published. The rollback was written to
+  /// prevent exactly that and reintroduced it on its own failure path.
   ///
-  /// **It does not roll back a baseline that was absent**, and the asymmetry is
-  /// the argument rather than a gap in it. The false claim above needs a copy to
-  /// be about: `HOST_NOT_PUBLISHING` is a sentence over a rendered payload's
-  /// `published_at`, and a phone whose first accepted payload failed to land has
-  /// none to render. What the advanced baseline does there is refuse anything
-  /// below it — a floor, over-claiming to nobody — and the alternative is a
-  /// delete on a store that deliberately has no delete.
+  /// [_replayFloor] makes the skew safe instead of rare, and once it is safe the
+  /// order can be the honest one. Both partial states now read correctly:
   ///
-  /// **The copy is written on `==` too, not only on `>`.** It costs one
-  /// idempotent write and it is the only way out of a real state: a baseline at
-  /// `seq` with a damaged held copy would otherwise show nothing until the host
-  /// published again, which on a daemon that has stopped is never. Re-holding
-  /// the same publication cannot downgrade anything, because it is the
-  /// publication the baseline already names.
+  /// - **copy written, baseline not.** The floor comes from the copy, so I6 still
+  ///   refuses everything below the new `seq`. The baseline still names the old
+  ///   one, so conjunct 3 fails and §9.1 says `ServedPayloadNotHeld` —
+  ///   *"couldn't check"*, which blames nobody. The next refresh repairs it.
+  /// - **copy not written.** Nothing was advanced, because nothing is written
+  ///   before it. The phone holds what it held and the record says so.
+  ///
+  /// **The copy is written on an equal `seq` too, not only on a greater one.** It
+  /// costs one idempotent write and it is the only way out of a real state: a
+  /// floor at `seq` with a damaged held copy would otherwise show nothing until
+  /// the host published again, which on a daemon that has stopped is never.
+  /// Re-holding the publication the floor already names cannot downgrade
+  /// anything.
   Future<SnapshotRefreshOutcome> _accept({
     required String pairingId,
     required DateTime at,
     required PublicationSeq seq,
     required OpenedPayload opened,
-    required SeqBaseline? previous,
+    required SeqBaseline? stored,
+    required PublicationSeq? floor,
   }) async {
-    // Unchanged on `==`, so the warning §9.3 keeps is not cleared by a fetch
-    // that brought nothing new — *"not on the next successful fetch, which would
-    // let a single good response paper over an unexplained downgrade."*
-    final advancing = previous == null || seq > previous.lastSeq;
-    if (advancing) {
-      final advanced = SeqBaseline(pairingId: pairingId, lastSeq: seq);
-      if (!await _tryWriteBaseline(advanced)) {
-        await _writeSuccess(pairingId: pairingId, at: at, seq: seq);
-        return const RefreshKeptHeldCopy(RefreshRefusal.notStored);
-      }
-    }
-
     try {
       await heldCopies.hold(opened.text);
     } on Object catch (error) {
       // The text parsed on the way in — it is what `PayloadEnvelope.open` just
       // returned — so what can fail here is the filesystem.
       debugLog(() => 'held copy not written: $error');
-      if (advancing && previous != null && !await _tryWriteBaseline(previous)) {
-        debugLog(() => 'baseline left ahead of the held copy');
-      }
       await _writeSuccess(pairingId: pairingId, at: at, seq: seq);
       return const RefreshKeptHeldCopy(RefreshRefusal.notStored);
     }
 
+    // **Two different questions, and collapsing them clears a warning it must
+    // not.** Whether this is a *newer publication* is asked of the floor: §9.3
+    // clears the warning only when a `seq` greater than the one held arrives,
+    // *"not on the next successful fetch, which would let a single good response
+    // paper over an unexplained downgrade."* Whether the *baseline file* needs
+    // writing is asked of the baseline, so that one left behind the copy by a
+    // partial write is repaired here rather than waiting for a new publication.
+    final isNewerPublication = floor == null || seq > floor;
+    if (stored == null || stored.lastSeq != seq) {
+      final written = await _tryWriteBaseline(
+        SeqBaseline(
+          pairingId: pairingId,
+          lastSeq: seq,
+          warning: isNewerPublication ? null : stored?.warning,
+        ),
+      );
+      if (!written) {
+        // The copy is on disk, so the payload *was* accepted and the screen
+        // should show it. What lags is the baseline, and [_replayFloor] reads
+        // the copy, so the floor does not lag with it. Reporting this as a
+        // refusal would tell a caller the phone kept the old copy when it is
+        // holding the new one.
+        debugLog(() => 'baseline lags the held copy; the floor comes from the copy');
+      }
+    }
     await _writeSuccess(pairingId: pairingId, at: at, seq: seq);
     return RefreshAccepted(opened.payload);
   }
 
   /// Raise §9.3's persistent warning without disturbing what the phone holds.
   ///
-  /// [holding] is the baseline's current `last_seq`, and it is required for a
-  /// downgrade because the record cannot exist without one. A foreign pairing
-  /// passes none: its refusal is decided before any `seq` comparison, so on a
-  /// phone with no baseline there is no `last_seq` to attach the warning to —
-  /// and nothing for it to defend either, since a phone that has accepted no
-  /// payload under this pairing holds no copy that could be downgraded.
+  /// [holding] is the replay floor the refusal was measured against, and it is
+  /// required for a downgrade because the record cannot exist without one.
+  /// Writing it back as `last_seq` also repairs a baseline a partial write left
+  /// behind the held copy. A foreign pairing passes none: its refusal is decided
+  /// before any `seq` comparison, so on a phone with no baseline there is no
+  /// `last_seq` to attach the warning to — and nothing for it to defend either,
+  /// since a phone that has accepted no payload under this pairing holds no copy
+  /// that could be downgraded.
+  ///
+  /// The warning it writes **replaces** any warning already stored, which is the
+  /// right direction: both are refusals, and the newer one carries the `seq` and
+  /// the instant that are now true.
   /// [SeqBaseline] makes that unrepresentable rather than storing a placeholder,
   /// which is the same refusal `DowngradeWarning.refusedSeq` makes about the
   /// foreign counter itself.
