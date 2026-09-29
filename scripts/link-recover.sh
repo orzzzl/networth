@@ -25,10 +25,15 @@
 # this task closes: the run spent the one-time `public_token`, received a long-lived
 # credential, and held it in a process with nothing durable underneath it. So a sink
 # is now **named on the command line** and proven writable by the verb *before* the
-# prompts — one of a replacement host's TokenStore, or a file on this Mac sealed under
-# the already-escrowed `03a` backup key. It is never inferred from which argument
-# happens to be present: the two put the credential on different computers. §15 is
-# satisfied by the encryption plus the escrowed key, not by declining to write.
+# prompts. It is never inferred from which argument happens to be present.
+#
+# From THIS script the sink is the sealed artifact, and that is a correction rather
+# than a preference. The other kind writes a plain TokenStore in whatever directory
+# it is given, with no transport anywhere — run from this Mac it would have put an
+# unsealed access_token on this laptop while calling the destination a replacement
+# host. The verb refuses it and says so. §15 is satisfied here by the encryption plus
+# the escrowed key, not by declining to write; the credential reaches a real
+# TokenStore through the restore, on the replacement host, where that name is true.
 #
 # SANDBOX ONLY, IN THIS FORM. The verb refuses any other environment before a
 # credential is read, and this script pins `NETWORTH_ENV` rather than inheriting it:
@@ -45,13 +50,16 @@ die() {
 
 usage() {
 	cat >&2 <<'USAGE'
-usage: link-recover.sh <flow_id> --sink replacement-host --token-store DIR
-       link-recover.sh <flow_id> --sink emergency-artifact --artifact PATH --backup-key PATH
+usage: link-recover.sh <flow_id> --sink emergency-artifact --artifact PATH --backup-key PATH
 
-The sink is required and is not guessed: the two choices put the recovered
-access_token on different computers. Pick the replacement host when one is already
-standing with a TokenStore on it; pick the artifact when the VPS is gone and
-standing up a replacement is not a thirty-minute step.
+The sink is required and is not guessed. This script runs on zelengs-macbook-air-2
+and there is no transport from here to a replacement host, so the artifact -- one
+file sealed under the already-escrowed 03a backup key -- is the destination this
+command can actually reach. Restore it into a real TokenStore on the replacement
+host once one is standing.
+
+--sink replacement-host is accepted by the verb only to be refused with that
+explanation; it would otherwise have written an unsealed access_token here.
 USAGE
 	exit 2
 }

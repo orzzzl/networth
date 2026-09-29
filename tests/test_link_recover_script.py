@@ -86,7 +86,20 @@ def run(
 #: the verb has to name one. Kept as one constant rather than spelled at each call
 #: site: when it was spelled five times, a test could keep passing while asserting a
 #: destination no operator would be told to use.
-SINK = ("--sink", "replacement-host", "--token-store", "/tmp/networth-test-replacement")
+#:
+#: **And that is exactly what it did.** This named `--sink replacement-host` until the
+#: PR #129 review measured what that branch writes: a plain `TokenStore` in a local
+#: directory, on the laptop this script verifies it is running on. The verb refuses it
+#: now, so the constant names the destination an operator is actually told to use —
+#: which is the property the paragraph above claimed to protect and did not.
+SINK = (
+    "--sink",
+    "emergency-artifact",
+    "--artifact",
+    "/tmp/networth-test-recovery.sealed",
+    "--backup-key",
+    "/tmp/networth-test-backup.key",
+)
 
 
 def test_the_script_parses() -> None:

@@ -148,6 +148,14 @@ def _answer_the_terminal(monkeypatch: pytest.MonkeyPatch, answers: list[str]) ->
     monkeypatch.setattr(complete_hosted_link, "_read_from_tty", lambda prompt: next(remaining))
 
 
+def _a_backup_key(tmp_path: Path) -> Path:
+    """A synthetic stand-in for the escrowed ``03a`` key, at the mode it requires."""
+    key = tmp_path / "backup.key"
+    key.write_text(secrets_module.token_hex(32) + "\n")
+    key.chmod(0o600)
+    return key
+
+
 def test_the_verb_is_discovered_without_a_registry_edit() -> None:
     assert "complete-hosted-link" in discover()
 
@@ -256,9 +264,7 @@ def test_from_tty_still_stores_nothing_in_this_hosts_token_store(
     _over_a_fake_sdk(monkeypatch, _Finished())
 
     artifact = tmp_path / "emergency.sealed"
-    key = tmp_path / "backup.key"
-    key.write_text(secrets_module.token_hex(32) + "\n")
-    key.chmod(0o600)
+    key = _a_backup_key(tmp_path)
 
     assert (
         complete_hosted_link.run(
@@ -329,21 +335,70 @@ def test_arguments_for_the_kind_not_chosen_are_refused(
     """Ignoring them would leave the owner believing a sealed file was written."""
     _install(monkeypatch, tmp_path, env="sandbox")
     _write_the_recovery_record()
+    key = _a_backup_key(tmp_path)
 
     assert (
         complete_hosted_link.run(
             _args(
                 from_tty=True,
                 exchange=True,
-                sink=SinkKind.REPLACEMENT_HOST.value,
-                token_store=tmp_path / "tokens",
-                artifact=tmp_path / "ignored.sealed",
+                sink=SinkKind.EMERGENCY_ARTIFACT.value,
+                artifact=tmp_path / "recovered.sealed",
+                backup_key=key,
+                token_store=tmp_path / "ignored-tokens",
             )
         )
         == 2
     )
 
-    assert "--artifact" in capsys.readouterr().err
+    assert "--token-store" in capsys.readouterr().err
+    assert not (tmp_path / "recovered.sealed").exists(), "it refused and still wrote"
+
+
+def test_the_replacement_host_sink_is_refused_because_it_would_write_here(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #129 finding 1, and the refusal is the whole fix.
+
+    ``ReplacementHostSink`` carries no transport — it builds a ``TokenStore`` from the
+    directory it is handed, on whatever machine is running — while ``--from-tty`` is by
+    construction this Mac. So the option named after a replacement host put an unsealed
+    ``access_token`` on the laptop §15 keeps them off, and the name is what made that
+    invisible.
+
+    Three assertions, because the refusal has to be worth more than an exit code: no
+    exchange was attempted, so no lifetime Item slot moved; nothing was written at the
+    directory that was named; and the refusal arrived **before** the prompts, so the
+    owner never fetched his Plaid secret for a run that was never going to be allowed.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+    api = _Finished()
+    _over_a_fake_sdk(monkeypatch, api)
+
+    def refuse_prompts(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the sink must be settled before the owner is asked for anything")
+
+    monkeypatch.setattr(complete_hosted_link, "_prompt_credentials", refuse_prompts)
+
+    tokens = tmp_path / "replacement-tokens"
+    assert (
+        complete_hosted_link.run(
+            _args(
+                from_tty=True,
+                exchange=True,
+                sink=SinkKind.REPLACEMENT_HOST.value,
+                token_store=tokens,
+            )
+        )
+        == 2
+    )
+
+    error = capsys.readouterr().err
+    assert "is refused from this command" in error
+    assert SinkKind.EMERGENCY_ARTIFACT.value in error, "a refusal must name the way through"
+    assert "item_public_token_exchange" not in api.called, "a refused sink still spent a token"
+    assert not tokens.exists(), "the refused branch created the local store anyway"
 
 
 def test_from_tty_without_a_flow_cannot_name_a_recovery_record(
@@ -502,6 +557,8 @@ def test_piped_input_is_refused_because_there_is_no_controlling_terminal(
     environ[link_recovery.RECOVERY_DIRECTORY_ENV] = str(recovery)
     environ["PYTHONPATH"] = str(shim)
 
+    backup_key = _a_backup_key(tmp_path)
+
     completed = subprocess.run(
         [
             sys.executable,
@@ -518,10 +575,18 @@ def test_piped_input_is_refused_because_there_is_no_controlling_terminal(
             # would still exit 2, and the assertion below is what would have caught
             # the substitution. Supplying a working one keeps the discriminator on
             # the controlling terminal.
+            #
+            # It named `replacement-host` until the PR #129 review, which is the
+            # substitution that comment describes, arriving by a route it did not
+            # anticipate: the sink stayed spelled the same and the *verb* changed
+            # under it. `--sink replacement-host` is refused now, so this would have
+            # exited 2 on the sink and never reached a prompt.
             "--sink",
-            SinkKind.REPLACEMENT_HOST.value,
-            "--token-store",
-            str(tmp_path / "replacement-tokens"),
+            SinkKind.EMERGENCY_ARTIFACT.value,
+            "--artifact",
+            str(tmp_path / "recovered.sealed"),
+            "--backup-key",
+            str(backup_key),
         ],
         input="piped-client-id\npiped-secret-never-read\n",
         capture_output=True,

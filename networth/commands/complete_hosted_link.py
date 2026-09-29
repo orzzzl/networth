@@ -68,14 +68,27 @@ spends the one-time token, receives a long-lived credential, and holds it in a
 process with nowhere durable to put it — one laptop crash from recreating the
 permanent slot loss it exists to prevent.
 
-So ``--sink`` is **required** whenever ``--from-tty`` will exchange, and it names one
-of two destinations explicitly: a replacement host's ``TokenStore``, or a Mac-side
-artifact sealed under the **already-escrowed** ``03a`` backup key. Never inferred and
-never a fallback from one to the other — they put the credential on *different
-computers*, and ``AGENTS.md`` rule 1 says what a silent fallback between two secrets
-directories costs. §15 is satisfied by the encryption plus the escrowed key, not by
-declining to write: a credential lost because nothing was written breaks the task
-this command exists to perform.
+So ``--sink`` is **required** whenever ``--from-tty`` will exchange, and it names the
+destination explicitly rather than having one inferred. §15 is satisfied by the
+encryption plus the escrowed key, not by declining to write: a credential lost
+because nothing was written breaks the task this command exists to perform.
+
+**One of `07b` criterion 1's two kinds is reachable from here, and the other is
+refused — measured, not assumed.** ``--sink emergency-artifact`` seals the credential
+under the **already-escrowed** ``03a`` backup key and is this command's answer.
+``--sink replacement-host`` is refused, because
+:class:`~networth.link_sink.ReplacementHostSink` carries no transport: it builds a
+``TokenStore`` from whatever directory it is handed, on whatever machine is running,
+and ``--from-tty`` is by construction ``zelengs-macbook-air-2`` — it reads this Mac's
+recovery record, and ``scripts/link-recover.sh`` verifies the tailnet address before
+it runs. So that option would have written an unsealed ``access_token`` onto the one
+computer §15 keeps them off, under a name that says it went somewhere else. The class
+is still criterion 1's first branch and :func:`~networth.link_sink.restore` is its
+real caller — on the replacement host, where the name is true. Until a verified
+destination on the far side exists, refusing here is the honest half of the choice,
+and ``AGENTS.md`` rule 1 is the general form of why: a path that quietly resolves to
+the local machine "is how a path bug becomes 'it worked on my machine' for a file
+holding access tokens".
 
 The destination is proven **before the prompts**, and so necessarily before the
 exchange — ``link_sink`` writes and reads back a real probe rather than asking
@@ -100,7 +113,6 @@ from networth.link_sink import (
     DurableSink,
     EmergencyArtifactSink,
     RecoveredItem,
-    ReplacementHostSink,
     SinkError,
     SinkKind,
     SinkNotWritable,
@@ -158,17 +170,20 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         choices=[kind.value for kind in SinkKind],
         help=(
             "07b: where --from-tty puts the recovered access_token. "
-            f"{SinkKind.REPLACEMENT_HOST.value} needs --token-store; "
-            f"{SinkKind.EMERGENCY_ARTIFACT.value} needs --artifact and --backup-key"
+            f"{SinkKind.EMERGENCY_ARTIFACT.value} needs --artifact and --backup-key. "
+            f"{SinkKind.REPLACEMENT_HOST.value} is refused from this command — it has "
+            "no transport, so it would write plaintext on this laptop"
         ),
     )
+    # Kept as an accepted argument although no sink here uses it, so that supplying
+    # it produces `_refuse_unused`'s explanation rather than argparse's "unrecognized
+    # arguments". The refusal an operator meets mid-emergency should say which
+    # destination he actually asked for.
     parser.add_argument(
         "--token-store",
         metavar="DIR",
         type=Path,
-        help=(
-            f"--sink {SinkKind.REPLACEMENT_HOST.value}: the replacement host's TokenStore directory"
-        ),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--artifact",
@@ -312,10 +327,28 @@ def _sink_from(args: argparse.Namespace) -> DurableSink:
         )
     kind = SinkKind(args.sink)
     if kind is SinkKind.REPLACEMENT_HOST:
-        if args.token_store is None:
-            raise SinkNotWritable(f"--sink {kind.value} needs --token-store DIR")
-        _refuse_unused(args, allowed={"token_store"})
-        return ReplacementHostSink(args.token_store)
+        # **Refused from this CLI, and the refusal is the fix rather than a gap.**
+        # `ReplacementHostSink` holds no transport: it builds a `TokenStore` from
+        # whatever `Path` it is handed, on whatever machine the process is running.
+        # `--from-tty` is by construction *this* Mac — it reads this Mac's recovery
+        # record, and `link-recover.sh` verifies the tailnet address before it runs
+        # at all — so the directory named here is a local one, and the option
+        # advertised as "replacement host" would drop an unsealed `access_token` on
+        # the one computer §15 keeps them off. Naming an option after a destination
+        # does not make the credential travel there.
+        #
+        # The class stays: it is the right object for code running **on** the
+        # replacement host, and `link_sink.restore()` is its real caller. What does
+        # not exist yet is a verified destination on the far side, and until it does
+        # the honest answer here is this refusal rather than a local write.
+        raise SinkNotWritable(
+            f"--sink {kind.value} is refused from this command: it writes a plain "
+            "TokenStore on whatever machine it runs on, and --from-tty runs on "
+            f"{mac_identity.REQUIRED_HOLDER}. There is no transport here, so this "
+            "would leave an unsealed access_token on this laptop. Use --sink "
+            f"{SinkKind.EMERGENCY_ARTIFACT.value}, then run the restore on the "
+            "replacement host once it is standing"
+        )
     if args.artifact is None or args.backup_key is None:
         raise SinkNotWritable(f"--sink {kind.value} needs --artifact PATH and --backup-key PATH")
     _refuse_unused(args, allowed={"artifact", "backup_key"})
