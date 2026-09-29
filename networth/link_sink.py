@@ -239,6 +239,15 @@ class DurableSink(Protocol):
         Called **before** the exchange. Must leave nothing behind on success.
         """
 
+    def prepare_for(self, flow_id: str) -> None:
+        """:meth:`prepare`, plus whatever refusal knowing the flow makes possible.
+
+        Both kinds implement it so a caller that *does* know the flow — the
+        recovery command does — has one call to make rather than a branch on
+        which sink it built. A branch there would be the caller deciding which
+        refusals apply, which is the decision this module exists to own.
+        """
+
     def commit(self, item: RecoveredItem, *, now: datetime) -> SinkReceipt:
         """Write, ``fsync``, read back. Called only after :meth:`prepare` returned."""
 
@@ -488,6 +497,18 @@ class EmergencyArtifactSink:
         # loader can raise — mode, encoding, length — and re-reading would move them
         # to the far side of the exchange, which is the mistake criterion 1 names.
         self._key = key
+
+    def prepare_for(self, flow_id: str) -> None:
+        """:meth:`prepare`. This kind's flow-specific refusal is already in it.
+
+        The artifact's path names one recovery, so *"a file is already here"* is
+        the same refusal the replacement host expresses as *"this flow already has
+        material"* — it is in :meth:`prepare` because it is a fact about the path
+        rather than about the id. Accepting the argument and not needing it keeps
+        the caller from having to know that.
+        """
+        del flow_id
+        self.prepare()
 
     def commit(self, item: RecoveredItem, *, now: datetime) -> SinkReceipt:
         key = self._key

@@ -58,12 +58,30 @@ job is to be the first form of that command rather than a rehearsal of a differe
 one. A third prompt would also have meant the owner pasting token material by hand,
 which is the manual copy step F7's design removes.
 
-**``--from-tty`` persists nothing, and that is a rule rather than a simplification.**
-§15 keeps ``access_token``s off this laptop; the Mac holds the backup key and the
-``link_token`` second copy and nothing else that can read an account. (iv) asks only
-whether retrieval and exchange *succeed* from another host, so the answer is printed
-and the credential is dropped when the process exits. A run that stored one would
-answer the question and widen the machine while doing it.
+**``--from-tty`` used to persist nothing, and ``07b`` is why it no longer does.**
+That rule was right for a measurement and wrong for the emergency the same command
+is the procedure for. §19 step 2a's scenario: a Link has succeeded, so **F2a** has
+already spent one of ten lifetime Item slots; the VPS is lost before the exchange;
+the owner runs this on ``zelengs-macbook-air-2`` inside the ``public_token``'s 30
+minutes. Printing the answer and dropping the credential there means the procedure
+spends the one-time token, receives a long-lived credential, and holds it in a
+process with nowhere durable to put it — one laptop crash from recreating the
+permanent slot loss it exists to prevent.
+
+So ``--sink`` is **required** whenever ``--from-tty`` will exchange, and it names one
+of two destinations explicitly: a replacement host's ``TokenStore``, or a Mac-side
+artifact sealed under the **already-escrowed** ``03a`` backup key. Never inferred and
+never a fallback from one to the other — they put the credential on *different
+computers*, and ``AGENTS.md`` rule 1 says what a silent fallback between two secrets
+directories costs. §15 is satisfied by the encryption plus the escrowed key, not by
+declining to write: a credential lost because nothing was written breaks the task
+this command exists to perform.
+
+The destination is proven **before the prompts**, and so necessarily before the
+exchange — ``link_sink`` writes and reads back a real probe rather than asking
+``os.access``. A fallback chosen after the irreversible step is not a fallback.
+``--retrieve-only`` exchanges nothing and so needs no sink, and that is the one path
+on which this command still stores nothing.
 """
 
 from __future__ import annotations
@@ -72,10 +90,21 @@ import argparse
 import os
 import sys
 import termios
+from datetime import UTC, datetime
+from pathlib import Path
 
 from networth import link_recovery, mac_identity
 from networth.config import ConfigError
 from networth.link_recovery import LinkRecoveryError
+from networth.link_sink import (
+    DurableSink,
+    EmergencyArtifactSink,
+    RecoveredItem,
+    ReplacementHostSink,
+    SinkError,
+    SinkKind,
+    SinkNotWritable,
+)
 from networth.plaid.client import (
     ExchangedItem,
     LinkSessionShape,
@@ -90,6 +119,7 @@ from networth.plaid.environment import (
     selected_environment,
 )
 from networth.tokenstore import (
+    Secret,
     SecretKind,
     TokenStore,
     TokenStoreError,
@@ -115,6 +145,46 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "read the link token from this Mac's recovery record and prompt on the "
             "terminal for client_id and secret — measurement (iv). Persists nothing"
+        ),
+    )
+    # `07b`: where a credential recovered with --from-tty lands. Required on that
+    # path rather than defaulted, and never inferred from which other argument
+    # happens to be present: the two kinds put the credential on **different
+    # computers**, and `AGENTS.md` rule 1 is explicit that a lookup which falls
+    # back from one host's secrets directory to the other "is how a path bug
+    # becomes 'it worked on my machine' for a file holding access tokens".
+    parser.add_argument(
+        "--sink",
+        choices=[kind.value for kind in SinkKind],
+        help=(
+            "07b: where --from-tty puts the recovered access_token. "
+            f"{SinkKind.REPLACEMENT_HOST.value} needs --token-store; "
+            f"{SinkKind.EMERGENCY_ARTIFACT.value} needs --artifact and --backup-key"
+        ),
+    )
+    parser.add_argument(
+        "--token-store",
+        metavar="DIR",
+        type=Path,
+        help=(
+            f"--sink {SinkKind.REPLACEMENT_HOST.value}: the replacement host's TokenStore directory"
+        ),
+    )
+    parser.add_argument(
+        "--artifact",
+        metavar="PATH",
+        type=Path,
+        help=(
+            f"--sink {SinkKind.EMERGENCY_ARTIFACT.value}: the sealed file to create; must not exist"
+        ),
+    )
+    parser.add_argument(
+        "--backup-key",
+        metavar="PATH",
+        type=Path,
+        help=(
+            f"--sink {SinkKind.EMERGENCY_ARTIFACT.value}: the already-escrowed 03a backup key. "
+            "No new key is ever minted here"
         ),
     )
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -226,6 +296,49 @@ def _report_poll_shape(shape: LinkSessionShape, sessions: int, tokens: int) -> N
     print(f"public tokens {tokens}")
 
 
+def _sink_from(args: argparse.Namespace) -> DurableSink:
+    """Build the destination named by ``--sink``, or refuse to guess one.
+
+    Every branch that fails here raises :class:`SinkNotWritable`, which the caller
+    treats exactly like an unwritable directory — because it is the same fact at a
+    different layer: **there is no destination**. Nothing has been exchanged when
+    any of these fire, which is the only property that matters about them.
+    """
+    if args.sink is None:
+        raise SinkNotWritable(
+            "--from-tty now persists the recovered credential, so --sink is required "
+            f"({SinkKind.REPLACEMENT_HOST.value} or {SinkKind.EMERGENCY_ARTIFACT.value}). "
+            "It is not inferred: the two put the credential on different computers"
+        )
+    kind = SinkKind(args.sink)
+    if kind is SinkKind.REPLACEMENT_HOST:
+        if args.token_store is None:
+            raise SinkNotWritable(f"--sink {kind.value} needs --token-store DIR")
+        _refuse_unused(args, allowed={"token_store"})
+        return ReplacementHostSink(args.token_store)
+    if args.artifact is None or args.backup_key is None:
+        raise SinkNotWritable(f"--sink {kind.value} needs --artifact PATH and --backup-key PATH")
+    _refuse_unused(args, allowed={"artifact", "backup_key"})
+    return EmergencyArtifactSink(args.artifact, key_file=args.backup_key)
+
+
+def _refuse_unused(args: argparse.Namespace, *, allowed: set[str]) -> None:
+    """Refuse arguments belonging to the kind that was **not** chosen.
+
+    Ignoring them would let ``--sink replacement-host --artifact /tmp/x`` run and
+    say nothing, leaving the operator believing a sealed file was written. In this
+    scenario the operator is the owner, mid-emergency, reading one line of output
+    to decide whether his credential survived.
+    """
+    supplied = {name for name in ("token_store", "artifact", "backup_key") if getattr(args, name)}
+    stray = sorted(supplied - allowed)
+    if stray:
+        raise SinkNotWritable(
+            "these belong to the other --sink kind and would be silently ignored: "
+            + ", ".join(f"--{name.replace('_', '-')}" for name in stray)
+        )
+
+
 def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a distinct outcome
     try:
         environment = selected_environment()
@@ -258,6 +371,18 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
             # has typed his Plaid secret would have spent the one thing this command
             # asks of him for nothing.
             link_token = link_recovery.load(directory, args.flow).link_token.reveal()
+            # **The sink is proven here — before the prompts, and so necessarily
+            # before the exchange.** Criterion 1: *"a fallback chosen after the
+            # irreversible step is not a fallback"*. Placed against the prompts for
+            # the same reason the record read above is: discovering there is
+            # nowhere to put the credential after the owner has typed his Plaid
+            # secret would have spent the one thing this command asks of him, and
+            # discovering it after the exchange would strand a lifetime Item slot.
+            if not args.retrieve_only:
+                sink = _sink_from(args)
+                sink.prepare_for(args.flow)
+                print(f"sink          {sink.destination}")
+                print("              proven writable before anything was spent")
             credentials = _prompt_credentials(environment)
         else:
             if not args.flow:
@@ -271,9 +396,10 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
 
         client = PlaidClient(credentials)
         poll = client.link_token_get(link_token)
-    except (ConfigError, PlaidCallError, TokenStoreError, LinkRecoveryError) as exc:
+    except (ConfigError, PlaidCallError, TokenStoreError, LinkRecoveryError, SinkError) as exc:
         # Every one of these redacts itself; printing `exc` is safe because of that
-        # property, not because this handler checked anything.
+        # property, not because this handler checked anything. `SinkError` joins them
+        # under the same promise: `link_sink` raises paths and field names only.
         print(f"complete-hosted-link failed: {exc}", file=sys.stderr)
         return 2
 
@@ -299,6 +425,21 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
         )
         return 0
 
+    if args.from_tty and len(public_tokens) > 1:
+        # **Refused before the exchange, not discovered during it.** One sink is one
+        # destination: the artifact's `O_EXCL` create would refuse the second item
+        # and the TokenStore refuses a second put for one flow — and both of those
+        # refusals would land *after* two tokens had been spent, with the second
+        # credential live in a process that has nowhere to put it. The recovery this
+        # path exists for is one lost Item.
+        print(
+            f"the reply carries {len(public_tokens)} public_tokens and --from-tty has one "
+            "sink to put a credential in. Nothing was exchanged. Recover them one flow "
+            "at a time, each with its own --sink destination",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         exchanged = [client.item_public_token_exchange(token) for token in public_tokens]
     except PlaidCallError as exc:
@@ -323,7 +464,42 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
             return 2
         print("stored        access_token(s) through TokenStore")
     else:
-        print("stored        nothing — --from-tty persists no credential (§15)")
+        # **This is the line `07b` exists to delete.** It used to read *"stored
+        # nothing — --from-tty persists no credential (§15)"*, which was correct for
+        # a measurement and catastrophic for the emergency: the procedure spent the
+        # one-time token, received a long-lived credential, and held it in a process
+        # with nowhere durable to put it — one laptop crash from recreating the
+        # permanent slot loss it exists to prevent. §15 is satisfied by the
+        # encryption plus the escrowed key, not by declining to write.
+        session_id = next(
+            (record.session_id for record in poll.sessions if record.session_id), None
+        )
+        try:
+            receipt = sink.commit(
+                RecoveredItem(
+                    access_token=Secret(exchanged[0].access_token),
+                    item_id=exchanged[0].item_id,
+                    flow_id=args.flow,
+                    link_session_id=session_id,
+                    request_id=exchanged[0].request_id,
+                ),
+                now=datetime.now(UTC),
+            )
+        except SinkError as exc:
+            # The expensive side. `prepare` already excluded everything it could,
+            # so reaching here means the credential exists and is not on disk — and
+            # the caller must not read it as "try again", because trying again means
+            # exchanging a token that has already been consumed.
+            print(
+                f"THE EXCHANGE SUCCEEDED AND THE CREDENTIAL WAS NOT STORED: {exc}", file=sys.stderr
+            )
+            return 2
+        print(f"stored        {', '.join(receipt.durable)}")
+        print(f"              at {receipt.destination}")
+        if receipt.owed:
+            # A receipt with anything owed describes an *incomplete* recovery, and
+            # saying so is what stops it being reported as a finished one.
+            print(f"still owed    {', '.join(receipt.owed)} — {receipt.pairing.value}")
 
     # The end of a flow's life, announced before it is acted on — because the
     # process that knows the exchange happened is usually not the process that

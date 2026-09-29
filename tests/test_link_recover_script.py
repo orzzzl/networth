@@ -82,6 +82,13 @@ def run(
     )
 
 
+#: `07b` made the sink mandatory, so every test that expects the script to *reach*
+#: the verb has to name one. Kept as one constant rather than spelled at each call
+#: site: when it was spelled five times, a test could keep passing while asserting a
+#: destination no operator would be told to use.
+SINK = ("--sink", "replacement-host", "--token-store", "/tmp/networth-test-replacement")
+
+
 def test_the_script_parses() -> None:
     assert subprocess.run(["bash", "-n", str(SCRIPT)]).returncode == 0
 
@@ -98,17 +105,23 @@ def test_only_a_32_hex_flow_id_is_accepted(bad: str, tmp_path: Path) -> None:
     assert "is not a flow id" in result.stderr or "usage:" in result.stderr
 
 
-def test_a_second_argument_is_refused_rather_than_ignored(tmp_path: Path) -> None:
-    result = run(FLOW_ID, "--exchange-twice", tmp_path=tmp_path)
+def test_a_run_that_names_no_sink_is_refused_rather_than_defaulted(tmp_path: Path) -> None:
+    """**Rewritten by `07b`.** This used to assert "takes the flow id and nothing
+    else", which was right when the script had nothing to pass on. The sink is now a
+    required choice, so the argument list is open — and the property worth keeping is
+    the one underneath: the script does not *invent* a destination. A default here
+    would pick which computer the owner's access_token lands on."""
+    result = run(FLOW_ID, tmp_path=tmp_path)
 
     assert result.returncode == 2
-    assert "takes the flow id and nothing else" in result.stderr
+    assert "--sink" in result.stderr
+    assert not (tmp_path / "uv.argv").exists(), "the verb was reached without a sink"
 
 
 def test_a_non_sandbox_environment_is_refused_rather_than_overridden(tmp_path: Path) -> None:
     """Pinned, not inherited. A rehearsal one exported variable away from Production
     is not a rehearsal, and this is the script the owner runs by hand."""
-    result = run(FLOW_ID, tmp_path=tmp_path, env={"NETWORTH_ENV": "production"})
+    result = run(FLOW_ID, *SINK, tmp_path=tmp_path, env={"NETWORTH_ENV": "production"})
 
     assert result.returncode == 2
     assert "runs against sandbox and nothing else" in result.stderr
@@ -129,7 +142,7 @@ def test_it_invokes_the_two_prompt_recovery_path_and_fixes_the_mode(tmp_path: Pa
     # `zelengs-macbook-air-2` and this is the test that goes red everywhere else.
     shim, shim_env = mac_shim(tmp_path)
     result = subprocess.run(
-        ["bash", str(SCRIPT), FLOW_ID],
+        ["bash", str(SCRIPT), FLOW_ID, *SINK],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
@@ -152,6 +165,10 @@ def test_it_invokes_the_two_prompt_recovery_path_and_fixes_the_mode(tmp_path: Pa
         "--flow",
         FLOW_ID,
         "--exchange",
+        # Forwarded, not re-validated. The script checks that a sink was *named*;
+        # which combinations are legal is `_sink_from`'s decision, and a second
+        # opinion here would meet the operator as whichever of the two is stricter.
+        *SINK,
     ]
 
 
@@ -178,7 +195,7 @@ def test_the_wrong_machine_is_refused_before_anything_is_read_or_prompted_for(
     it writes its argv on every call, so the absence of that file is the absence of
     the recovery verb.
     """
-    result = run(FLOW_ID, tmp_path=tmp_path, on_this_machine=False)
+    result = run(FLOW_ID, *SINK, tmp_path=tmp_path, on_this_machine=False)
 
     assert result.returncode == 2
     # The pinned address, because a caller can no longer nominate a different one.
@@ -189,7 +206,7 @@ def test_the_wrong_machine_is_refused_before_anything_is_read_or_prompted_for(
 
 def test_the_right_machine_still_reaches_the_recovery_verb(tmp_path: Path) -> None:
     """The other half, so the refusal above is a discriminator and not a wall."""
-    result = run(FLOW_ID, tmp_path=tmp_path)
+    result = run(FLOW_ID, *SINK, tmp_path=tmp_path)
 
     assert result.returncode == 0, result.stderr
     argv = (tmp_path / "uv.argv").read_text().split()

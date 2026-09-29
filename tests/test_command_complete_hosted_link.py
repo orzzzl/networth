@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets as secrets_module
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ from networth import link_recovery, mac_identity
 from networth.cli import discover
 from networth.commands import complete_hosted_link
 from networth.link_recovery import RecoveryRecord
+from networth.link_sink import SinkKind
 from networth.plaid import environment as environment_module
 from networth.plaid.client import PlaidClient
 from networth.plaid.environment import PlaidCredentials, paths_for, selected_environment
@@ -49,6 +51,14 @@ def _args(**kwargs: Any) -> argparse.Namespace:
         retrieve_only=False,
         exchange=False,
         exchange_twice=False,
+        # `07b`'s four, defaulted to absent so the tests that do not care about the
+        # sink keep describing the path they were written for. A `--from-tty` run
+        # that exchanges and names none of these is refused, which is itself one of
+        # the cases below rather than an accident of this helper.
+        sink=None,
+        token_store=None,
+        artifact=None,
+        backup_key=None,
     )
     for key, value in kwargs.items():
         setattr(namespace, key, value)
@@ -223,13 +233,17 @@ def test_the_access_token_is_never_printed(
     assert ITEM_ID not in captured.out, "item_id names one of the owner's institutions"
 
 
-def test_from_tty_stores_nothing_at_all(
+def test_from_tty_still_stores_nothing_in_this_hosts_token_store(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Measurement (iv) answers a question; it must not also widen this laptop (§15).
+    """§15 still keeps ``access_token``s out of *this laptop's* store.
 
-    A successful exchange on the Mac is the whole point of (iv) *and* the moment an
-    ``access_token`` could land here. The token store must not exist afterwards.
+    **Rewritten by `07b`, not merely adjusted.** It used to assert
+    ``"persists no credential" in out`` — the behaviour `07b` exists to delete, since
+    in §19 step 2a's emergency that means spending the one-time token and holding the
+    credential in a process with nowhere to put it. What survives the rewrite is the
+    half that was always right and is now the *only* claim it makes: whatever the
+    recovered credential lands in, it is never ``paths_for(...).items`` on the Mac.
     """
     _install(monkeypatch, tmp_path, env="sandbox")
     _write_the_recovery_record()
@@ -241,16 +255,95 @@ def test_from_tty_stores_nothing_at_all(
     monkeypatch.setattr(environment_module, "load_credentials", refuse_files)
     _over_a_fake_sdk(monkeypatch, _Finished())
 
-    assert complete_hosted_link.run(_args(from_tty=True, exchange=True)) == 0
+    artifact = tmp_path / "emergency.sealed"
+    key = tmp_path / "backup.key"
+    key.write_text(secrets_module.token_hex(32) + "\n")
+    key.chmod(0o600)
+
+    assert (
+        complete_hosted_link.run(
+            _args(
+                from_tty=True,
+                exchange=True,
+                sink=SinkKind.EMERGENCY_ARTIFACT.value,
+                artifact=artifact,
+                backup_key=key,
+            )
+        )
+        == 0
+    )
 
     captured = capsys.readouterr()
-    assert "persists no credential" in captured.out
     assert not paths_for(selected_environment()).items.exists(), (
-        "a --from-tty run left an access_token on the machine §15 keeps them off"
+        "a --from-tty run left an access_token in the store §15 keeps them out of"
     )
+    assert artifact.exists(), "07b: the credential must reach a durable destination"
     for secret in ("tty-client-id", "tty-secret", LINK_TOKEN):
         assert secret not in captured.out
         assert secret not in captured.err
+    assert ACCESS_TOKEN not in artifact.read_bytes().decode("latin-1"), (
+        "the artifact is sealed, so §15 is satisfied by encryption rather than by "
+        "declining to write"
+    )
+
+
+def test_from_tty_that_will_exchange_refuses_without_a_sink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """And it refuses **before** the prompts, so nothing has been spent or typed."""
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+
+    def refuse_prompts(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the sink must be settled before the owner is asked for anything")
+
+    monkeypatch.setattr(complete_hosted_link, "_prompt_credentials", refuse_prompts)
+
+    assert complete_hosted_link.run(_args(from_tty=True, exchange=True)) == 2
+
+    assert "--sink is required" in capsys.readouterr().err
+
+
+def test_retrieve_only_needs_no_sink_because_it_exchanges_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The control for the refusal above: it must not have become a blanket demand.
+
+    Without this, ``--sink is required`` is equally satisfied by a command that
+    demands one on every ``--from-tty`` path, including the one whose whole purpose
+    is to spend nothing.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"])
+    _over_a_fake_sdk(monkeypatch, _Finished())
+
+    assert complete_hosted_link.run(_args(from_tty=True, retrieve_only=True)) == 0
+
+    assert "was NOT exchanged" in capsys.readouterr().out
+
+
+def test_arguments_for_the_kind_not_chosen_are_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ignoring them would leave the owner believing a sealed file was written."""
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+
+    assert (
+        complete_hosted_link.run(
+            _args(
+                from_tty=True,
+                exchange=True,
+                sink=SinkKind.REPLACEMENT_HOST.value,
+                token_store=tmp_path / "tokens",
+                artifact=tmp_path / "ignored.sealed",
+            )
+        )
+        == 2
+    )
+
+    assert "--artifact" in capsys.readouterr().err
 
 
 def test_from_tty_without_a_flow_cannot_name_a_recovery_record(
@@ -419,6 +512,16 @@ def test_piped_input_is_refused_because_there_is_no_controlling_terminal(
             "--flow",
             FLOW_ID,
             "--exchange",
+            # A **sound** sink, on purpose. `07b` proves the destination before the
+            # prompts, so omitting these would make the child refuse for want of a
+            # sink and never reach the terminal check this test exists for — it
+            # would still exit 2, and the assertion below is what would have caught
+            # the substitution. Supplying a working one keeps the discriminator on
+            # the controlling terminal.
+            "--sink",
+            SinkKind.REPLACEMENT_HOST.value,
+            "--token-store",
+            str(tmp_path / "replacement-tokens"),
         ],
         input="piped-client-id\npiped-secret-never-read\n",
         capture_output=True,
