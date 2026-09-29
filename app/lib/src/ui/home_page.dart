@@ -5,8 +5,10 @@ import '../data/history_source.dart';
 import '../data/snapshot_source.dart';
 import '../debug_log.dart';
 import '../domain/clock_continuity.dart';
+import '../domain/fetch_diagnostics.dart';
 import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
+import '../domain/seq_baseline.dart';
 import 'snapshot_view.dart';
 
 /// The one screen this build has.
@@ -156,6 +158,21 @@ class _HomePageState extends State<HomePage> {
               // a verdict is the one claiming continuity, which is why it is
               // not the default.
               continuity: (widget.continuity ?? _noContinuitySource)(),
+              // **Stated at the call site rather than fabricated one layer
+              // down, which is the whole of this commit.** These two were
+              // hardcoded inside `PhonePayload.copyState`, where the claim
+              // "this build holds no fetch records" was true but invisible to
+              // every caller. It is still true *here*: this screen reads a
+              // `SnapshotSource`, performs no fetch, and so has no records —
+              // §9.1's "never fetched" and nothing else.
+              //
+              // What changed is that saying so is now a decision this file
+              // makes out loud. The next commit gives this screen the three
+              // stores and the refresher, and these two lines are exactly what
+              // it replaces; until then a reader can see that the flattering
+              // value is being asserted rather than measured.
+              diagnostics: const DiagnosticsAbsent(),
+              baseline: const BaselineAbsent(),
             );
           },
         ),

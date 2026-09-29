@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/domain/clock_continuity.dart';
 import 'package:networth_app/src/domain/copy_freshness.dart';
+import 'package:networth_app/src/domain/fetch_diagnostics.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
+import 'package:networth_app/src/domain/seq_baseline.dart';
 import 'package:networth_app/src/ui/headline.dart';
 import 'package:networth_app/src/ui/snapshot_view.dart';
 
@@ -16,6 +18,8 @@ Future<void> _pump(
   NetWorthHistory? history = NetWorthHistory.empty,
   bool recordingFailed = false,
   ClockContinuity continuity = trustedClock,
+  DiagnosticsState diagnostics = noFetchRecords,
+  BaselineState baseline = noSeqBaseline,
 }) async {
   await tester.pumpWidget(
     localized(
@@ -25,6 +29,8 @@ Future<void> _pump(
         recordingFailed: recordingFailed,
         deviceNow: deviceNow,
         continuity: continuity,
+        diagnostics: diagnostics,
+        baseline: baseline,
       ),
     ),
   );
@@ -288,6 +294,8 @@ void main() {
                 recordingFailed: false,
                 deviceNow: DateTime.utc(2026, 9, 20),
                 continuity: trustedClock,
+                diagnostics: noFetchRecords,
+                baseline: noSeqBaseline,
               ),
             ),
           ),

@@ -9,8 +9,10 @@ import 'package:networth_app/l10n/generated/app_localizations.dart';
 import 'package:networth_app/src/data/history_source.dart';
 import 'package:networth_app/src/data/history_store.dart';
 import 'package:networth_app/src/domain/clock_continuity.dart';
+import 'package:networth_app/src/domain/fetch_diagnostics.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
+import 'package:networth_app/src/domain/seq_baseline.dart';
 import 'package:networth_app/src/pairing/pairing_vault.dart';
 
 /// A clock this device has proved continuous: the same interval measured two
@@ -24,6 +26,24 @@ import 'package:networth_app/src/pairing/pairing_vault.dart';
 /// fine" is how that requirement decays into a default with extra steps.
 const ClockContinuity trustedClock =
     ContinuityHeld(wallElapsed: Duration.zero, monotonicElapsed: Duration.zero);
+
+/// The records a phone that has never fetched holds: none of either.
+///
+/// Shared from here for exactly the reason [trustedClock] is, and the note above
+/// applies word for word. `diagnostics` and `baseline` are required on
+/// `PhonePayload.copyState` and `SnapshotView` so that no production caller can
+/// assert the flattering value — [DiagnosticsAbsent] is §9.1's *never fetched*,
+/// which can only ever reach `CANNOT_CHECK` and so can never report
+/// `HOST_NOT_PUBLISHING` — and a per-file copy of "assume there are no records"
+/// is how that requirement decays into a default with extra steps.
+///
+/// Right for a test **about rendering**, where the payload is synthetic and no
+/// fetch happened, so absence is what is true. A test about the §9.1 predicate
+/// must build its own records rather than reach for these.
+const DiagnosticsState noFetchRecords = DiagnosticsAbsent();
+
+/// The I6 baseline of a phone that has accepted nothing yet.
+const BaselineState noSeqBaseline = BaselineAbsent();
 
 /// The fixtures the app ships, read from disk rather than through the bundle.
 ///
