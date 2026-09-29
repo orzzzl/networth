@@ -23,7 +23,9 @@ class LockUnavailable(RuntimeError):
 
 
 @contextmanager
-def exclusive_file_lock(path: Path, *, blocking: bool = True) -> Iterator[None]:
+def exclusive_file_lock(
+    path: Path, *, blocking: bool = True, reentrant: bool = True
+) -> Iterator[None]:
     """Hold an exclusive advisory lock on ``path`` for the context lifetime."""
 
     key = os.path.abspath(path)
@@ -33,6 +35,8 @@ def exclusive_file_lock(path: Path, *, blocking: bool = True) -> Iterator[None]:
         _THREAD_LOCKS.held = held
     count = held.get(key, 0)
     if count:
+        if not reentrant:
+            raise LockUnavailable("operation already active in this thread")
         # ``flock`` on a separately opened fd can block against the same
         # process on macOS.  Nested operations in one thread already execute
         # inside the boundary; make that ownership explicit while keeping

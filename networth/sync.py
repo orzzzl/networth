@@ -101,6 +101,15 @@ class _Plan:
 
 
 @dataclass(frozen=True, slots=True)
+class SyncItemOutcome:
+    """Retry accounting for one Item, separate from account-level failures."""
+
+    item_id: int
+    attempted: bool
+    failed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class FullSyncPlan:
     """Collected observations, not yet durable; contains no token material.
 
@@ -112,6 +121,7 @@ class FullSyncPlan:
     attempted_count: int
     observations: tuple[ObservationDraft, ...]
     failures: tuple[SyncFailure, ...]
+    items: tuple[SyncItemOutcome, ...]
 
 
 class FullSync:
@@ -150,7 +160,13 @@ class FullSync:
 
         return self.persist(self.collect(sync_run_id, at=at))
 
-    def collect(self, sync_run_id: str, *, at: datetime | None = None) -> FullSyncPlan:
+    def collect(
+        self,
+        sync_run_id: str,
+        *,
+        at: datetime | None = None,
+        deferred_item_ids: frozenset[int] = frozenset(),
+    ) -> FullSyncPlan:
         """Fetch and plan without writes; the caller must not hold a transaction."""
 
         require_nonempty(sync_run_id, field="sync_run_id")
@@ -163,7 +179,19 @@ class FullSync:
 
         plans: list[_Plan] = []
         failures: list[SyncFailure] = []
+        outcomes: list[SyncItemOutcome] = []
         for item_id, item_targets in by_item.items():
+            if item_id in deferred_item_ids:
+                item_plans, item_failures = self._fallback_all(
+                    tuple(item_targets),
+                    "RetryDeferred",
+                    sync_run_id=sync_run_id,
+                    fetched_at=fetched_at,
+                )
+                plans.extend(item_plans)
+                failures.extend(item_failures)
+                outcomes.append(SyncItemOutcome(item_id, attempted=False, failed=False))
+                continue
             item_plans, item_failures = self._plan_item(
                 item_id,
                 tuple(item_targets),
@@ -172,11 +200,13 @@ class FullSync:
             )
             plans.extend(item_plans)
             failures.extend(item_failures)
+            outcomes.append(SyncItemOutcome(item_id, attempted=True, failed=bool(item_failures)))
 
         return FullSyncPlan(
             attempted_count=len(targets),
             observations=tuple(plan.draft for plan in plans),
             failures=tuple(failures),
+            items=tuple(outcomes),
         )
 
     def persist(self, plan: FullSyncPlan) -> FullSyncResult:
