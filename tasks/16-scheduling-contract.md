@@ -3,9 +3,10 @@
 Status: A approved and merged in PR #115; capture-boundary implementation
 merged in PR #118; socket timeout/no-retry policy merged in PR #120.
 Stored-state full-sync planning merged in PR #121 and worker collection/persistence
-merged in PR #122. Full-sync dispatch and per-Item retry admission are the next
-review slice. Complete cycle assembly, executable wiring, remaining scheduler
-implementation and live acceptance remain owed.
+merged in PR #122. Full-sync dispatch and per-Item retry admission merged in PR #124; health
+dispatch and worker transaction guards merged in PR #125. Manual equity quote
+collection/persistence is the next review slice. Complete cycle assembly, executable
+wiring, remaining scheduler implementation and live acceptance remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
 ## Decision: restore the specified capture boundary (A)
@@ -362,3 +363,38 @@ writer-contention tests, and reaper scheduling. Live acceptance still owes the
 reviewed runtime install, forced backup dispatcher ownership/mode/byte equality,
 active services and timer next elapse, exact tailnet listener/public baseline and
 no-Funnel checks. Task 16 cannot be DONE from this proposal or unit files alone.
+
+## Manual equity quote collection (next review slice)
+
+`ManualQuoteWorker` reads every active included `MANUAL_QTY_LIVE_PRICE` account
+and its stored `EQUITY_SHARES` holding in one read transaction, closes that
+transaction, then fetches a deduplicated batch of symbols. It values each holding
+through task 13's `EquityHolding.value_with()` and produces immutable in-memory
+`QUOTE` drafts for the named run. The source clock stays the quote timestamp;
+fetch/observation time is measured after the response. A quote may legitimately
+advance during the call. Future quotes or confirmation dates are refused.
+
+Persistence requires the caller's short `BEGIN IMMEDIATE` transaction and checks
+that the selected accounts and their normalized holding values still match the
+capture. A concurrent quantity/confirmation/account-selection edit refuses the
+whole plan before any writes. Notes and account display names do not affect
+valuation. It appends observations and updates fetch summaries without committing;
+rollback and persistence retry reuse the plan without fetching again. A committed
+plan cannot be appended twice, through the existing observation uniqueness rule.
+Plans contain sensitive values and must never be logged or saved to recovery files.
+
+Missing, malformed, mismatched or unavailable prices refuse collection rather
+than producing zero or silently reusing an old quote. This strict slice adds no
+carry-forward policy: its future caller must leave an incomplete cycle unfinished
+and retry collection. This can delay a snapshot during a quote-provider outage.
+The existing full-sync dispatcher still marks only its Plaid work complete; cycle
+integration must ensure manual failure cannot become a completed-cycle claim.
+This is a prerequisite, not a command or completed cycle: alert assembly,
+quote-due planning, full cycle/run-success composition, independent publication
+retry, archive scheduling, Link bounds, units and installation remain owed.
+
+Synthetic migrated-WAL tests observe a rival writer commit during quote I/O,
+uncommitted observations staying invisible to that rival, rollback after the
+second append fails, and retry with no second quote call. The successful path
+feeds the real Snapshotter and checks its total and source age. This is local
+component evidence, not Linux unit or live-host acceptance.
