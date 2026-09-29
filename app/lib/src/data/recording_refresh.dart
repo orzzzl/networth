@@ -38,8 +38,33 @@ class RecordingSnapshotRefresher implements SnapshotRefreshing, RecordingStatus 
   bool get lastRecordingFailed => _lastRecordingFailed;
   bool _lastRecordingFailed = false;
 
+  /// **Serialised here as well as inside, and the inner queue is why it must be.**
+  ///
+  /// [SnapshotRefresher]'s queue ends the moment `inner.refresh()` returns, so the
+  /// history write and the status update below sit *outside* it. Two overlapping
+  /// calls could then accept A, accept B, finish B's recording, and finish A's last
+  /// — leaving a flag that describes A while B is the copy on screen. Review
+  /// reproduced both directions: an older success clearing a newer failure's
+  /// warning, and an older failure raising a false warning over a newer success.
+  ///
+  /// Serialising the *whole* decorated operation rather than guarding the boolean,
+  /// deliberately: `HistoryStore.record` does its own read-merge-write with no lock
+  /// between the halves, so protecting only the flag would leave two concurrent file
+  /// operations outside the serial boundary and fix the symptom that was measured
+  /// instead of the class it belongs to.
   @override
-  Future<SnapshotRefreshOutcome> refresh() async {
+  Future<SnapshotRefreshOutcome> refresh() {
+    final next = _queue.then((_) => _refresh());
+    // Errors are swallowed from the chain, not from the caller, for the reason
+    // `SnapshotRefresher` gives: a chain a throw could poison would turn one defect
+    // into a decorator that never records again.
+    _queue = next.then((_) {}, onError: (Object _) {});
+    return next;
+  }
+
+  Future<void> _queue = Future<void>.value();
+
+  Future<SnapshotRefreshOutcome> _refresh() async {
     final outcome = await inner.refresh();
     if (outcome is! RefreshAccepted) {
       // **Unchanged, not cleared — and this is where this class differs from
