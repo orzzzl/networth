@@ -164,6 +164,100 @@ class TestRefusalsMovedOffTheExpensiveSide:
 
         ReplacementHostSink(tokens).prepare_for(FLOW_ID)
 
+    def test_the_lock_the_write_needs_is_proven_and_not_just_the_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #129 finding 2. The directory was writable; the lock was not.
+
+        ``TokenStore.put`` takes ``.tokenstore.lock`` in the credential directory's
+        **parent** (§14a, so it cannot be mistaken for archive payload), and the proof
+        probed the credential directory and nothing above it. The token directory is
+        created first and left mode-0700 here precisely so ``_prove_durable`` has
+        nothing to complain about: the only thing wrong is the one the proof missed.
+        """
+        tokens = tmp_path / "host" / "tokens"
+        tokens.mkdir(mode=0o700, parents=True)
+        assert os.access(tokens, os.W_OK), "the directory the old proof checked is fine"
+        tokens.parent.chmod(0o500)
+        try:
+            with pytest.raises(SinkNotWritable, match="tokenstore.lock") as refusal:
+                ReplacementHostSink(tokens).prepare_for(FLOW_ID)
+        finally:
+            tokens.parent.chmod(0o700)
+
+        # Named so the refusal cannot be confused with `_prove_durable`'s, which is
+        # what would happen if this test passed for the old reason.
+        assert "cannot be taken" in str(refusal.value)
+        assert "Nothing has been exchanged" in str(refusal.value)
+
+    def test_and_the_control_accepts_the_same_store_under_a_writable_parent(
+        self, tmp_path: Path
+    ) -> None:
+        tokens = tmp_path / "host" / "tokens"
+        tokens.mkdir(mode=0o700, parents=True)
+
+        ReplacementHostSink(tokens).prepare_for(FLOW_ID)
+
+        # And the proof really did take the lock rather than assume it: the file the
+        # commit needs now exists, beside the store rather than inside it.
+        assert (tokens.parent / ".tokenstore.lock").exists()
+        assert not (tokens / ".tokenstore.lock").exists()
+
+    def test_a_dangling_symlink_at_the_artifact_path_is_refused(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        """PR #129 finding 2, second half: ``exists()`` follows the link.
+
+        ``O_EXCL`` refuses to create a *name*, and a symlink to an absent target is a
+        name. So the old check answered "nothing is there" and commit then failed
+        ``EEXIST`` — on the far side of the exchange.
+        """
+        artifact = tmp_path / "artifact.sealed"
+        artifact.symlink_to(tmp_path / "target-that-is-not-there")
+        assert not artifact.exists(), "the premise: this is what the old check asked"
+        assert os.path.lexists(artifact)
+
+        with pytest.raises(SinkNotWritable, match="already exists"):
+            EmergencyArtifactSink(artifact, key_file=key_file).prepare()
+
+        assert os.readlink(artifact) == str(tmp_path / "target-that-is-not-there")
+        assert not (tmp_path / "target-that-is-not-there").exists(), (
+            "a refusal must not have created the target through the link"
+        )
+
+    def test_a_path_it_cannot_even_look_at_is_refused_rather_than_read_as_absent(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        """Why ``os.lstat`` and not ``os.path.lexists``.
+
+        ``lexists`` returns ``False`` for *every* ``OSError``, so an unreadable parent
+        component would reproduce the same bug one level up — "nothing is there", then
+        a commit that cannot create the file. Substituting ``lexists`` for the
+        ``os.lstat`` above turns this test red, and it is the only one that does.
+
+        **What it cannot pin, measured rather than assumed:** substituting
+        ``Path.exists()`` leaves it *green* on this interpreter, because ``exists()``
+        only began swallowing every ``OSError`` in 3.13 and 3.12.14 still propagates
+        ``EACCES`` here — so the mutant answers correctly for the wrong reason. The
+        dangling-symlink test above is version-independent and catches that one. Two
+        tests for one line because the two wrong implementations fail differently.
+        """
+        blind = tmp_path / "blind"
+        blind.mkdir(mode=0o700)
+        artifact = blind / "artifact.sealed"
+        blind.chmod(0o000)
+        try:
+            assert not os.path.lexists(artifact), "the premise: lexists says absent"
+            with pytest.raises(SinkNotWritable, match="cannot tell whether"):
+                EmergencyArtifactSink(artifact, key_file=key_file).prepare()
+        finally:
+            blind.chmod(0o700)
+
+    def test_and_the_control_accepts_a_path_with_nothing_at_it(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        EmergencyArtifactSink(tmp_path / "artifact.sealed", key_file=key_file).prepare()
+
 
 class TestCommitRefusesToRunUnprepared:
     def test_replacement_host(self, tmp_path: Path) -> None:
@@ -173,6 +267,30 @@ class TestCommitRefusesToRunUnprepared:
     def test_emergency_artifact(self, tmp_path: Path, key_file: Path) -> None:
         with pytest.raises(SinkWriteFailed, match="before prepare"):
             EmergencyArtifactSink(tmp_path / "a.sealed", key_file=key_file).commit(item(), now=NOW)
+
+    def test_a_filesystem_refusal_at_commit_arrives_as_this_modules_own_error(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #129 finding 2, third part: the normalisation, not the preflight.
+
+        The preflight above now refuses this case, so reaching commit takes a change
+        *between* the two calls — which is exactly the window the normalisation is for.
+        The lock is an ``os.open``, so what came out was ``PermissionError``: an
+        ``OSError``, past ``except TokenStoreError`` here and past every
+        ``except SinkError`` in the callers. The most expensive failure this module has
+        was the one kind it did not name.
+        """
+        tokens = tmp_path / "host" / "tokens"
+        tokens.mkdir(mode=0o700, parents=True)
+        sink = ReplacementHostSink(tokens)
+        sink.prepare_for(FLOW_ID)
+        (tokens.parent / ".tokenstore.lock").unlink()
+        tokens.parent.chmod(0o500)
+        try:
+            with pytest.raises(SinkWriteFailed, match="did not reach"):
+                sink.commit(item(), now=NOW)
+        finally:
+            tokens.parent.chmod(0o700)
 
 
 class TestWhatLandsAndWhatIsStillOwed:

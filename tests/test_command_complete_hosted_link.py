@@ -401,6 +401,46 @@ def test_the_replacement_host_sink_is_refused_because_it_would_write_here(
     assert not tokens.exists(), "the refused branch created the local store anyway"
 
 
+def test_a_sink_whose_commit_must_fail_costs_no_exchange(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #129 finding 2, measured where the cost is: the Item budget.
+
+    The sink-level tests prove ``prepare`` raises. What matters to the owner is one
+    step out — that the refusal happened before ``item_public_token_exchange``, so the
+    run cost none of the ten permanent slots (AGENTS.md rule 2). A dangling symlink is
+    the case chosen because it is the one of finding 2's two halves this command can
+    still reach: ``--sink replacement-host`` is refused outright now.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+    api = _Finished()
+    _over_a_fake_sdk(monkeypatch, api)
+    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"])
+
+    artifact = tmp_path / "recovered.sealed"
+    artifact.symlink_to(tmp_path / "never-created")
+
+    assert (
+        complete_hosted_link.run(
+            _args(
+                from_tty=True,
+                exchange=True,
+                sink=SinkKind.EMERGENCY_ARTIFACT.value,
+                artifact=artifact,
+                backup_key=_a_backup_key(tmp_path),
+            )
+        )
+        == 2
+    )
+
+    assert "already exists" in capsys.readouterr().err
+    assert "item_public_token_exchange" not in api.called, (
+        "a sink whose commit could not have succeeded still spent a permanent Item slot"
+    )
+    assert not (tmp_path / "never-created").exists()
+
+
 def test_an_incomplete_receipt_neither_marks_the_flow_done_nor_retires_its_record(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -85,6 +85,7 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from networth.backup import crypto
+from networth.filelock import LockUnavailable, exclusive_file_lock
 from networth.tokenstore import (
     FILE_MODE,
     Secret,
@@ -236,7 +237,14 @@ class DurableSink(Protocol):
     def prepare(self) -> None:
         """Prove the destination durable, or raise :class:`SinkNotWritable`.
 
-        Called **before** the exchange. Must leave nothing behind on success.
+        Called **before** the exchange. It must leave no recovery material behind on
+        success — but it may leave a prerequisite the commit would have created
+        anyway, and one kind does: proving a ``TokenStore`` means *taking its lock*,
+        and the lock file is the same file :meth:`~networth.tokenstore.TokenStore.put`
+        creates. This read *"must leave nothing behind"* until PR #129, which is how
+        the proof came to probe the credential directory and skip the lock in its
+        parent — a promise narrow enough to exclude the real prerequisite excluded the
+        proof of it too.
         """
 
     def prepare_for(self, flow_id: str) -> None:
@@ -323,6 +331,42 @@ def _prove_durable(directory: Path, *, what: str) -> None:
             _fsync_directory(directory)
 
 
+def _prove_lockable(lock_path: Path, *, what: str) -> None:
+    """Take and release the lock the commit will need, in the directory it lives in.
+
+    PR #129 finding 2. :meth:`~networth.tokenstore.TokenStore.put` takes
+    ``.tokenstore.lock`` in the credential directory's **parent** — deliberately, so
+    the lock can never be mistaken for archive payload (``DESIGN.md`` §14a) — and
+    :func:`_prove_durable` probes the credential directory and nothing above it. A
+    writable store beneath an unwritable parent therefore passed a proof whose whole
+    claim is that the write after the exchange cannot fail, and then failed at
+    ``os.open`` on the lock with :class:`PermissionError`: an ``OSError``, so it did
+    not even arrive as a :class:`SinkError`.
+
+    The proof is the real acquisition rather than a probe beside it, because what has
+    to hold is not "this directory accepts files" — that was already checked, on the
+    wrong directory — but "this exact path can be opened ``O_NOFOLLOW``, chmodded and
+    flocked", which is three syscalls a probe file does not make.
+
+    Non-blocking, so a preflight cannot hang before the emergency's clock. A lock
+    someone else holds is still a refusal and not a wait: the alternative is spending
+    the one-time token and *then* queueing behind a backup capture.
+    """
+    try:
+        with exclusive_file_lock(lock_path, blocking=False, reentrant=False):
+            pass
+    except LockUnavailable:
+        raise SinkNotWritable(
+            f"{what}: another operation holds {lock_path}, so the write after the "
+            "exchange would queue behind it. Nothing has been exchanged"
+        ) from None
+    except OSError as exc:
+        raise SinkNotWritable(
+            f"{what}: the lock the write needs, {lock_path}, cannot be taken: "
+            f"{exc.strerror}. Nothing has been exchanged and no Item slot is at risk"
+        ) from None
+
+
 class ReplacementHostSink:
     """Criterion 1's first branch: a replacement host with a ready ``TokenStore``.
 
@@ -348,6 +392,7 @@ class ReplacementHostSink:
     def prepare(self) -> None:
         _prove_durable(self._directory, what="replacement-host TokenStore")
         store = TokenStore(self._directory)
+        _prove_lockable(store.lock_path, what="replacement-host TokenStore")
         self._store = store
 
     def prepare_for(self, flow_id: str) -> None:
@@ -397,14 +442,20 @@ class ReplacementHostSink:
                 item.access_token.reveal(),
                 item_id=item.item_id,
             )
-        except TokenStoreError as exc:
+        # `OSError` alongside `TokenStoreError`, because the store raises its own type
+        # for what it decided and the filesystem's for what it could not do — the lock
+        # `put` opens is an `os.open`, and a `PermissionError` from it used to leave
+        # this method entirely, past every `except SinkError` the callers have. A
+        # failure this expensive must arrive as this module's own type whatever it was
+        # underneath. `LockUnavailable` is a `RuntimeError`, so it is named too.
+        except (TokenStoreError, LockUnavailable, OSError) as exc:
             raise SinkWriteFailed(
                 f"the exchange succeeded and the credential did not reach {self._directory}: {exc}"
             ) from None
         try:
             stored = store.get(reference).reveal()
             record = store.record(reference)
-        except TokenStoreError as exc:
+        except (TokenStoreError, LockUnavailable, OSError) as exc:
             raise SinkWriteFailed(
                 f"the credential was written to {self._directory} and did not read back: {exc}"
             ) from None
@@ -450,9 +501,32 @@ class EmergencyArtifactSink:
         return f"sealed emergency artifact at {self._path}"
 
     def prepare(self) -> None:
-        if self._path.exists():
+        # PR #129 finding 2, second half. This asked `self._path.exists()`, which
+        # *follows* the link: a dangling symlink at the artifact path answered `False`,
+        # so the proof passed and commit's `O_EXCL` then failed `EEXIST` — after the
+        # exchange, which is the one place this refusal must never be.
+        #
+        # `os.lstat` rather than `os.path.lexists`, and the difference is the whole
+        # point: `lexists` returns `False` for *every* `OSError`, so an unreadable
+        # parent component would read as "nothing is there" and re-create exactly the
+        # bug one level up. Three outcomes, each answered on its own terms — an entry
+        # exists, nothing is there, or we cannot tell — and the third refuses, because
+        # a preflight that cannot see is a preflight that has not proven anything.
+        try:
+            os.lstat(self._path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise SinkNotWritable(
+                f"cannot tell whether an artifact already exists at {self._path}: "
+                f"{exc.strerror}. Refusing rather than sealing over an unknown, and "
+                "nothing has been exchanged"
+            ) from None
+        else:
             # `O_EXCL` at commit would raise this *after* the exchange. The same
             # refusal, moved to the side of the irreversible step where it is free.
+            # Any directory entry counts, not just a file that opens: a symlink whose
+            # target is absent is still a name `O_EXCL` will refuse to create.
             raise SinkNotWritable(
                 f"an artifact already exists at {self._path}; it will not be "
                 "overwritten. Move it aside — it may hold an earlier recovery"
