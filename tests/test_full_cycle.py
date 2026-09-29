@@ -380,6 +380,29 @@ def test_invalid_completion_clock_leaves_run_unfinished(
         lock_path=tmp_path / "sync.lock",
         clock=lambda: next(times),
     )
-    with pytest.raises(ValueError):
+    message = (
+        "cycle completion precedes its start" if at.tzinfo is not None else "cycle completion time"
+    )
+    with pytest.raises(ValueError, match=message):
         dispatch.run_due()
     assert_unfinished(db)
+
+
+def test_idle_bad_clock_refuses_before_writer_admission(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    assert runner(db, tmp_path, Client(), fresh_quotes()).run_due().ok
+    dispatch = runner(db, tmp_path, Client(), fresh_quotes())
+    times = iter((NOW, NOW.replace(tzinfo=None)))
+    dispatch._clock = lambda: next(times)
+    db.execute("PRAGMA busy_timeout = 0")
+    rival = sqlite3.connect(tmp_path / "cycle.db", timeout=0)
+    try:
+        rival.execute("BEGIN IMMEDIATE")
+        with pytest.raises(ValueError, match="alert evaluation time"):
+            dispatch.run_due()
+        assert not db.in_transaction
+    finally:
+        rival.rollback()
+        rival.close()
+    assert db.execute("SELECT count(*) FROM sync_run").fetchone() == (1,)
