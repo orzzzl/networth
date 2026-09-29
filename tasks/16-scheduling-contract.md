@@ -5,9 +5,10 @@ merged in PR #118; socket timeout/no-retry policy merged in PR #120.
 Stored-state full-sync planning merged in PR #121 and worker collection/persistence
 merged in PR #122. Full-sync dispatch and per-Item retry admission merged in PR #124; health
 dispatch and worker transaction guards merged in PR #125. Manual equity quote
-collection/persistence merged in PR #128. Stored cycle alert assembly/dispatch
-is the next review slice. Complete cycle assembly, executable
-wiring, remaining scheduler implementation and live acceptance remain owed.
+collection/persistence merged in PR #128; stored cycle alert assembly/dispatch
+merged in PR #130. Full-cycle completion is the next review slice. Quote-only
+cycles, executable wiring, remaining scheduler implementation and live acceptance
+remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
 ## Decision: restore the specified capture boundary (A)
@@ -400,7 +401,7 @@ second append fails, and retry with no second quote call. The successful path
 feeds the real Snapshotter and checks its total and source age. This is local
 component evidence, not Linux unit or live-host acceptance.
 
-## Cycle alert assembly and dispatch (next review slice)
+## Cycle alert assembly and dispatch (merged #130)
 
 `CycleAlertEvaluator` reads every stored Item and every active account in its
 caller's transaction, derives freshness through `StalenessMachine`, explicitly
@@ -426,11 +427,56 @@ not become absence or healthy evidence. All input assembly precedes alert writes
 a later write failure rolls back the entire evaluation. No alert prompt is marked
 here: Publisher owns marking only the alerts in a committed envelope.
 
-The future cycle runner must invoke alert dispatch after worker persistence and
-before publication, even when no new snapshot was produced. The synthetic test
+Cycle callers must evaluate alerts after worker persistence and before
+publication, even when no new snapshot was produced. The synthetic test
 assembles all five alert kinds, snapshots, encrypts with the real Publisher and
 decodes the resulting bulletin. This proves component compatibility and delivery
 when called in that order; it is not executable scheduling evidence. No command
 or live runtime is added in this slice. Full/manual cycle completion, quote due
 planning, independent publication retry, archive scheduling, Link latency, units
 and installation remain owed before task 16 can close.
+
+## Full-cycle completion (next review slice)
+
+`FullCycleDispatcher` extends the reviewed full-sync admission, stored due clocks
+and per-Item retry policy. It collects Plaid first; when that plan has no failures,
+it collects the manual quotes for the same run without a SQLite transaction.
+The canonical sync file lock remains held across both providers and completion.
+The completion clock is sampled after quote collection. One short write
+transaction persists Plaid observations/retry outcomes, manual observations,
+`sync_run` success, the Snapshotter result and cycle alerts. SnapshotRepository
+requires `ok=1`, so that assignment precedes snapshot construction **inside the
+same uncommitted transaction**; an observer cannot see success without its snapshot.
+
+Missing quotes, changed manual inputs, snapshot refusal or alert failure roll
+back the entire completion, leaving only the previously committed unfinished run.
+BUSY retry replays persistence with the same collected plans and rereads alert
+facts; it never recollects either provider. Process death discards the plans,
+and the next activation starts a new run. This conservative policy can repeat
+successful idempotent Plaid calls during a prolonged quote outage. It does not
+reuse a prior price, manufacture a successful cycle, or replay a Link exchange.
+
+A failed or deferred Plaid plan cannot produce a successful snapshot. It persists
+its available/carry-forward observations and per-Item retry result, evaluates
+alerts and records `ok=0`, without requesting manual prices. An unrelated quote
+outage therefore cannot erase the failed Item's backoff. An alert/input error can
+still roll back that completion and its retry outcome, just like another final
+transaction failure; no partial completion is committed. All-deferred or not-due
+activations create no run or snapshot, but still reassess stored alerts under the
+same lock. Quote-only refresh remains a separate, unimplemented job.
+
+`FullSyncDispatcher` remains the Plaid-only component seam; the future scheduled
+full-cycle executable must choose `FullCycleDispatcher`. Neither is currently
+wired to a command. Publication follows a completed transaction and retains its
+independent retry obligation: a failed Publisher call cannot undo the snapshot
+or consume another provider fetch. This slice does not schedule Publisher or
+archives, install units, or establish the Link latency target. The health job
+still runs separately and does not become full-sync success evidence.
+
+Synthetic WAL tests measure independent writes during both provider calls,
+refusal of a competing dispatcher, atomic visibility through a last-stage BUSY
+retry, restart after quote failure, manual edit/snapshot/alert refusals, the
+manual-only full-cycle path, and completion clocks after quote I/O. A real
+Publisher encrypt/decrypt check confirms the committed manual-inclusive total,
+its source age and the share-count alert. These are component integration checks,
+not executable scheduling or live acceptance. Task16/08/03a-live remain open.
