@@ -98,7 +98,20 @@ class FullSyncResult:
 @dataclass(frozen=True, slots=True)
 class _Plan:
     draft: ObservationDraft
-    fresh: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FullSyncPlan:
+    """Collected observations, not yet durable; contains no token material.
+
+    Keep this in memory through a short write-transaction retry. A retry must
+    replay ``persist`` with this same plan, never repeat the provider calls.
+    Account figures remain sensitive; this object is not a log record.
+    """
+
+    attempted_count: int
+    observations: tuple[ObservationDraft, ...]
+    failures: tuple[SyncFailure, ...]
 
 
 class FullSync:
@@ -129,7 +142,16 @@ class FullSync:
         self._clock = clock
 
     def run(self, sync_run_id: str, *, at: datetime | None = None) -> FullSyncResult:
-        """Fetch first, then append; the caller owns the enclosing transaction."""
+        """Compatibility path; scheduled callers use collect, then persist.
+
+        This method does not open an explicit transaction. The runtime must
+        collect outside a transaction, then persist inside BEGIN IMMEDIATE.
+        """
+
+        return self.persist(self.collect(sync_run_id, at=at))
+
+    def collect(self, sync_run_id: str, *, at: datetime | None = None) -> FullSyncPlan:
+        """Fetch and plan without writes; the caller must not hold a transaction."""
 
         require_nonempty(sync_run_id, field="sync_run_id")
         fetched_at = self._clock() if at is None else at
@@ -151,13 +173,25 @@ class FullSync:
             plans.extend(item_plans)
             failures.extend(item_failures)
 
-        # No network call occurs below this line. SQLite may open its write
-        # transaction on the first append without holding it across the wire.
+        return FullSyncPlan(
+            attempted_count=len(targets),
+            observations=tuple(plan.draft for plan in plans),
+            failures=tuple(failures),
+        )
+
+    def persist(self, plan: FullSyncPlan) -> FullSyncResult:
+        """Append a collected plan with no network I/O; never commit for the caller.
+
+        A failed transaction can be rolled back and retried with this plan. A
+        committed plan must not be replayed: the observation repository refuses
+        a duplicate run/account key even when its payload is identical.
+        """
+
         stored: list[Observation] = []
-        for plan in plans:
-            observation = self._store.observations.append(plan.draft)
+        for draft in plan.observations:
+            observation = self._store.observations.append(draft)
             stored.append(observation)
-            if plan.fresh:
+            if not draft.is_carried_forward:
                 self._store.accounts.record_fetch(
                     observation.account_id,
                     fetched_at=observation.fetched_at,
@@ -165,9 +199,9 @@ class FullSync:
                 )
 
         return FullSyncResult(
-            attempted_count=len(targets),
+            attempted_count=plan.attempted_count,
             observations=tuple(stored),
-            failures=tuple(failures),
+            failures=plan.failures,
         )
 
     def _plan_item(
@@ -324,7 +358,6 @@ class FullSync:
                         fetched_at=fetched_at,
                         is_carried_forward=False,
                     ),
-                    fresh=True,
                 )
             )
         return plans, failures
@@ -389,7 +422,6 @@ class FullSync:
                         fetched_at=fetched_at,
                         is_carried_forward=False,
                     ),
-                    fresh=True,
                 )
             )
         return plans, failures
@@ -481,7 +513,6 @@ class FullSync:
                     fetched_at=previous.fetched_at,
                     is_carried_forward=True,
                 ),
-                fresh=False,
             ),
             SyncFailure(
                 account_id=target.id,
@@ -501,5 +532,6 @@ __all__ = [
     "BalanceMode",
     "FullSync",
     "FullSyncResult",
+    "FullSyncPlan",
     "SyncFailure",
 ]

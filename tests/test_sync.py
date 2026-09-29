@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -17,7 +19,7 @@ from networth.model import (
 )
 from networth.plaid import BalanceRecord, HoldingRecord, InvestmentRecords
 from networth.storage import migrate
-from networth.store import Store
+from networth.store import ObservationConflictError, Store
 from networth.sync import (
     BALANCE_LAST_UPDATED,
     BALANCE_REALTIME_FETCH,
@@ -492,3 +494,74 @@ def test_sync_targets_exclude_manual_policy_independently_of_linkage(
 
     assert result.attempted_count == 1
     assert {row.account_id for row in result.observations} == {synced}
+
+
+def test_collected_sync_retries_only_persistence_under_immediate_transaction(
+    db: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    """A second-row failure rolls back the first; retry cannot re-fetch it."""
+    db.commit()
+    path = tmp_path / "sync.db"
+    with closing(sqlite3.connect(path)) as writer, closing(sqlite3.connect(path)) as observer:
+        db.backup(writer)
+        migrate(writer)
+        observer.execute("PRAGMA busy_timeout = 0")
+        first_item = add_item(writer, "first")
+        second_item = add_item(writer, "second")
+        first = add_account(writer, first_item, "first")
+        second = add_account(writer, second_item, "second")
+        add_run(writer, "collected")
+        writer.commit()
+
+        class ConcurrentWriterClient(FakeClient):
+            def fetch_realtime_balances(self, access_token: str) -> tuple[BalanceRecord, ...]:
+                # Actual independent WAL writer during each provider call, not
+                # an in_transaction flag standing in for lock availability.
+                observer.execute("BEGIN IMMEDIATE")
+                add_run(observer, f"concurrent-{len(self.calls)}")
+                observer.commit()
+                return super().fetch_realtime_balances(access_token)
+
+        client = ConcurrentWriterClient(writer, realtime=(balance("first"), balance("second")))
+        sync = sync_for(writer, client, mode=BalanceMode.REALTIME)
+        plan = sync.collect("collected", at=NOW)
+        assert plan.attempted_count == 2
+        assert not plan.failures
+        assert not writer.in_transaction
+        assert observer.execute("SELECT count(*) FROM observation").fetchone() == (0,)
+        calls = list(client.calls)
+        assert len(calls) == 2
+
+        writer.execute(
+            f"CREATE TEMP TRIGGER fail_second BEFORE INSERT ON observation "
+            f"WHEN NEW.account_id = {second} BEGIN "
+            "SELECT RAISE(ABORT, 'synthetic second row failure'); END"
+        )
+        writer.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.IntegrityError, match="synthetic second row"):
+            sync.persist(plan)
+        assert writer.execute("SELECT count(*) FROM observation").fetchone() == (1,)
+        assert observer.execute("SELECT count(*) FROM observation").fetchone() == (0,)
+        writer.rollback()
+        assert writer.execute("SELECT count(*) FROM observation").fetchone() == (0,)
+        assert writer.execute(
+            "SELECT last_fetch_at FROM account WHERE id=?", (first,)
+        ).fetchone() == (None,)
+        writer.execute("DROP TRIGGER fail_second")
+        writer.execute("BEGIN IMMEDIATE")
+        result = sync.persist(plan)
+        assert result.ok
+        assert writer.in_transaction  # persist never commits behind its caller
+        assert observer.execute("SELECT count(*) FROM observation").fetchone() == (0,)
+        writer.commit()
+        assert observer.execute("SELECT count(*) FROM observation").fetchone() == (2,)
+        assert client.calls == calls
+        assert {row.account_id for row in result.observations} == {first, second}
+        # A retry AFTER commit is different; the existing append-only rule
+        # continues to reject duplicate observations, even identical ones.
+        writer.execute("BEGIN IMMEDIATE")
+        with pytest.raises(ObservationConflictError):
+            sync.persist(plan)
+        writer.rollback()
+        assert client.calls == calls

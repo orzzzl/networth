@@ -67,6 +67,19 @@ class PollBatchResult:
         return not self.failure_types
 
 
+@dataclass(frozen=True, slots=True)
+class PollPlan:
+    """Network observations awaiting one caller-owned write transaction.
+
+    Failed targets have no update; persisting this plan never invents health
+    evidence for them. It contains no credentials and must not be logged.
+    """
+
+    attempted_count: int
+    observations: tuple[tuple[int, ItemHealthUpdate], ...]
+    failure_types: tuple[str, ...]
+
+
 class ItemHealthPoller:
     """Poll due Items and persist the classified outcome.
 
@@ -95,9 +108,14 @@ class ItemHealthPoller:
     def poll_due(self, *, at: datetime | None = None) -> PollBatchResult:
         """Poll due Items, reporting any target skipped without an observation."""
 
+        return self.persist(self.collect_due(at=at))
+
+    def collect_due(self, *, at: datetime | None = None) -> PollPlan:
+        """Observe due Items without writing or holding a write transaction."""
+
         polled_at = self._poll_time(at)
         due = self._items.due_at_or_before(polled_at - POLL_INTERVAL)
-        return self._observe_then_record(due, polled_at)
+        return self._collect(due, polled_at)
 
     def poll_all(self, *, at: datetime | None = None) -> PollBatchResult:
         """Poll every Item, reporting skipped targets alongside recorded results.
@@ -106,8 +124,13 @@ class ItemHealthPoller:
         work uses :meth:`poll_due` so downtime catch-up follows stored state.
         """
 
+        return self.persist(self.collect_all(at=at))
+
+    def collect_all(self, *, at: datetime | None = None) -> PollPlan:
+        """Observe every Item without persisting; for explicit full sweeps."""
+
         polled_at = self._poll_time(at)
-        return self._observe_then_record(self._items.all(), polled_at)
+        return self._collect(self._items.all(), polled_at)
 
     def poll_item(self, item_id: int, *, at: datetime | None = None) -> ItemHealth:
         """Poll one Item immediately, such as directly after Link completes."""
@@ -123,11 +146,11 @@ class ItemHealthPoller:
         require_utc(value, field="poll time")
         return value
 
-    def _observe_then_record(
+    def _collect(
         self,
         targets: tuple[ItemHealth, ...],
         polled_at: datetime,
-    ) -> PollBatchResult:
+    ) -> PollPlan:
         # Finish every network call before the first UPDATE.  SQLite's default
         # transaction opens on that UPDATE, so interleaving these loops would
         # hold the write transaction across later network waits.
@@ -145,13 +168,23 @@ class ItemHealthPoller:
             else:
                 observations.append((target.id, update))
 
+        return PollPlan(len(targets), tuple(observations), tuple(failure_types))
+
+    def persist(self, plan: PollPlan) -> PollBatchResult:
+        """Record collected health facts without network I/O or a hidden commit.
+
+        The runtime opens BEGIN IMMEDIATE here, after collect returns. On a
+        write failure it may roll back and retry this same plan; a later poll
+        already on disk retains precedence through record_poll's clock guard.
+        """
+
         recorded = tuple(
-            self._items.record_poll(item_id, update) for item_id, update in observations
+            self._items.record_poll(item_id, update) for item_id, update in plan.observations
         )
         result = PollBatchResult(
-            attempted_count=len(targets),
+            attempted_count=plan.attempted_count,
             recorded=recorded,
-            failure_types=tuple(failure_types),
+            failure_types=plan.failure_types,
         )
         if not result.ok:
             logger.error(
@@ -212,4 +245,4 @@ class ItemHealthPoller:
         )
 
 
-__all__ = ["POLL_INTERVAL", "ItemHealthPoller", "PollBatchResult"]
+__all__ = ["POLL_INTERVAL", "ItemHealthPoller", "PollBatchResult", "PollPlan"]
