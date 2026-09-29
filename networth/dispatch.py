@@ -163,22 +163,25 @@ class FullSyncDispatcher(_Dispatcher):
         # refactor that leaves run creation uncommitted must fail before I/O.
         self._idle()
         plan = self._worker.collect(run_id, at=started, deferred_item_ids=deferred)
+        ok = self._complete(run_id, plan, started)
+        return DispatchResult("COMPLETED", run_id, ok, state_error)
+
+    def _complete(self, run_id: str, plan: FullSyncPlan, started: datetime) -> bool:
         finished = self._clock()
         require_utc(finished, field="dispatch completion time")
         if finished < started:
             raise ValueError("dispatch completion precedes its start")
+        return self._write(lambda: self._finish(run_id, plan, finished))
 
-        def finish() -> bool:
-            result = self._worker.persist(plan)
-            self._record_retries(plan, finished)
-            self._db.execute(
-                "UPDATE sync_run SET finished_at = ?, ok = ? WHERE id = ?",
-                (_text(finished), int(result.ok), run_id),
-            )
-            return result.ok
-
-        ok = self._write(finish)
-        return DispatchResult("COMPLETED", run_id, ok, state_error)
+    def _finish(self, run_id: str, plan: FullSyncPlan, finished: datetime) -> bool:
+        """Persist the Plaid outcome inside the caller's write transaction."""
+        result = self._worker.persist(plan)
+        self._record_retries(plan, finished)
+        self._db.execute(
+            "UPDATE sync_run SET finished_at = ?, ok = ? WHERE id = ?",
+            (_text(finished), int(result.ok), run_id),
+        )
+        return result.ok
 
     def _deferred(self, at: datetime) -> frozenset[int]:
         deferred: set[int] = set()

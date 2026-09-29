@@ -3695,6 +3695,21 @@ BUSY retry rereads facts after rollback. Alert prompt timestamps remain Publishe
 responsibility. The future cycle runner must call this after persisting worker
 results and before publication; executable wiring is still owed.
 
+`FullCycleDispatcher` composes the full-sync component with manual quote valuation,
+snapshot creation and stored alert evaluation. It collects both providers outside
+SQLite transactions, then commits observations, retry outcomes, successful-run
+completion, snapshot and alerts together. SnapshotRepository requires a successful
+run, so the success assignment precedes snapshot construction within that one
+uncommitted transaction. A manual-input, snapshot or alert refusal rolls it all
+back; only the durable unfinished run remains. BUSY retries reuse the collected
+plans. Restart recollects idempotent data, so a prolonged quote outage can repeat
+successful Plaid reads rather than consume the full-cycle due clock prematurely.
+A failed Plaid plan persists its observations/retries and alerts with `ok=0`,
+without requesting manual prices or creating a snapshot. Idle/deferred activations
+still evaluate alerts. The future executable must select this full-cycle runner,
+not the Plaid-only component. Quote-only refresh, independent publication/archive
+scheduling, executable wiring and live acceptance remain owed by task 16.
+
 **Why the full sync has two predicates and not one.** *(From review. Rev 3 made
 a sync due only after a new market close, which quietly redefined the product:
 after a successful Friday run the predicate stayed false all weekend, so a Monday
