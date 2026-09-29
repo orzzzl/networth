@@ -17,13 +17,15 @@ import 'phone_payload.dart';
 /// would be the one that costs the owner his number. A control with that shape
 /// does not survive contact with a real owner.
 ///
-/// **Four outcomes, and the fourth is the one a three-state version gets
+/// **Five outcomes, and the last two are each the one a shorter version gets
 /// wrong.** [HeldCopyAbsent] and [HeldCopyUnreadable] are the split this
 /// directory already makes everywhere (`stored_file.dart`, `BaselineState`,
 /// `DiagnosticsState`): a missing record must never be readable as a satisfied
 /// one, and a damaged record must never be readable as a missing one. What
 /// those three cannot say is *"intact, and not in a language this build
-/// speaks"* — see [HeldCopyOutdated].
+/// speaks"* — see [HeldCopyOutdated] — and what none of the four can say is
+/// *"this build never got the bytes, so it knows nothing at all"* — see
+/// [HeldCopyNotRead].
 sealed class HeldCopyState {
   const HeldCopyState();
 }
@@ -46,19 +48,65 @@ final class HeldCopyHeld extends HeldCopyState {
   final PhonePayload payload;
 }
 
-/// A copy is stored and this build cannot read it. **Never absence.**
+/// The document was read and this build cannot use it. **Never absence, and
+/// never [HeldCopyNotRead].**
 ///
-/// Damage: truncated by a power loss mid-write, corrupted on disk, or a
-/// directory this app can no longer search. The owner is holding a phone whose
-/// saved copy is gone, and the honest screen says that rather than *"nothing
-/// has ever been fetched"*, which is a claim about his history with nothing
-/// behind it.
+/// Damage, established by looking: the bytes came back and they are not JSON,
+/// or not an object, or carry no `pairing_id`, or spell `schema_version` a way
+/// no build ever wrote, or fail the payload parse. The owner is holding a phone
+/// whose saved copy is gone, and the honest screen says that rather than
+/// *"nothing has ever been fetched"*, which is a claim about his history with
+/// nothing behind it.
+///
+/// **It is positive evidence and that is what separates it from
+/// [HeldCopyNotRead]**: this state says the stored document names no usable
+/// `seq`, which a caller reasoning about I6's replay floor is entitled to act
+/// on. Not reading the document at all establishes nothing of the kind.
 final class HeldCopyUnreadable extends HeldCopyState {
   const HeldCopyUnreadable(this.reason);
 
   /// What was wrong, for the screen and the log. **Carries no stored bytes** —
   /// the file is a decrypted payload, so quoting it here would put real figures
   /// on the path to `debugLog` and to any surface that renders a reason.
+  final String reason;
+}
+
+/// The bytes were never obtained, so **nothing is known about what is held** —
+/// not that it is damaged, and not that it is absent.
+///
+/// `path_provider` could not name the file, the read raised, or the name is
+/// there and unreadable (a directory, a dangling symlink, an unsearchable
+/// parent). `stored_file.dart` already draws exactly this line one layer down
+/// and states it outright — its `StoredUnreadable` is *"something is there,
+/// **or the question could not be answered**"* — and then hands both halves
+/// back as one value, because for proving absence they are the same. For the
+/// replay floor they are not, and collapsing them is how an older payload gets
+/// to replace a newer copy.
+///
+/// **Why the difference is worth a fifth case.** Under §9.3's copy-first
+/// protocol the I6 baseline is explicitly allowed to lag the held copy, so the
+/// baseline alone is no longer a sufficient fallback: a phone holding `42` with
+/// a baseline still reading `40` will accept `41` over it if a failed read is
+/// taken as evidence that no `42` is there. Review reproduced that with a
+/// single transient `open` failure. [HeldCopyUnreadable] permits the fallback
+/// because it *looked*; this one must not, because it did not.
+///
+/// **It refuses for as long as it lasts, and that costs nothing extra**, which
+/// is the property that makes refusing safe rather than a way to strand a
+/// phone: every condition that keeps this state true also stops
+/// `HeldCopyStore.hold` from writing — the same `open`, the same directory, the
+/// same permissions — so a refresh that refused here would have failed to store
+/// its payload anyway. The one residue is a dangling symlink standing in for
+/// the copy, which reads as this state and writes fine; nothing in an
+/// app-private directory creates one, and refusing there is the same bargain
+/// `RefreshRefusal.baselineUnreadable` already makes: damage must not be the
+/// way around a defence.
+final class HeldCopyNotRead extends HeldCopyState {
+  const HeldCopyNotRead(this.reason);
+
+  /// Why the read did not happen, for the log. Carries no stored bytes, for
+  /// [HeldCopyUnreadable.reason]'s reason — and in this state there are none to
+  /// carry.
   final String reason;
 }
 

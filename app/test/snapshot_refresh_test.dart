@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -59,6 +60,25 @@ class _UnwritableBaselineStore implements SeqBaselineStore {
 
   @override
   Future<void> write(SeqBaseline baseline) async =>
+      throw const FileSystemException('no space left');
+}
+
+/// A diagnostics store whose writes fail — the third file on that same disk.
+///
+/// Needed to reach the state review's second round-2 finding is about: the copy
+/// lands and *both* records that describe it are left behind. With only the
+/// baseline failing, `_writeSuccess` still advances the note and the notes
+/// disagree with each other, which conjunct 3 already handled.
+class _UnwritableDiagnosticsStore implements FetchDiagnosticsStore {
+  _UnwritableDiagnosticsStore(this.inner);
+
+  final FetchDiagnosticsStore inner;
+
+  @override
+  Future<DiagnosticsState> read(String pairingId) => inner.read(pairingId);
+
+  @override
+  Future<void> write(FetchDiagnostics record) async =>
       throw const FileSystemException('no space left');
 }
 
@@ -126,6 +146,7 @@ void main() {
     SecureStringStore? store,
     HeldCopyStore? copies,
     SeqBaselineStore? baselineStore,
+    FetchDiagnosticsStore? diagnosticsStore,
   }) async {
     final port = route == null ? 0 : await route.start();
     if (route != null) {
@@ -140,7 +161,7 @@ void main() {
           deadline: const Duration(seconds: 5),
         ),
       ),
-      diagnostics: diagnostics,
+      diagnostics: diagnosticsStore ?? diagnostics,
       baselines: baselineStore ?? baselines,
       heldCopies: copies ?? heldCopies,
       clock: () => at,
@@ -152,12 +173,14 @@ void main() {
     SecureStringStore? store,
     HeldCopyStore? copies,
     SeqBaselineStore? baselineStore,
+    FetchDiagnosticsStore? diagnosticsStore,
   }) async =>
       (await refresher(
         route: route,
         store: store,
         copies: copies,
         baselineStore: baselineStore,
+        diagnosticsStore: diagnosticsStore,
       ))
           .refresh();
 
@@ -179,6 +202,19 @@ void main() {
       baselines.write(
         SeqBaseline(pairingId: pairingId, lastSeq: lastSeq, warning: warning),
       );
+
+  /// Put a copy on disk carrying [seq], under this pairing.
+  ///
+  /// The fixture serves exactly one `seq`, so the states below where the *held*
+  /// copy is ahead of or behind what the host serves cannot be reached by
+  /// refreshing — they have to be seeded. Written through the real store, so
+  /// what lands is a document `FileHeldCopyStore.read` will actually parse.
+  Future<void> givenHeldCopy(PublicationSeq seq) async {
+    final body = jsonDecode(readFixture(knownFixture)) as Map<String, dynamic>;
+    body['pairing_id'] = pairingId;
+    body['seq'] = seq.wire;
+    await heldCopies.hold(jsonEncode(body));
+  }
 
   group('the transport fault table', () {
     test('a fault the phone cannot place is never blamed on the host', () {
@@ -576,6 +612,14 @@ void main() {
       // compared 41 against 41 and §9.1 said `HOST_NOT_PUBLISHING` — *"nothing
       // has been published since"* — over a copy the host had in fact just
       // published past.
+      //
+      // **Its expected cause moved in round 2, and the move is the fix.** This
+      // arrangement — notes naming 40 over a copy of 41 — is the state conjunct
+      // 3 now checks for, so the honest answer is `CopyNotConfirmed` rather
+      // than `ServedPayloadNotHeld`, whose sentence (*"your server's latest
+      // copy isn't the one shown here"*) is false about a host that served
+      // exactly what is on screen. `ServedPayloadNotHeld` keeps its own
+      // coverage below, where the copy and the baseline do agree.
       await refresh(route: thePairedHost());
       final held = (await heldCopies.read(pairingId) as HeldCopyHeld).payload;
       await givenBaseline(seqOf(-1));
@@ -587,6 +631,7 @@ void main() {
         publishedAt: held.publishedAt,
         publishInterval: held.publishInterval,
         grace: held.grace,
+        copySeq: held.publicationSeq,
         deviceNow: at.add(const Duration(days: 30)),
         diagnostics: await diagnostics.read(pairingId),
         baseline: await baselines.read(pairingId),
@@ -594,7 +639,7 @@ void main() {
       ) as CopyStale;
 
       expect(state.reason, isA<CannotCheck>());
-      expect((state.reason as CannotCheck).cause, isA<ServedPayloadNotHeld>());
+      expect((state.reason as CannotCheck).cause, isA<CopyNotConfirmed>());
     });
 
     test('a first payload that cannot be kept leaves no baseline at all', () async {
@@ -644,6 +689,90 @@ void main() {
       expect(outcome, isA<RefreshAccepted>());
       expect(await heldCopies.read(pairingId), isA<HeldCopyHeld>());
       expect(await baselines.read(pairingId), isA<BaselineAbsent>());
+    });
+
+    test('a copy that could not be read is never replaced by an older payload', () async {
+      // **Review's first round-2 finding**, adopted from its probe. The phone
+      // holds `servedSeq + 1` — reachable exactly because the copy is written
+      // first, so the baseline behind it is a supported state, not corruption.
+      // One transient `open` failure used to collapse into the same `null` as
+      // "no copy here", the floor fell back to the lagging baseline, and the
+      // older payload replaced the newer copy on disk.
+      //
+      // The failure is injected at the *file*, so `FileHeldCopyStore` does its
+      // own classifying: this asserts the real store answers `HeldCopyNotRead`
+      // and that the refresher acts on it, rather than asserting a fake state.
+      await givenHeldCopy(seqOf(1));
+      await givenBaseline(seqOf(-1));
+      var opens = 0;
+      final transient = FileHeldCopyStore(
+        open: () async {
+          if (++opens == 1) {
+            throw const FileSystemException('synthetic transient read failure');
+          }
+          return File('${directory.path}/${FileHeldCopyStore.fileName}');
+        },
+      );
+
+      final outcome = await refresh(route: thePairedHost(), copies: transient);
+
+      expect(outcome, isA<RefreshKeptHeldCopy>());
+      expect((outcome as RefreshKeptHeldCopy).refusal, RefreshRefusal.heldCopyNotRead);
+      final held = (await heldCopies.read(pairingId) as HeldCopyHeld).payload;
+      expect(held.seq, seqOf(1).wire, reason: 'the newer copy this build never read must survive');
+      // The fetch itself succeeded and is still on the record: what was refused
+      // is the replacement, not the attempt.
+      expect((await storedDiagnostics()).lastSuccess?.seq, servedSeq);
+    });
+
+    test('a copy whose notes never caught up is not confirmed by them', () async {
+      // **Review's second round-2 finding**, adopted from its probe. Copy-first
+      // with no transaction means a kill between the copy write and the two
+      // record writes leaves a copy of `servedSeq` under notes that both still
+      // read `servedSeq - 1`. They agree with each other, which is all conjunct
+      // 3 used to ask, so §9.1 certified `HOST_NOT_PUBLISHING` — *"nothing has
+      // been published since"* — over the publication the host had just made.
+      //
+      // Failing both writes reaches the same persisted state as that kill, and
+      // that equivalence is the point: no rollback could have covered it,
+      // because after a kill nothing runs.
+      await givenHeldCopy(seqOf(-1));
+      await givenBaseline(seqOf(-1));
+      await diagnostics.write(
+        FetchDiagnostics.succeeded(pairingId: pairingId, at: at, seq: seqOf(-1)),
+      );
+
+      final outcome = await refresh(
+        route: thePairedHost(),
+        baselineStore: _UnwritableBaselineStore(baselines),
+        diagnosticsStore: _UnwritableDiagnosticsStore(diagnostics),
+      );
+
+      expect(outcome, isA<RefreshAccepted>());
+      final held = (await heldCopies.read(pairingId) as HeldCopyHeld).payload;
+      expect(held.seq, servedSeq.wire, reason: 'the copy landed');
+      expect((await storedBaseline()).lastSeq, seqOf(-1), reason: 'the baseline did not');
+      expect((await storedDiagnostics()).lastSuccess?.seq, seqOf(-1), reason: 'nor the note');
+
+      // Evaluated from the files alone, which is what a restart has: no
+      // in-memory state from the refresh above, and no next successful fetch.
+      final state = evaluateCopyState(
+        publishedAt: held.publishedAt,
+        publishInterval: held.publishInterval,
+        grace: held.grace,
+        copySeq: held.publicationSeq,
+        deviceNow: at.add(const Duration(days: 30)),
+        diagnostics: await diagnostics.read(pairingId),
+        baseline: await baselines.read(pairingId),
+        continuity: trustedClock,
+      ) as CopyStale;
+
+      expect(
+        state.reason,
+        isNot(isA<HostNotPublishing>()),
+        reason: 'the host published this; the phone simply never recorded that it did',
+      );
+      expect((state.reason as CannotCheck).cause, isA<CopyNotConfirmed>());
     });
   });
 

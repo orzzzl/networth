@@ -6,12 +6,13 @@ import 'instant.dart';
 /// The words for §9.1's copy verdict — the whole matrix, as two pure functions.
 ///
 /// **Its own file, and public, because the widget path cannot reach most of it.**
-/// There are fourteen distinct sentences here, and this build performs no
+/// There are fifteen distinct sentences here, and this build performs no
 /// fetches, so its diagnostics are [DiagnosticsAbsent] and a widget test can only
 /// ever drive four: the three clock disagreements and `NeverFetched`. The other
-/// ten — every [FetchFailureClass], `NotCheckedSinceDue`, `RecordsUnusable`,
-/// `ServedPayloadNotHeld`, `HostNotPublishing` and `HostServingNothing` — become
-/// reachable on screen only when this task's transport starts writing records.
+/// eleven — every [FetchFailureClass], `NotCheckedSinceDue`, `RecordsUnusable`,
+/// `ServedPayloadNotHeld`, `CopyNotConfirmed`, `HostNotPublishing` and
+/// `HostServingNothing` — become reachable on screen only when this task's
+/// transport starts writing records.
 ///
 /// *(It said **twelve** and **eight** until [FetchFailureClass.unknownFailure]
 /// forced a recount, and the recount found the number had been wrong before this
@@ -96,6 +97,7 @@ String _cannotCheckText(AppLocalizations l10n, CannotCheckCause cause) => switch
       NeverFetched() => l10n.copyReasonNeverFetched,
       NotCheckedSinceDue() => l10n.copyReasonNotCheckedSinceDue,
       ServedPayloadNotHeld() => l10n.copyReasonServedPayloadNotHeld,
+      CopyNotConfirmed() => l10n.copyReasonCopyNotConfirmed,
       // The sentence carries none of the stored bytes and names no path: this is
       // the owner's screen, and `RecordsUnusable.reason` is `debugLog`'s.
       RecordsUnusable() => l10n.copyReasonRecordsUnusable,

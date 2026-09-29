@@ -9,6 +9,7 @@ import 'fetch_diagnostics.dart';
 import 'instant.dart';
 import 'payload_alert.dart';
 import 'payload_format_exception.dart';
+import 'publication_seq.dart';
 import 'seq_baseline.dart';
 
 /// The plaintext body of a task-19 publication, as far as this build reads it.
@@ -134,11 +135,35 @@ class PhonePayload {
         publishedAt: publishedAt,
         publishInterval: publishInterval,
         grace: grace,
+        copySeq: publicationSeq,
         deviceNow: deviceNow,
         continuity: continuity,
         diagnostics: const DiagnosticsAbsent(),
         baseline: const BaselineAbsent(),
       );
+
+  /// [seq] as the counter I6 compares, or `null` when this document spells it a
+  /// way no host would have published.
+  ///
+  /// **Nullable rather than throwing, and that is the whole reason it is here
+  /// rather than at the call site.** [seq] is *"kept as the string the wire
+  /// carries"* and [fromJson] accepts any string for it, so a stored copy can
+  /// carry one `PublicationSeq.parse` refuses. This is read while *rendering* a
+  /// copy the phone is already holding; a throw there would take the owner's
+  /// number off the screen over a field he is not being shown. `null` reaches
+  /// `CopyNotConfirmed` instead — the records cannot confirm a copy whose own
+  /// counter is unreadable — which is true and costs him nothing.
+  ///
+  /// Very nearly unreachable in practice: `PayloadEnvelope` fixes the header
+  /// `seq` to a canonical positive decimal and requires the body to spell it
+  /// identically, and the envelope is the only door into the held-copy store.
+  PublicationSeq? get publicationSeq {
+    try {
+      return PublicationSeq.parse(seq);
+    } on PayloadFormatException {
+      return null;
+    }
+  }
 
   /// The dimension alone, for callers that do not need the reason.
   ///

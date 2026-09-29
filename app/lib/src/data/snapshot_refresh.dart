@@ -162,6 +162,17 @@ enum RefreshRefusal {
   /// corruption the bypass.
   baselineUnreadable,
 
+  /// The held copy's **bytes never came back**, so the replay floor could not be
+  /// established and nothing may be measured against it.
+  ///
+  /// The same refusal as [baselineUnreadable] and the same reason, moved to the
+  /// other of the two files the floor is read from: with the copy written first
+  /// the baseline is allowed to lag it, so "the baseline says 40" stops being an
+  /// answer the moment the copy cannot be checked. Distinct from a copy that was
+  /// read and found damaged or outdated — that one *is* an answer, and it lets
+  /// the replacement through. See `HeldCopyNotRead`.
+  heldCopyNotRead,
+
   /// I6 accepted it and **the copy could not be written**. Nothing else was
   /// advanced, because the copy is written first, so every record still
   /// describes the copy that is on disk.
@@ -398,7 +409,21 @@ class SnapshotRefresher {
       return const RefreshKeptHeldCopy(RefreshRefusal.baselineUnreadable);
     }
     final stored = state is BaselineHeld ? state.baseline : null;
-    final floor = await _replayFloor(pairingId, stored);
+    final PublicationSeq? floor;
+    switch (await _replayFloor(pairingId, stored)) {
+      case _FloorUnknown(:final reason):
+        // **Not reading the copy is not evidence that no copy is there.** With
+        // the copy written first the baseline is allowed to lag it, so falling
+        // back to the baseline here would let one failed read authorise
+        // replacing a newer copy with an older payload — review reproduced
+        // exactly that with a single transient `open`. The fetch succeeded and
+        // is recorded as one; what is refused is the *replacement*.
+        debugLog(() => 'replay floor not established, payload not accepted: $reason');
+        await _writeSuccess(pairingId: pairingId, at: at, seq: seq);
+        return const RefreshKeptHeldCopy(RefreshRefusal.heldCopyNotRead);
+      case _FloorAt(seq: final established):
+        floor = established;
+    }
 
     if (floor != null && seq < floor) {
       // I6's refusal. The floor does **not** move down — the phone keeps the
@@ -442,41 +467,73 @@ class SnapshotRefresher {
   /// *lower* the bar an earlier accept set, which is the only direction that
   /// costs anything.
   ///
-  /// `null` means neither record names one — a phone with no baseline and no
-  /// readable copy, which is §9.3 point 3's accept-on-trust case.
+  /// A [_FloorAt] with a `null` `seq` means neither record names one — a phone
+  /// with no baseline and no copy, which is §9.3 point 3's accept-on-trust
+  /// case.
   ///
-  /// **A copy this build cannot read contributes nothing**, deliberately: an
-  /// unreadable or outdated copy has no `seq` to offer, and that is precisely
-  /// why the baseline is a separate file that survives it.
-  Future<PublicationSeq?> _replayFloor(String pairingId, SeqBaseline? stored) async {
+  /// **A copy this build read and cannot use contributes nothing; a copy it
+  /// never read makes the floor [_FloorUnknown].** That line is the whole of
+  /// review's first round-2 finding and it is evidential, not a judgement about
+  /// how long the condition lasts. `HeldCopyUnreadable` and `HeldCopyOutdated`
+  /// are answers — the document came back and names no `seq` this build may
+  /// use — so the baseline stands alone and the copy is replaceable, which is
+  /// also the only thing that keeps a schema bump from stranding every phone
+  /// that had fetched before it. `HeldCopyNotRead` is not an answer: the bytes
+  /// never arrived, the copy may be a perfectly good `42`, and accepting `41`
+  /// over it would be accepting on the strength of not having looked. That is
+  /// the same distinction `stored_file.dart` makes between *proved* absent and
+  /// *unproven*, one layer up.
+  Future<_FloorEvidence> _replayFloor(String pairingId, SeqBaseline? stored) async {
     final held = await _heldSeq(pairingId);
-    final baseline = stored?.lastSeq;
-    if (baseline == null || (held != null && held > baseline)) {
-      return held ?? baseline;
+    if (held is _FloorUnknown) {
+      return held;
     }
-    return baseline;
+    final copy = (held as _FloorAt).seq;
+    final baseline = stored?.lastSeq;
+    if (baseline == null || (copy != null && copy > baseline)) {
+      return _FloorAt(copy ?? baseline);
+    }
+    return _FloorAt(baseline);
   }
 
-  Future<PublicationSeq?> _heldSeq(String pairingId) async {
+  Future<_FloorEvidence> _heldSeq(String pairingId) async {
     final HeldCopyState state;
     try {
       state = await heldCopies.read(pairingId);
     } on Object catch (error) {
-      debugLog(() => 'held copy not read for the replay floor: $error');
-      return null;
+      // `HeldCopyStore.read` answers rather than throws by contract, so this is
+      // a store that broke its own. Nothing was learned either way, which is
+      // [HeldCopyNotRead]'s case arriving as an exception.
+      debugLog(() => 'held copy store raised, replay floor not established: $error');
+      return const _FloorUnknown('the held copy store raised');
     }
-    if (state is! HeldCopyHeld) {
-      return null;
-    }
-    try {
-      return PublicationSeq.parse(state.payload.seq);
-    } on PayloadFormatException catch (error) {
-      // The copy is stored as the payload document, and `PhonePayload` does not
-      // fix the spelling of `seq` the way `PayloadEnvelope` does — so a damaged
-      // copy can carry one this cannot read. It contributes nothing rather than
-      // throwing; the baseline is still there.
-      debugLog(() => 'held copy seq unusable for the replay floor: $error');
-      return null;
+    switch (state) {
+      case HeldCopyNotRead(:final reason):
+        return _FloorUnknown(reason);
+      case HeldCopyAbsent():
+      case HeldCopyUnreadable():
+        return const _FloorAt(null);
+      case HeldCopyOutdated():
+        // **Its `seq` is not read out of it, deliberately.** `HeldCopyOutdated`
+        // says the document is intact in a schema this build does not speak,
+        // and its own doc is explicit that the state is *"evidence about a
+        // single field and nothing wider"* — this build *"has no way to inspect
+        // the body and does not pretend to"*. Reaching past that for `seq`
+        // would be reading a field whose meaning is exactly what the version
+        // mismatch leaves unknown.
+        return const _FloorAt(null);
+      case HeldCopyHeld(:final payload):
+        try {
+          return _FloorAt(PublicationSeq.parse(payload.seq));
+        } on PayloadFormatException catch (error) {
+          // The copy is stored as the payload document, and `PhonePayload` does
+          // not fix the spelling of `seq` the way `PayloadEnvelope` does — so a
+          // damaged copy can carry one this cannot read. The document *was*
+          // read, so this is an answer like `HeldCopyUnreadable` and not an
+          // unknown: it contributes nothing and the baseline stands.
+          debugLog(() => 'held copy seq unusable for the replay floor: $error');
+          return const _FloorAt(null);
+        }
     }
   }
 
@@ -678,4 +735,29 @@ final class _AmendWith extends _PriorRecord {
 /// The stored record could not be read, so this attempt is not written over it.
 final class _DoNotOverwrite extends _PriorRecord {
   const _DoNotOverwrite();
+}
+
+/// What this phone's records establish about I6's replay floor.
+///
+/// **Two cases rather than a nullable**, for the reason every other state in
+/// this directory is sealed: *"no floor"* and *"the floor could not be
+/// established"* are opposite instructions — one is §9.3's accept-on-trust and
+/// the other is a refusal — and a `null` that meant both let a failed read
+/// stand in for a proof that nothing newer is held.
+sealed class _FloorEvidence {
+  const _FloorEvidence();
+}
+
+/// The floor is [seq]; `null` means the records name none at all.
+final class _FloorAt extends _FloorEvidence {
+  const _FloorAt(this.seq);
+
+  final PublicationSeq? seq;
+}
+
+/// The records could not answer. Nothing may be accepted against this.
+final class _FloorUnknown extends _FloorEvidence {
+  const _FloorUnknown(this.reason);
+
+  final String reason;
 }

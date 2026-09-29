@@ -1,5 +1,6 @@
 import 'clock_continuity.dart';
 import 'fetch_diagnostics.dart';
+import 'publication_seq.dart';
 import 'seq_baseline.dart';
 
 /// How old *this phone's copy* of the snapshot is — `DESIGN.md` §9.1.
@@ -218,11 +219,46 @@ final class RecordsUnusable extends CannotCheckCause {
 /// The last payload the host served is not the one this phone holds, so the
 /// third conjunct cannot say *"it had nothing newer than we hold"*.
 ///
-/// That divergence has one cause on this design — a fetch the phone **refused**
-/// under I6 — so the honest surface is the downgrade warning §9.3 keeps beside
-/// it, not an accusation aimed at the host.
+/// **Two causes on this design, and neither is the host's fault**: a fetch the
+/// phone *refused* under I6, and a fetch it accepted and then could not store
+/// (`RefreshRefusal.notStored`). So the sentence states the divergence and
+/// accuses the host of nothing; where a cause has a surface at all it is the
+/// downgrade warning §9.3 keeps beside the baseline.
+///
+/// *(It said "exactly one cause" until the copy-first protocol made the second
+/// reachable — the same over-claim this file warns about one class down, in its
+/// own prose. What it never covered is a copy the notes have not caught up
+/// with: there the served payload **is** the one held, so this sentence would
+/// be false about the host. That is [CopyNotConfirmed].)*
 final class ServedPayloadNotHeld extends CannotCheckCause {
   const ServedPayloadNotHeld();
+}
+
+/// No recorded fetch is known to be a check of the copy on screen.
+///
+/// The `seq` of the payload being rendered and the `last_seq` the baseline
+/// stores disagree — or the copy's own counter cannot be read — so the stored
+/// notes describe *some other publication* and cannot confirm this one.
+///
+/// **It exists because the notes are allowed to lag the copy.** §9.3's
+/// copy-first protocol writes the payload before the records that describe it,
+/// with no transaction between them, so a process killed in that window leaves
+/// a copy of `41` under two notes that both still read `40`. Those two agree
+/// with each other, which is all conjunct 3 used to ask, and the predicate then
+/// certified `HOST_NOT_PUBLISHING` — *"nothing has been published since"* —
+/// over a payload the host had just published. Review reproduced it, and
+/// pointed out the part that makes it more than a race: the same state is
+/// reached by an interruption with **no write error anywhere**, so it survives
+/// a restart and no rollback could have covered it.
+///
+/// **Not [ServedPayloadNotHeld] and not [RecordsUnusable]**, because both of
+/// those render sentences that are false here: the host's latest copy *is* the
+/// one on screen, and the notes are neither missing nor damaged — they are
+/// intact, readable, and about the publication before this one. What is true is
+/// only that nothing confirms what is being shown, and the next successful
+/// fetch repairs it without the owner doing anything.
+final class CopyNotConfirmed extends CannotCheckCause {
+  const CopyNotConfirmed();
 }
 
 /// Evaluate §9.1's ordered rules over everything the phone can observe.
@@ -237,10 +273,16 @@ final class ServedPayloadNotHeld extends CannotCheckCause {
 /// `deviceNow` captured before a fetch that then stamps its attempt is
 /// indistinguishable from a clock that went back — the caller would report a
 /// skewed clock to the owner on the strength of its own argument order.
+/// [copySeq] is that copy's own `seq` — `null` when the stored document carries
+/// one this build cannot parse. It is the fourth field taken off the payload
+/// being described, beside [publishedAt], [publishInterval] and [grace], and it
+/// is here because conjunct 3's `last_seq` is a *cached* statement about it
+/// that is allowed to lag; see [CopyNotConfirmed].
 CopyState evaluateCopyState({
   required DateTime publishedAt,
   required Duration publishInterval,
   required Duration grace,
+  required PublicationSeq? copySeq,
   required DateTime deviceNow,
   required DiagnosticsState diagnostics,
   required BaselineState baseline,
@@ -299,6 +341,7 @@ CopyState evaluateCopyState({
     _staleReason(
       publishedAt: publishedAt,
       deadline: deadline,
+      copySeq: copySeq,
       diagnostics: diagnostics,
       baseline: baseline,
     ),
@@ -309,6 +352,7 @@ CopyState evaluateCopyState({
 StaleReason _staleReason({
   required DateTime publishedAt,
   required DateTime deadline,
+  required PublicationSeq? copySeq,
   required DiagnosticsState diagnostics,
   required BaselineState baseline,
 }) {
@@ -367,6 +411,17 @@ StaleReason _staleReason({
   // we hold. The baseline is the only place `last_seq` lives, so its two
   // non-value cases are answers here, not defaults: a phone holding a payload
   // with no readable baseline cannot establish this conjunct at all.
+  //
+  // **`last_seq` is checked against the copy before it is allowed to speak for
+  // it.** §9.3 defines it as *"the `seq` of the payload the phone actually
+  // holds"* — but it lives in its own file, written after the copy and with no
+  // transaction to it, so what it holds is a *cached* answer that a kill in
+  // between leaves behind. Both notes then read `40` over a copy of `41`, they
+  // agree with each other, and agreement was all this conjunct used to ask for:
+  // the predicate certified `HOST_NOT_PUBLISHING` over the publication the host
+  // had just made. The copy is the thing the sentence describes, so the copy is
+  // what the notes are measured against, and that repair works on the records
+  // as they are — no successful next fetch required.
   switch (baseline) {
     case BaselineAbsent():
       return CannotCheck(
@@ -376,6 +431,13 @@ StaleReason _staleReason({
     case BaselineUnreadable(:final reason):
       return CannotCheck(cause: RecordsUnusable(reason), since: success.at);
     case BaselineHeld(:final baseline):
+      if (copySeq == null || baseline.lastSeq != copySeq) {
+        // `since` is the last *recorded* success, which in this state is older
+        // than the fetch that actually delivered the copy. It understates how
+        // recently the phone checked, and that is the safe direction: the one
+        // thing it must not do is claim a check it cannot evidence.
+        return CannotCheck(cause: const CopyNotConfirmed(), since: success.at);
+      }
       if (baseline.lastSeq != success.seq) {
         return CannotCheck(cause: const ServedPayloadNotHeld(), since: success.at);
       }
@@ -401,6 +463,11 @@ CopyFreshness evaluateCopyFreshness({
       publishedAt: publishedAt,
       publishInterval: publishInterval,
       grace: grace,
+      // Unreachable rather than unknown: `DiagnosticsAbsent` is answered as
+      // `NeverFetched` before conjunct 3 is asked, so no value passed here can
+      // change the result. Taking one as a parameter would advertise an
+      // influence this function does not have.
+      copySeq: null,
       deviceNow: deviceNow,
       continuity: continuity,
       diagnostics: const DiagnosticsAbsent(),
