@@ -16,6 +16,7 @@ import 'package:networth_app/src/domain/fetch_diagnostics.dart';
 import 'package:networth_app/src/domain/held_copy.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
+import 'package:networth_app/src/domain/publication_seq.dart';
 import 'package:networth_app/src/domain/seq_baseline.dart';
 import 'package:networth_app/src/pairing/pairing_vault.dart';
 import 'package:networth_app/src/ui/headline.dart';
@@ -347,6 +348,108 @@ void main() {
         seen[key] = entry.key;
       }
     });
+  });
+
+  testWidgets('the copy row is dated by the records this load read, not by absence',
+      (tester) async {
+    // **The assertion the rest of this file cannot make, and the reason this
+    // commit is more than a rename.** `HomePage` used to pass
+    // `const DiagnosticsAbsent()` and `const BaselineAbsent()` to `SnapshotView`
+    // at the call site. That was *true* of a build that performed no fetches,
+    // and it is false of this one — but nothing on screen would have changed if
+    // the two hardcoded constants had been left in place, because absence is
+    // also what every other test here happens to hold.
+    //
+    // So this one gives the loader records that reach a sentence absence cannot:
+    // §9.1 rule 3's `HOST_NOT_PUBLISHING` needs all three conjuncts, and
+    // `DiagnosticsAbsent` can only ever reach `CANNOT_CHECK`. If the screen goes
+    // back to asserting absence, this is the test that goes red.
+    final payload = PhonePayload.fromJsonString(readFixture(knownFixture));
+    final deviceNow = DateTime.utc(2026, 9, 20);
+    final seq = PublicationSeq.parse(payload.seq);
+
+    await tester.pumpWidget(
+      localized(
+        HomePage(
+          loader: loaderOver(
+            copy: HeldCopyHeld(payload),
+            diagnostics: DiagnosticsHeld(
+              FetchDiagnostics.succeeded(
+                pairingId: payload.pairingId,
+                at: deviceNow.subtract(const Duration(hours: 1)),
+                seq: seq,
+              ),
+            ),
+            baseline: BaselineHeld(
+              SeqBaseline(pairingId: payload.pairingId, lastSeq: seq),
+            ),
+          ),
+          historySource: const _NoHistory(),
+          clock: () => deviceNow,
+          // Without trustworthy clock evidence the copy is `COPY_UNKNOWN` and
+          // its reason line is about the clock, so the records never reach the
+          // screen and this test could not tell the two wirings apart.
+          continuity: () => trustedClock,
+        ),
+        scaffold: false,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'nothing newer has been published — your server last confirmed this '
+        'copy Sep 19, 2026, 23:00 UTC',
+      ),
+      findsOneWidget,
+    );
+    // The sentence the hardcoded absence produced. The two are mutually
+    // exclusive readings of one row, so finding both would mean neither was read.
+    expect(find.text("this device hasn't checked yet"), findsNothing);
+  });
+
+  testWidgets('a fresh install is not painted as a fault', (tester) async {
+    // A phone holding no copy and a phone whose copy is damaged are both "no
+    // total on screen", and they are not the same news. Painting the first one
+    // in the error colour tells an owner whose device is working perfectly that
+    // something is broken — which is the mistake `held_copy.dart` spends its
+    // longest paragraph on, one layer down.
+    // Both colours are read out of the theme the screen was actually rendered
+    // under, never recomputed here: the property is "this icon is the error
+    // colour and that one is not", which must hold under whatever theme the app
+    // ships. Rebuilding `ColorScheme.fromSeed` in the test asserts the theme
+    // instead, and fails when the seed changes for reasons that have nothing to
+    // do with what this is about.
+    Future<(Color?, Color)> iconColour(HomeLoader loader, String key) async {
+      await tester.pumpWidget(
+        localized(
+          HomePage(key: ValueKey(key), loader: loader, historySource: const _NoHistory()),
+          scaffold: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+      final icon = find.byType(Icon);
+      return (
+        tester.widget<Icon>(icon).color,
+        Theme.of(tester.element(icon)).colorScheme.error,
+      );
+    }
+
+    final (absent, absentError) = await iconColour(
+      loaderOver(copy: const HeldCopyAbsent()),
+      'absent',
+    );
+    expect(absent, isNot(absentError));
+
+    final (damaged, damagedError) = await iconColour(
+      loaderOver(copy: const HeldCopyUnreadable('damaged')),
+      'damaged',
+    );
+    expect(
+      damaged,
+      damagedError,
+      reason: 'a damaged copy is a fault and must read as one',
+    );
   });
 
   group('a record that cannot be written reaches the screen', () {
