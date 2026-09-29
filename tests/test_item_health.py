@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -536,3 +538,91 @@ def test_late_arriving_older_poll_cannot_overwrite_newer_health(
     assert newer.status is ItemState.NEEDS_REAUTH
     assert older == newer
     assert store.items.get(item_id) == newer
+
+
+def test_collected_polls_retry_only_persistence_and_keep_newer_evidence(
+    db: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    db.commit()
+    path = tmp_path / "health.db"
+    with closing(sqlite3.connect(path)) as writer, closing(sqlite3.connect(path)) as observer:
+        db.backup(writer)
+        migrate(writer)
+        observer.execute("PRAGMA busy_timeout = 0")
+        first = add_item(writer, "first")
+        second = add_item(writer, "second")
+        writer.commit()
+
+        class ConcurrentWriterClient(TransactionCheckingClient):
+            def item_get(self, access_token: str) -> ItemStatus:
+                observer.execute("BEGIN IMMEDIATE")
+                observer.execute(
+                    "INSERT INTO sync_run(id, started_at, trigger) VALUES (?, ?, 'TEST')",
+                    (f"concurrent-{len(self.calls)}", _db_time(NOW)),
+                )
+                observer.commit()
+                return super().item_get(access_token)
+
+        client = ConcurrentWriterClient(
+            {
+                "material-first": item_status("first", ItemState.HEALTHY),
+                "material-second": item_status("second", ItemState.HEALTHY),
+            },
+            writer,
+        )
+        poller = ItemHealthPoller(
+            Store(writer).items,
+            client,
+            FakeTokenResolver(
+                {
+                    "secret-ref-first": "material-first",
+                    "secret-ref-second": "material-second",
+                }
+            ),
+        )
+        plan = poller.collect_due(at=NOW)
+        assert plan.attempted_count == 2 and not plan.failure_types
+        assert not writer.in_transaction
+        assert observer.execute(
+            "SELECT count(*) FROM item WHERE last_health_poll_at IS NOT NULL"
+        ).fetchone() == (0,)
+        calls = list(client.calls)
+        assert len(calls) == 2
+        writer.execute(
+            f"CREATE TEMP TRIGGER fail_second BEFORE UPDATE ON item WHEN NEW.id = {second} "
+            "BEGIN SELECT RAISE(ABORT, 'synthetic second row failure'); END"
+        )
+        writer.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.IntegrityError, match="synthetic second row"):
+            poller.persist(plan)
+        assert writer.execute(
+            "SELECT count(*) FROM item WHERE last_health_poll_at IS NOT NULL"
+        ).fetchone() == (1,)
+        assert observer.execute(
+            "SELECT count(*) FROM item WHERE last_health_poll_at IS NOT NULL"
+        ).fetchone() == (0,)
+        writer.rollback()
+        assert writer.execute(
+            "SELECT count(*) FROM item WHERE last_health_poll_at IS NOT NULL"
+        ).fetchone() == (0,)
+        writer.execute("DROP TRIGGER fail_second")
+
+        # A Link poll may land a newer observation between collection and retry.
+        # Persisting the older plan must retain the repository's time ordering.
+        newer, _, _ = poller_for(
+            Store(writer), {"first": item_status("first", ItemState.NEEDS_REAUTH)}
+        )
+        latest = newer.poll_item(first, at=NOW + timedelta(minutes=1))
+        writer.commit()
+        writer.execute("BEGIN IMMEDIATE")
+        result = poller.persist(plan)
+        assert result.ok and result.recorded_count == 2
+        assert writer.in_transaction
+        assert observer.execute(
+            "SELECT last_health_poll_at FROM item WHERE id=?", (second,)
+        ).fetchone() == (None,)
+        writer.commit()
+        assert Store(writer).items.get(first) == latest
+        assert Store(writer).items.get(second).last_polled_at == NOW
+        assert client.calls == calls

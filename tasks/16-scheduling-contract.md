@@ -2,7 +2,8 @@
 
 Status: A approved and merged in PR #115; capture-boundary implementation
 merged in PR #118; socket timeout/no-retry policy merged in PR #120.
-Stored-state full-sync planning is the next review slice. Runtime dispatch,
+Stored-state full-sync planning merged in PR #121. Worker collection/persistence
+is the next review slice. Runtime dispatch,
 remaining scheduler implementation and live acceptance remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
@@ -236,6 +237,39 @@ This is a prerequisite, not a scheduled runtime: no command currently dispatches
 this planner or writes `FULL_SYNC`. Per-Item failure backoff, other job predicates,
 full cycle assembly, units and live installation remain owed. The regression
 suite uses migrated databases, a real WAL reader and a reopen after interruption.
+
+## Worker transaction boundary
+
+`FullSync.collect()` and `ItemHealthPoller.collect_due()` / `collect_all()`
+return immutable in-memory plans without writing. The scheduler must call them
+without an open transaction, then open `BEGIN IMMEDIATE` and call `persist()`.
+Persistence calls no provider or token resolver and never commits for its caller.
+If the transaction fails, roll it back before retrying persistence with the same
+plan; replaying collection would repeat network work unnecessarily. A committed
+full-sync plan must not be replayed: duplicate run/account observations are
+refused, even for identical values. Health persistence retains the repository's
+rule that an older observation cannot replace a newer one.
+
+This separation is needed because wrapping the old combined methods in
+`BEGIN IMMEDIATE` holds a write lock across their provider calls; waiting until
+a combined call returns starts the explicit transaction after its writes.
+The old `run()` / `poll_due()` / `poll_all()` convenience methods remain for
+existing callers and preserve caller-owned transaction behavior. They are not
+the scheduled runtime entry points. `poll_item()` is unchanged.
+
+The plans contain sensitive account/health facts, not credentials, and must not
+be logged or serialized as recovery files. A process death before persistence
+loses the plan; the unfinished run cannot count as a success. The future runner
+owns run creation/completion, single-run admission, three-attempt jittered SQLite
+busy retries, and the commit containing observations plus the run result.
+Those policies are not implemented by these worker methods.
+
+Synthetic WAL tests use two connections: an independent writer commits during
+each provider call, then a failure on the second persisted record leaves the
+first invisible to the other connection. Rollback removes it; retry succeeds
+without another provider call or a hidden commit. A newer health poll arriving
+between collection and retry is preserved. These test the worker seam, not the
+remaining live `record-pull` / `pair` / `revoke` contention acceptance.
 
 ## Remaining task-16 work
 
