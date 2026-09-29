@@ -19,10 +19,21 @@
 # `secret` and the `link_token`. This Mac holds the third — that is the whole of
 # §4's second copy — and must not hold the first two (§15), so they are typed at a
 # prompt that reads **the controlling terminal** and refuses a pipe. Nothing is
-# echoed, nothing is written, nothing reaches `argv` or shell history, and nothing
-# is persisted by the run: measurement (iv) asks whether retrieval and exchange
-# *succeed* from another host, and a run that stored an `access_token` here would
-# answer the question and widen the laptop while doing it.
+# echoed, nothing is written, nothing reaches `argv` or shell history.
+#
+# WHERE THE CREDENTIAL LANDS (`07b`). It used to land nowhere, and that is the defect
+# this task closes: the run spent the one-time `public_token`, received a long-lived
+# credential, and held it in a process with nothing durable underneath it. So a sink
+# is now **named on the command line** and proven writable by the verb *before* the
+# prompts. It is never inferred from which argument happens to be present.
+#
+# From THIS script the sink is the sealed artifact, and that is a correction rather
+# than a preference. The other kind writes a plain TokenStore in whatever directory
+# it is given, with no transport anywhere — run from this Mac it would have put an
+# unsealed access_token on this laptop while calling the destination a replacement
+# host. The verb refuses it and says so. §15 is satisfied here by the encryption plus
+# the escrowed key, not by declining to write; the credential reaches a real
+# TokenStore through the restore, on the replacement host, where that name is true.
 #
 # SANDBOX ONLY, IN THIS FORM. The verb refuses any other environment before a
 # credential is read, and this script pins `NETWORTH_ENV` rather than inheriting it:
@@ -37,13 +48,39 @@ die() {
 	exit 2
 }
 
+usage() {
+	cat >&2 <<'USAGE'
+usage: link-recover.sh <flow_id> --sink emergency-artifact --artifact PATH --backup-key PATH
+
+The sink is required and is not guessed. This script runs on zelengs-macbook-air-2
+and there is no transport from here to a replacement host, so the artifact -- one
+file sealed under the already-escrowed 03a backup key -- is the destination this
+command can actually reach. Restore it into a real TokenStore on the replacement
+host once one is standing.
+
+--sink replacement-host is accepted by the verb only to be refused with that
+explanation; it would otherwise have written an unsealed access_token here.
+USAGE
+	exit 2
+}
+
 flow="${1:-}"
-[ "$#" -le 1 ] || die "usage: $0 <flow_id>; this takes the flow id and nothing else"
-[ -n "$flow" ] || die "usage: $0 <flow_id> — the id link-start.sh printed"
+[ -n "$flow" ] || usage
+shift
 case "$flow" in
 *[!0-9a-f]* | "") die "'$flow' is not a flow id: 32 lowercase hex characters, as link-start.sh printed it" ;;
 esac
 [ "${#flow}" -eq 32 ] || die "'$flow' is not a flow id (32 hex characters)"
+
+# The sink arguments are checked for *presence* here and for *meaning* by the verb.
+# Deliberately not re-validated: this script would then hold a second opinion about
+# which combinations are legal, and the operator would meet whichever of the two is
+# stricter. `_sink_from` owns that decision and refuses before the prompts.
+[ "$#" -gt 0 ] || usage
+case " $* " in
+*" --sink "*) ;;
+*) usage ;;
+esac
 
 if [ -n "${NETWORTH_ENV:-}" ] && [ "$NETWORTH_ENV" != "sandbox" ]; then
 	die "NETWORTH_ENV is '$NETWORTH_ENV'; this form of the command runs against sandbox and nothing else (task 06a). Production recovery is 07b"
@@ -73,4 +110,4 @@ printf 'prompts       client_id and the sandbox secret, on this terminal; the li
 # of, there is exactly one thing to do — retrieve, then exchange — and an operator
 # reading it against a 30-minute clock should not be picking a mode. The measurement
 # form is the same shape for the same reason.
-exec uv run --quiet networth complete-hosted-link --from-tty --flow "$flow" --exchange
+exec uv run --quiet networth complete-hosted-link --from-tty --flow "$flow" --exchange "$@"

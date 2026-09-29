@@ -58,7 +58,7 @@ def link_sessions_response(
 def completed_session(
     *,
     public_tokens: Sequence[str] = (PUBLIC_TOKEN,),
-    session_id: str = LINK_SESSION_ID,
+    session_id: str | None = LINK_SESSION_ID,
     started_at: datetime | None = LINK_SESSION_STARTED,
     finished_at: datetime | None = LINK_SESSION_FINISHED,
     untokened_results: int = 0,
@@ -70,6 +70,12 @@ def completed_session(
     a result whose token is absent is reachable — and it means a slot was spent
     that we hold no handle to. The fixture can produce it because the wrapper has
     to be able to report it (PR #58 review, finding 2).
+
+    ``session_id`` is ``str | None`` for the same reason one level up:
+    :attr:`~networth.plaid.client.LinkSessionRecord.session_id` is optional, so a
+    session that added an Item and is named by nothing is a shape the wrapper has to
+    answer for. A caller choosing *which* session's id to keep (PR #129 finding 3) has
+    to be testable against a reply where the obvious wrong answer is available.
     """
     added = [
         SimpleNamespace(public_token=token, institution=None, accounts=[])
