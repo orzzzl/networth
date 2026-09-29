@@ -206,7 +206,27 @@ enum NoPairing {
 /// compares them precisely so a refusal is visible — `ServedPayloadNotHeld`,
 /// whose doc names this as its one cause. Recording a refused payload as a
 /// failed *fetch* would erase that and report a network problem instead.
-class SnapshotRefresher {
+/// The one call a caller of a refresh makes, named so it can be decorated.
+///
+/// Extracted from [SnapshotRefresher] rather than invented: [HomeLoader] needs
+/// *a* refresh, not this particular implementation of one, and the thing that
+/// records history is a second implementation wrapping the first. Without this
+/// the decorator would have to subclass a class whose whole subject is that it
+/// is the single writer of three files — inheriting the serialisation queue,
+/// the stores and the clock in order to add one `await` after the result.
+///
+/// It is deliberately one method. Everything else [SnapshotRefresher] exposes —
+/// the stores, the clock, the reader — is there for its own callers to
+/// construct it with, and a decorator that had to forward them would be
+/// claiming to *be* the writer of those stores rather than to wrap a call.
+abstract interface class SnapshotRefreshing {
+  /// Attempt a refresh. **Never throws**, by the contract [SnapshotRefresher]
+  /// states below; an implementation that let one escape would put a caller
+  /// that is required to render something into a state with nothing to render.
+  Future<SnapshotRefreshOutcome> refresh();
+}
+
+class SnapshotRefresher implements SnapshotRefreshing {
   SnapshotRefresher({
     required this.reader,
     required this.diagnostics,
@@ -245,6 +265,7 @@ class SnapshotRefresher {
   /// Errors are swallowed from the chain, not from the caller: [_refresh] never
   /// throws by contract, and a chain that a throw could poison would turn one
   /// defect into a refresher that never runs again.
+  @override
   Future<SnapshotRefreshOutcome> refresh() {
     final next = _queue.then((_) => _refresh());
     _queue = next.then((_) {}, onError: (Object _) {});
