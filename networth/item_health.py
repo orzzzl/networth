@@ -151,13 +151,11 @@ class ItemHealthPoller:
         targets: tuple[ItemHealth, ...],
         polled_at: datetime,
     ) -> PollPlan:
-        # Finish every network call before the first UPDATE.  SQLite's default
-        # transaction opens on that UPDATE, so interleaving these loops would
-        # hold the write transaction across later network waits.
+        # Collection makes no writes; persist owns the separate write phase.
         # One unusable token or unexpected client failure must not suppress the
         # remaining Items, or discard observations already made.  Skip that
-        # target and report only safe exception types: re-raising after the
-        # writes could make a caller-owned transaction roll all of them back.
+        # target and report only safe exception types so persist can retain
+        # observations from the remaining targets in the caller's transaction.
         observations: list[tuple[int, ItemHealthUpdate]] = []
         failure_types: list[str] = []
         for target in targets:

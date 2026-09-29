@@ -3651,6 +3651,25 @@ activation, with repeated diagnostics and extra provider work. Successful runs
 do not repair the ledger, and this contract authorizes no automatic rewriting
 or deletion of its append-only history.
 
+Task 16's `FullSyncDispatcher` now adopts that planner, commits run creation
+before collection, and commits observations plus completion in one short
+`BEGIN IMMEDIATE` with three jittered BUSY attempts (§13 writer discipline).
+It enforces no active transaction immediately before the provider phase on the
+same connection used by its worker. Migration 0011 adds
+`full_sync_retry(item_id REFERENCES item, failures, next_attempt_at)`: one failed
+Item attempt advances the 1h/2h/4h/8h delay (capped at 8h), and success clears it.
+Deferral retains prior source/fetch clocks and never increments the failure
+count. A partial or deferred full sync cannot satisfy the success clocks.
+When all target Items are deferred, no run starts; healthy Items in mixed runs
+can be fetched again while another Item backs off. Crash before the final
+commit leaves no new retry result and may repeat idempotent data fetches on
+restart; this policy is never used for Link exchanges. The dispatcher owns a
+non-reentrant process file lock for the run, supplied by the future executable
+as the canonical lock for the selected database. It is not yet wired to a
+command, complete alert/manual/snapshot/publication cycle, or installed service.
+See `tasks/16-scheduling-contract.md` for the recovery and validation contract.
+
+
 **Why the full sync has two predicates and not one.** *(From review. Rev 3 made
 a sync due only after a new market close, which quietly redefined the product:
 after a successful Friday run the predicate stayed false all weekend, so a Monday

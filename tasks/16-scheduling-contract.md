@@ -2,9 +2,10 @@
 
 Status: A approved and merged in PR #115; capture-boundary implementation
 merged in PR #118; socket timeout/no-retry policy merged in PR #120.
-Stored-state full-sync planning merged in PR #121. Worker collection/persistence
-is the next review slice. Runtime dispatch,
-remaining scheduler implementation and live acceptance remain owed.
+Stored-state full-sync planning merged in PR #121 and worker collection/persistence
+merged in PR #122. Full-sync dispatch and per-Item retry admission are the next
+review slice. Complete cycle assembly, executable wiring, remaining scheduler
+implementation and live acceptance remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
 ## Decision: restore the specified capture boundary (A)
@@ -233,9 +234,9 @@ not heal old evidence, and no automatic ledger rewrite or deletion is added.
 Runtime dispatch acceptance must demonstrate this fallback with a bad historical
 row plus newer healthy rows, and show that caller misuse escapes it.
 
-This is a prerequisite, not a scheduled runtime: no command currently dispatches
-this planner or writes `FULL_SYNC`. Per-Item failure backoff, other job predicates,
-full cycle assembly, units and live installation remain owed. The regression
+The full-sync dispatcher below adopts this planner and writes `FULL_SYNC`; no
+command invokes it yet. Other job predicates, full cycle assembly, units and
+live installation remain owed. The regression
 suite uses migrated databases, a real WAL reader and a reopen after interruption.
 
 ## Worker transaction boundary
@@ -262,7 +263,8 @@ be logged or serialized as recovery files. A process death before persistence
 loses the plan; the unfinished run cannot count as a success. The future runner
 owns run creation/completion, single-run admission, three-attempt jittered SQLite
 busy retries, and the commit containing observations plus the run result.
-Those policies are not implemented by these worker methods.
+Those policies are not implemented by these worker methods; the full-sync
+dispatcher below owns them for full sync.
 
 Synthetic WAL tests use two connections: an independent writer commits during
 each provider call, then a failure on the second persisted record leaves the
@@ -271,11 +273,60 @@ without another provider call or a hidden commit. A newer health poll arriving
 between collection and retry is preserved. These test the worker seam, not the
 remaining live `record-pull` / `pair` / `revoke` contention acceptance.
 
+## Full-sync dispatch and retry admission
+
+`FullSyncDispatcher` constructs its worker on its own connection and enforces
+no active transaction before planning and immediately before collection. This
+is PR122 review finding 1's caller-side enforcement. It does not change the
+compatibility methods; the future health dispatcher owes the equivalent guard
+on its actual collection call. PR122 finding 2's stale health-loop comment is
+also corrected; simplifying the `_Plan` wrapper is deferred cleanup.
+
+Admission holds the selected database's canonical sync file lock, nonblocking,
+through the whole run; nested dispatch is refused even in the same thread.
+The future executable must supply the same lock path to every dispatcher of that
+database. A second invocation raises `LockUnavailable` without creating a run.
+An unfinished row is not a lock: restart may begin a new run after the OS releases
+the dead process's file lock. Old unfinished rows remain unsuccessful history.
+
+Run creation commits `kind='FULL_SYNC'` before provider I/O. Collection runs
+without a transaction. Observations, per-Item retry outcomes and the finished
+run's `ok` commit in one `BEGIN IMMEDIATE`. Every write transaction retries
+`SQLITE_BUSY` (including extended BUSY codes) at most three attempts, rolling
+back before replay, with 50–150 ms then 100–300 ms jitter after SQLite's 5000 ms
+busy timeout. It never recollects inside a database retry. Non-BUSY errors and
+exhaustion propagate; their run remains unfinished and cannot satisfy due-ness.
+
+Migration 0011 stores `full_sync_retry(item_id, failures, next_attempt_at)`.
+Any account failure makes that Item's attempt fail once, irrespective of account
+count; delay is 1h/2h/4h/8h from completed collection, capped at 8h. Success deletes
+its retry row. Deferred Items do not resolve tokens or call providers, and do not
+advance the counter; their older observations are carried forward with both
+clocks intact, or omitted when none exist. A partial/deferred run is unsuccessful
+and does not advance the full-sync clock. If every current target Item is
+backing off, no run is created. A corrupt full-sync success clock still reports
+the fixed diagnostic, but cannot bypass this retry admission.
+
+Costs and limits: healthy Items in a mixed partial run are fetched again on each
+activation while the full-sync predicate remains due. This is conservative,
+not a per-Item successful-fetch cache. A crash before completion leaves no new
+retry outcome; the next activation may repeat those idempotent data fetches.
+This policy must never be applied to Link exchanges. Invalid retry timestamps
+fail closed with a fixed error and require repair; they are not success-clock
+corruption and cannot authorize skipping a retry delay. No runtime installation,
+provider calls or credential reads are needed to review this slice.
+
+Synthetic WAL regressions prove an independent writer can commit during provider
+calls; finishing writes stay invisible together until commit; a write retry
+reuses collected data and increments a failed Item once. Reopen tests pin
+backoff boundaries, cap/reset and recovery from an unfinished run. The full
+cycle still must value manual accounts, evaluate alerts, snapshot and publish;
+this component does not claim those acceptance criteria or add a CLI command.
+
 ## Remaining task-16 work
 
-The subsequent implementation still owes dispatch of the stored-state full-sync
-planner, the other job predicates and retry backoff, per-cycle health/account/manual
-alert facts,
+The subsequent implementation still owes the other job predicates, health dispatch
+with its collection guard, per-cycle health/account/manual alert facts,
 manual quote observations before snapshot, publication and archive ordering,
 writer-contention tests, and reaper scheduling. Live acceptance still owes the
 reviewed runtime install, forced backup dispatcher ownership/mode/byte equality,
