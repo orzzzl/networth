@@ -16,7 +16,7 @@ from networth.alerts import (
     AlertEvaluator,
     ShareCountObservation,
 )
-from networth.manual import PropertyRevisionLog
+from networth.manual import NotARevisionError, PropertyRevisionLog
 from networth.model import FreshnessPolicy, Observation, ReconciliationState, SnapshotAccount
 from networth.model.figure import require_utc
 from networth.staleness import StalenessMachine
@@ -43,7 +43,11 @@ class CycleAlertEvaluator:
         self._staleness = StalenessMachine()
 
     def evaluate(self, *, at: datetime) -> AlertEvaluation:
-        """Caller owns BEGIN IMMEDIATE, rollback/retry and commit before publish."""
+        """Require a transaction; the dispatcher supplies BEGIN IMMEDIATE.
+
+        The caller owns rollback/retry and commit before publish. This guard
+        cannot distinguish a deferred transaction from a write reservation.
+        """
         require_utc(at, field="alert evaluation time")
         if not self._db.in_transaction:
             raise ValueError("cycle alerts require a caller-owned write transaction")
@@ -56,8 +60,16 @@ class CycleAlertEvaluator:
             raise CycleAlertInputError("stored Item health clock is in the future")
         signals = []
         for account in self._store.accounts.for_alerts():
-            item = None if account.item_id is None else by_id[account.item_id]
-            observation = self._observation(account, at=at)
+            item = None if account.item_id is None else by_id.get(account.item_id)
+            if account.item_id is not None and item is None:  # pragma: no cover - foreign key
+                raise CycleAlertInputError(f"account {account.id} names a missing Item")
+            # Match Snapshotter and NetWorthQuery: reconciliation gates Axis B,
+            # while Item health and the explicitly read manual side still count.
+            observation = (
+                None
+                if account.reconciliation_state is ReconciliationState.NEW
+                else self._observation(account, at=at)
+            )
             freshness = None
             if observation is not None:
                 if observation.observed_at > at or observation.fetched_at > at:
@@ -83,7 +95,10 @@ class CycleAlertEvaluator:
         # The owner's effective valuation date chooses a property revision;
         # insertion order alone could pick a future revision instead.
         history = self._store.observations.history_for_lineage(account.id)
-        revision = PropertyRevisionLog.from_observations(history).current(now=at)
+        try:
+            revision = PropertyRevisionLog.from_observations(history).current(now=at)
+        except NotARevisionError:
+            raise CycleAlertInputError("invalid stored property revision lineage") from None
         if revision is None:
             return None
         return next(observation for observation in history if observation.id == revision.sequence)
@@ -94,7 +109,7 @@ class CycleAlertEvaluator:
         ).fetchone()
         if row is None or row[0] == "REAL_PROPERTY":
             return ShareCountObservation(None)
-        if row[0] != "EQUITY_SHARES":
+        if row[0] != "EQUITY_SHARES":  # pragma: no cover - schema CHECK forbids it
             raise CycleAlertInputError("invalid stored manual asset kind")
         try:
             confirmed = datetime.fromisoformat(row[1])

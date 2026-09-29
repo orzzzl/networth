@@ -282,6 +282,7 @@ class AlertDispatcher(_Dispatcher):
             self._active = True
             try:
                 at = self._clock()
+                require_utc(at, field="alert evaluation time")
                 return self._write(lambda: self._evaluator.evaluate(at=at))
             finally:
                 self._active = False

@@ -3194,7 +3194,13 @@ not have:
   see it. It is owner-actionable (usually a re-link fixes it), which is why the
   same condition is `ACTION_NEEDED` on screen (§9.2) — **this paragraph is the
   single definition of the threshold**; the display state and the alert both
-  derive from it rather than each carrying their own number.
+  derive from it rather than each carrying their own number. Reconciliation
+  gates Axis B in all three consumers: snapshots, account reads and cycle
+  alerts do not assess freshness for `NEW` accounts. They supply no value or
+  freshness verdict until reconciled; pending-reconciliation and manual-side
+  signals still count, and Item health alerts remain independent. Missing
+  assessment does not resolve a standing frozen-data alert (§11's silence
+  rule); it cannot raise a new one.
 - **Pending reconciliation** — accounts are sitting at `NEW` and contributing
   nothing (§8.5), so the total is knowingly understated until the owner confirms
   a mapping.

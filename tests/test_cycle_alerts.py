@@ -334,3 +334,95 @@ def test_positive_item_reconciliation_and_confirmation_changes_resolve(
         AlertKind.SHARE_COUNT_UNCONFIRMED,
     }
     assert [a.kind for a in Store(db).alerts.open()] == [AlertKind.FROZEN_DATA]
+
+
+def test_pending_frozen_source_agrees_with_snapshot_query_and_payload(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    from networth.query import NetWorthQuery
+
+    store = Store(db)
+    db.execute("UPDATE account SET include_in_net_worth = 1 WHERE id = 2")
+    add_observation(store, "cycle", 2, 500, source_as_of=NOW - timedelta(days=15))
+    db.commit()
+    dispatch = runner(db, tmp_path)
+    raised = dispatch.run().raised
+    assert {a.account_id for a in raised if a.kind is AlertKind.FROZEN_DATA} == {1}
+    assert {a.account_id for a in raised if a.kind is AlertKind.PENDING_RECONCILIATION} == {2}
+    db.execute("BEGIN IMMEDIATE")
+    snapshot = Snapshotter(store).run("cycle", at=NOW)
+    assert snapshot.counts.unreconciled_account_count == 1
+    db.commit()
+    read = NetWorthQuery(store).latest()
+    assert read is not None
+    pending = next(a for a in read.accounts if a.account.id == 2)
+    assert pending.observation is None
+    assert pending.freshness is None
+    db.execute(
+        "INSERT INTO pairing(id, created_at, key_ref, state) VALUES (?, ?, 'synthetic', 'ACTIVE')",
+        ("00000000-0000-4000-8000-000000000130", NOW.isoformat()),
+    )
+    db.commit()
+    key = bytes(range(32))
+    payload = json.loads(open_payload(Publisher(db, lambda _: key).publish(at=NOW).envelope, key))
+    entry = next(a for a in payload["accounts"] if a["account_id"] == 2)
+    assert entry["reconciliation_state"] == "NEW"
+    assert entry["value_minor"] is None
+    assert entry["freshness"] is None
+    assert [a["subject"] for a in payload["alerts"] if a["kind"] == "FROZEN_DATA"] == [
+        {"kind": "ACCOUNT", "id": 1}
+    ]
+    # Reconciliation admits exactly the same stored observation to Axis B.
+    db.execute("UPDATE account SET reconciliation_state = 'CONFIRMED' WHERE id = 2")
+    db.commit()
+    result = dispatch.run()
+    assert [(a.kind, a.account_id) for a in result.raised] == [(AlertKind.FROZEN_DATA, 2)]
+    assert [(a.kind, a.account_id) for a in result.resolved] == [
+        (AlertKind.PENDING_RECONCILIATION, 2)
+    ]
+
+
+def test_pending_account_still_supplies_manual_and_item_signals(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    db.execute("UPDATE account SET reconciliation_state = 'NEW' WHERE id = 3")
+    db.execute("UPDATE item SET status = 'NEEDS_REAUTH' WHERE id = 1")
+    db.commit()
+    raised = runner(db, tmp_path).run().raised
+    assert any(a.kind is AlertKind.SHARE_COUNT_UNCONFIRMED and a.account_id == 3 for a in raised)
+    assert any(a.kind is AlertKind.PENDING_RECONCILIATION and a.account_id == 3 for a in raised)
+    assert any(a.kind is AlertKind.NEEDS_REAUTH and a.item_id == 1 for a in raised)
+
+
+def test_mixed_property_lineage_refuses_with_typed_error_before_alert_writes(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    from networth.cycle_alerts import CycleAlertInputError
+
+    prop = add_account(
+        db, "mixed", item_id=None, policy=FreshnessPolicy.MANUAL_STATIC, included=False
+    )
+    db.execute("UPDATE account SET lineage_id = 1 WHERE id = ?", (prop,))
+    db.commit()
+    with pytest.raises(CycleAlertInputError, match="invalid stored property revision lineage"):
+        runner(db, tmp_path).run()
+    assert db.execute("SELECT count(*) FROM alert").fetchone() == (0,)
+    assert not db.in_transaction
+
+
+def test_bad_dispatch_clock_refuses_before_writer_admission(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    dispatch = runner(db, tmp_path)
+    dispatch._clock = lambda: NOW.replace(tzinfo=None)
+    rival = sqlite3.connect(tmp_path / "alerts.db", timeout=0)
+    db.execute("PRAGMA busy_timeout = 0")
+    try:
+        rival.execute("BEGIN IMMEDIATE")
+        with pytest.raises(ValueError, match="alert evaluation time"):
+            dispatch.run()
+        assert not db.in_transaction
+    finally:
+        rival.rollback()
+        rival.close()
+    assert db.execute("SELECT count(*) FROM alert").fetchone() == (0,)
