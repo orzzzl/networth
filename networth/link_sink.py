@@ -23,7 +23,17 @@ consulted rather than in how it writes. `07b`'s first criterion:
 So the interface is two calls and the order between them is the point.
 :meth:`DurableSink.prepare` runs before ``/item/public_token/exchange`` and either
 proves the destination or raises; :meth:`DurableSink.commit` runs after, and by then
-every failure it could still hit has been excluded rather than hoped about.
+every failure the proof can reach has been excluded rather than hoped about.
+
+*(That sentence read "every failure it could still hit" until PR #129, and the review
+found two it could: the lock ``TokenStore.put`` takes in the credential directory's
+**parent**, and a dangling symlink at the artifact path that ``exists()`` reports as
+absent. Both are proven now — see :func:`_prove_lockable` and
+:meth:`EmergencyArtifactSink.prepare` — and the claim is narrowed anyway, because the
+honest version is bounded by what a proof can observe. The world can still change
+between the two calls; what that costs is bounded instead by* :meth:`commit` *raising
+this module's own error type for a filesystem refusal rather than letting an*
+``OSError`` *past every* ``except SinkError`` *in the callers.)*
 
 **Two kinds, chosen explicitly, never by fallback.** The criterion says *"Either a
 replacement host with a ready ``TokenStore``, or a Mac-side emergency artifact
