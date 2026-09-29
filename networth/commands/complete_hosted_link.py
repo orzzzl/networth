@@ -141,6 +141,14 @@ from networth.tokenstore import (
 
 SUMMARY = "Retrieve a finished Hosted Link session and measure 06a's (ii) and (iv)."
 
+#: Exit status for "the exchange succeeded, the credential is durable, and recovery is
+#: still incomplete". It is its own code rather than ``2`` because ``2`` means *nothing
+#: happened* everywhere else in this verb — every refusal above returns it before the
+#: exchange — and the one instruction that matters on this path is the opposite of a
+#: refusal's: do **not** run it again, because the one-time token is already spent.
+#: Not ``0`` either, for the reason `SinkReceipt.owed` exists at all.
+INCOMPLETE_RECOVERY = 3
+
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
@@ -489,6 +497,7 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
         # (AGENTS.md rule 0).
         print(f"  request_id  {item.request_id!r}")
 
+    owed: tuple[str, ...] = ()
     if not args.from_tty:
         try:
             _persist(environment, exchanged)
@@ -527,12 +536,13 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
                 f"THE EXCHANGE SUCCEEDED AND THE CREDENTIAL WAS NOT STORED: {exc}", file=sys.stderr
             )
             return 2
+        owed = receipt.owed
         print(f"stored        {', '.join(receipt.durable)}")
         print(f"              at {receipt.destination}")
-        if receipt.owed:
+        if owed:
             # A receipt with anything owed describes an *incomplete* recovery, and
             # saying so is what stops it being reported as a finished one.
-            print(f"still owed    {', '.join(receipt.owed)} — {receipt.pairing.value}")
+            print(f"still owed    {', '.join(owed)} — {receipt.pairing.value}")
 
     # The end of a flow's life, announced before it is acted on — because the
     # process that knows the exchange happened is usually not the process that
@@ -544,14 +554,36 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
     # that flow is still live on purpose, and measurement (i) comes back to it
     # after 30 minutes with the record it needs. A marker there would authorise
     # deleting the copy that path exists to preserve.
+    #
+    # **And deliberately not on an incomplete receipt either** (PR #129 finding 4).
+    # `SinkReceipt.owed` was built so an incomplete recovery could not be reported as
+    # a finished one, and then this block ignored it: the marker is *terminal* — the
+    # only outcome `CompletionOutcome` accepts is `EXCHANGED`, and §4 has `link.sh`
+    # delete the record on it — so emitting it here retired the second copy of a
+    # recovery that still owes fields, deleting the evidence needed to finish the
+    # remaining work without spending another one-time token. No new outcome value is
+    # invented for this: an incomplete recovery is not terminal, so the honest wire
+    # output is none at all, and the record staying put *is* the resumption evidence.
     if args.flow:
-        print(link_recovery.CompletionOutcome(args.flow, link_recovery.EXCHANGED).to_wire())
-        _retire_recovery_record(args.flow)
+        if owed:
+            print(
+                f"RECOVERY INCOMPLETE — {', '.join(owed)} did not land, "
+                f"pairing is {receipt.pairing.value}. The access_token IS durable at "
+                f"{receipt.destination}, so do NOT exchange again: the token is spent. "
+                f"The recovery record for {args.flow} is kept on purpose so the rest "
+                "can be finished from it",
+                file=sys.stderr,
+            )
+        else:
+            print(link_recovery.CompletionOutcome(args.flow, link_recovery.EXCHANGED).to_wire())
+            _retire_recovery_record(args.flow)
 
-    if not args.exchange_twice:
-        return 0
+    if args.exchange_twice:
+        measured = _measure_duplicate_exchange(client, public_tokens[0], exchanged[0])
+        if measured != 0:
+            return measured
 
-    return _measure_duplicate_exchange(client, public_tokens[0], exchanged[0])
+    return INCOMPLETE_RECOVERY if owed else 0
 
 
 def _persist(environment: PlaidEnvironment, exchanged: list[ExchangedItem]) -> None:

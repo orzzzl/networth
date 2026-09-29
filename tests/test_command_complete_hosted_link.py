@@ -25,7 +25,7 @@ from networth import link_recovery, mac_identity
 from networth.cli import discover
 from networth.commands import complete_hosted_link
 from networth.link_recovery import RecoveryRecord
-from networth.link_sink import SinkKind
+from networth.link_sink import Pairing, RecoveredItem, SinkKind, SinkReceipt
 from networth.plaid import environment as environment_module
 from networth.plaid.client import PlaidClient
 from networth.plaid.environment import PlaidCredentials, paths_for, selected_environment
@@ -399,6 +399,73 @@ def test_the_replacement_host_sink_is_refused_because_it_would_write_here(
     assert SinkKind.EMERGENCY_ARTIFACT.value in error, "a refusal must name the way through"
     assert "item_public_token_exchange" not in api.called, "a refused sink still spent a token"
     assert not tokens.exists(), "the refused branch created the local store anyway"
+
+
+def test_an_incomplete_receipt_neither_marks_the_flow_done_nor_retires_its_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #129 finding 4, and the sink it is reached through is the point.
+
+    ``SinkReceipt.owed`` exists so an incomplete recovery cannot be reported as a
+    finished one, and this call site printed a warning and then emitted the terminal
+    ``EXCHANGED`` marker, retired the record and returned 0 anyway.
+
+    **The guard is deliberately written for a sink no CLI argument can currently
+    build.** Refusing ``--sink replacement-host`` above left ``EmergencyArtifactSink``
+    as the only reachable one, and it owes nothing — so with the fix for finding 1 in
+    place, finding 4 has no route through this command's own options and a regression
+    driven by them would pass against the bug. It is still a defect and not a
+    hypothetical: ``owed`` is non-empty for a whole sink *kind*, the refusal above is
+    explicitly temporary ("until a verified destination on the far side exists"), and
+    the day it is lifted this line would delete the record again. So the receipt is
+    supplied directly, which is the only way to observe the branch at all.
+
+    Four assertions, because the exit code is the least of it: the wire marker is
+    terminal (``CompletionOutcome`` accepts no other outcome, and §4 has ``link.sh``
+    delete the record on it), the record is the evidence the rest of the recovery
+    can be finished from, and the operator must be told not to re-run a command
+    whose one-time token is already spent.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _on_the_mac(monkeypatch, yes=True)
+    record = _mac_record(datetime(2026, 9, 15, 11, 0, tzinfo=UTC))
+    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"])
+    _over_a_fake_sdk(monkeypatch, _Finished())
+
+    class _OwesTwoFields:
+        kind = SinkKind.REPLACEMENT_HOST
+        destination = "synthetic-destination"
+
+        def prepare(self) -> None: ...
+
+        def prepare_for(self, flow_id: str) -> None: ...
+
+        def commit(self, item: RecoveredItem, *, now: datetime) -> SinkReceipt:
+            return SinkReceipt(
+                kind=self.kind,
+                destination=self.destination,
+                durable=("access_token", "item_id"),
+                owed=("link_session_id", "request_id"),
+                pairing=Pairing.ON_FLOW_ROW,
+            )
+
+    monkeypatch.setattr(complete_hosted_link, "_sink_from", lambda _args: _OwesTwoFields())
+
+    exit_code = complete_hosted_link.run(_args(from_tty=True, exchange=True))
+    captured = capsys.readouterr()
+
+    # The exit status is checked last on purpose, so that it cannot be the only
+    # assertion carrying this test: against the unguarded version the first failure
+    # is the wire marker, and the second is the deleted record.
+    assert link_recovery.EXCHANGED not in captured.out, (
+        "the terminal marker authorises deleting the record, and the recovery is not done"
+    )
+    assert record.exists(), "the evidence needed to finish without a second exchange"
+    assert "link_session_id" in captured.err and "request_id" in captured.err
+    assert "do NOT exchange again" in captured.err, (
+        "the one-time token is spent; a bare failure reads as 'try again'"
+    )
+    assert exit_code == complete_hosted_link.INCOMPLETE_RECOVERY
 
 
 def test_from_tty_without_a_flow_cannot_name_a_recovery_record(
