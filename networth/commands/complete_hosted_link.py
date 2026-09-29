@@ -119,6 +119,7 @@ from networth.link_sink import (
 )
 from networth.plaid.client import (
     ExchangedItem,
+    LinkSessionPoll,
     LinkSessionShape,
     PlaidCallError,
     PlaidClient,
@@ -310,6 +311,31 @@ def _prompt_credentials(environment: PlaidEnvironment) -> PlaidCredentials:
 def _link_token_from_this_host(environment: PlaidEnvironment, flow_id: str) -> str:
     store = TokenStore(paths_for(environment).items)
     return store.get(secret_ref_for(SecretKind.LINK_TOKEN, flow_id)).reveal()
+
+
+def _session_that_supplied(poll: LinkSessionPoll, public_token: str) -> str | None:
+    """Which Link attempt handed us *this* token, or ``None`` if the reply does not say.
+
+    PR #129 finding 3. This used to take the first non-empty ``session_id`` in the whole
+    poll, and one reply can describe several sessions: an attempt the owner abandoned,
+    then the one that worked. That reply has exactly one public token — so it passes the
+    cardinality refusal above — and the artifact was sealed with the *abandoned*
+    session's id beside the successful session's ``item_id``. A pairing that names the
+    wrong attempt is worse than an absent one, because nothing downstream can tell.
+
+    ``LinkSessionRecord`` exists to prevent precisely this: *"the first cut returned
+    parallel tuples of session ids and public tokens, which threw away **which token
+    belongs to which session**"*. The association was preserved one layer down and then
+    discarded by its only consumer.
+
+    ``None`` when no record claims the token, rather than the nearest id available.
+    ``link_session_id`` is optional in the artifact schema and an honest absence is
+    recoverable; a confident wrong answer is not.
+    """
+    for record in poll.sessions:
+        if public_token in record.public_tokens:
+            return record.session_id
+    return None
 
 
 def _report_poll_shape(shape: LinkSessionShape, sessions: int, tokens: int) -> None:
@@ -513,9 +539,7 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
         # with nowhere durable to put it — one laptop crash from recreating the
         # permanent slot loss it exists to prevent. §15 is satisfied by the
         # encryption plus the escrowed key, not by declining to write.
-        session_id = next(
-            (record.session_id for record in poll.sessions if record.session_id), None
-        )
+        session_id = _session_that_supplied(poll, public_tokens[0])
         try:
             receipt = sink.commit(
                 RecoveredItem(

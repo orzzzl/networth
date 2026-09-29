@@ -25,7 +25,7 @@ from networth import link_recovery, mac_identity
 from networth.cli import discover
 from networth.commands import complete_hosted_link
 from networth.link_recovery import RecoveryRecord
-from networth.link_sink import Pairing, RecoveredItem, SinkKind, SinkReceipt
+from networth.link_sink import Pairing, RecoveredItem, SinkKind, SinkReceipt, read_artifact
 from networth.plaid import environment as environment_module
 from networth.plaid.client import PlaidClient
 from networth.plaid.environment import PlaidCredentials, paths_for, selected_environment
@@ -399,6 +399,118 @@ def test_the_replacement_host_sink_is_refused_because_it_would_write_here(
     assert SinkKind.EMERGENCY_ARTIFACT.value in error, "a refusal must name the way through"
     assert "item_public_token_exchange" not in api.called, "a refused sink still spent a token"
     assert not tokens.exists(), "the refused branch created the local store anyway"
+
+
+def test_the_sealed_pairing_names_the_session_that_supplied_the_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #129 finding 3, measured inside the decrypted artifact.
+
+    One reply can describe several sessions: an attempt the owner abandoned, then the
+    one that worked. Such a reply has exactly **one** public token, so it passes the
+    cardinality refusal, and the old code took the first non-empty ``session_id`` in the
+    whole poll — sealing the abandoned session's id beside the successful session's
+    ``item_id``. A pairing that names the wrong attempt is worse than an absent one,
+    because nothing downstream can tell that it is wrong.
+
+    The abandoned session is given a *finish* instant and no token on purpose: that is
+    what an attempt the owner closed at the institution looks like, and it is what makes
+    its id non-empty and therefore eligible for the old ``next(...)``.
+    """
+
+    class _TwoSessionsOneToken(_Finished):
+        def link_token_get(self, link_token_get_request: Any, **kwargs: Any) -> Any:
+            return self._answer(
+                "link_token_get",
+                link_sessions_response(
+                    sessions=[
+                        completed_session(public_tokens=(), session_id="link-session-abandoned"),
+                        completed_session(
+                            public_tokens=(PUBLIC_TOKEN,), session_id="link-session-that-worked"
+                        ),
+                    ]
+                ),
+                link_token_get_request,
+            )
+
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"])
+    _over_a_fake_sdk(monkeypatch, _TwoSessionsOneToken())
+
+    artifact = tmp_path / "recovered.sealed"
+    key = _a_backup_key(tmp_path)
+
+    assert (
+        complete_hosted_link.run(
+            _args(
+                from_tty=True,
+                exchange=True,
+                sink=SinkKind.EMERGENCY_ARTIFACT.value,
+                artifact=artifact,
+                backup_key=key,
+            )
+        )
+        == 0
+    )
+
+    sealed = read_artifact(artifact, key_bytes=bytes.fromhex(key.read_text().strip()))
+    assert sealed["link_session_id"] == "link-session-that-worked"
+    assert sealed["item_id"] == ITEM_ID
+    capsys.readouterr()
+
+
+def test_a_token_no_session_claims_seals_no_session_rather_than_the_nearest_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The control for the test above, and the half that says what to do when unsure.
+
+    Without it, "the right id was sealed" is equally satisfied by any rule that happens
+    to pick the second session — including "take the last one", which is the same defect
+    with a different arithmetic. Here the only session with an id carries no token at
+    all, so a rule that reaches for the nearest available id has one to reach for and
+    must not. ``link_session_id`` is optional in the schema; an honest absence is
+    recoverable and a confident wrong answer is not.
+    """
+
+    class _TokenFromAnUnnamedSession(_Finished):
+        def link_token_get(self, link_token_get_request: Any, **kwargs: Any) -> Any:
+            return self._answer(
+                "link_token_get",
+                link_sessions_response(
+                    sessions=[
+                        completed_session(public_tokens=(), session_id="link-session-abandoned"),
+                        completed_session(public_tokens=(PUBLIC_TOKEN,), session_id=None),
+                    ]
+                ),
+                link_token_get_request,
+            )
+
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"])
+    _over_a_fake_sdk(monkeypatch, _TokenFromAnUnnamedSession())
+
+    artifact = tmp_path / "recovered.sealed"
+    key = _a_backup_key(tmp_path)
+
+    assert (
+        complete_hosted_link.run(
+            _args(
+                from_tty=True,
+                exchange=True,
+                sink=SinkKind.EMERGENCY_ARTIFACT.value,
+                artifact=artifact,
+                backup_key=key,
+            )
+        )
+        == 0
+    )
+
+    sealed = read_artifact(artifact, key_bytes=bytes.fromhex(key.read_text().strip()))
+    assert sealed["link_session_id"] is None, "it borrowed the abandoned session's id"
+    assert sealed["item_id"] == ITEM_ID
+    capsys.readouterr()
 
 
 def test_a_sink_whose_commit_must_fail_costs_no_exchange(
