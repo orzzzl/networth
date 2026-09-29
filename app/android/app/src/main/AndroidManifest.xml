@@ -1,4 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The app fetches its payload from the owner's own host over his tailnet,
+         so it needs this in the manifest that actually ships. The debug and
+         profile manifests beside this one have always declared it, which is why
+         nothing noticed: `flutter test` and every debug build get it for free,
+         and only a release APK goes without. Until the entry point was wired to
+         the real transport there was nothing to notice — the app read a bundled
+         fixture and made no network call at all. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="networth_app"
         android:name="${applicationName}"
