@@ -6,8 +6,9 @@ Stored-state full-sync planning merged in PR #121 and worker collection/persiste
 merged in PR #122. Full-sync dispatch and per-Item retry admission merged in PR #124; health
 dispatch and worker transaction guards merged in PR #125. Manual equity quote
 collection/persistence merged in PR #128; stored cycle alert assembly/dispatch
-merged in PR #130. Full-cycle completion is the next review slice. Quote-only
-cycles, executable wiring, remaining scheduler implementation and live acceptance
+merged in PR #130; full-cycle completion merged in PR #131. The source-price
+quote-due planner is the next review slice. Quote-only cycles, executable wiring,
+remaining scheduler implementation and live acceptance
 remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
@@ -436,7 +437,7 @@ or live runtime is added in this slice. Full/manual cycle completion, quote due
 planning, independent publication retry, archive scheduling, Link latency, units
 and installation remain owed before task 16 can close.
 
-## Full-cycle completion (next review slice)
+## Full-cycle completion (merged #131)
 
 `FullCycleDispatcher` extends the reviewed full-sync admission, stored due clocks
 and per-Item retry policy. It collects Plaid first; when that plan has no failures,
@@ -480,3 +481,33 @@ manual-only full-cycle path, and completion clocks after quote I/O. A real
 Publisher encrypt/decrypt check confirms the committed manual-inclusive total,
 its source age and the share-count alert. These are component integration checks,
 not executable scheduling or live acceptance. Task16/08/03a-live remain open.
+
+## Quote refresh due planner (next review slice)
+
+`QuoteRefreshSchedule` reads the same active, included manual-equity accounts as
+`ManualQuoteWorker`, including NEW accounts. An absent observation, unknown source
+clock, or source price older than the latest completed market close makes the
+batch due. Equality at close satisfies it. Unlike full sync, there is no one-hour
+posting grace or 20-hour fallback: the local calendar supplies the actual latest
+close across weekends, holidays, DST and early closes.
+
+Selection and source clocks are read in one short read transaction, released
+before returning. Planning never writes, fetches or consumes work. Both FULL_SYNC
+and OTHER observations can supply prices; neither a successful run nor a recent
+fetch/summary timestamp can make an old price current. Reopening the database
+preserves the answer. A successful provider response with a still-old source
+price therefore remains due, even if that means another quote call each tick.
+
+Malformed or future source/fetch/observation evidence raises a fixed
+`QuoteScheduleStateError`; it cannot return not-due. The future dispatcher must
+report this refusal and leave the work pending. This differs from the separately
+reviewed full-sync corrupt-ledger fallback: it never interprets an invalid price
+as valid evidence. Caller misuse (an active transaction or non-UTC check time)
+raises ValueError without rolling back the caller's transaction.
+
+This is the read-only prerequisite for quote-only dispatch, not a scheduled
+quote cycle. Run creation/completion, preserving other accounts' dated values in
+a quote-only snapshot, publication/archive scheduling, executable wiring, Link
+latency, units and live acceptance remain owed. PR131's two review notes are also
+pinned: completion-clock refusal names its own error, and a rival writer makes
+idle-path validation before writer admission observable.
