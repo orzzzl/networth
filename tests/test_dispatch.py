@@ -13,6 +13,7 @@ import pytest
 
 from networth.dispatch import FullSyncDispatcher
 from networth.filelock import LockUnavailable, exclusive_file_lock
+from networth.model.staleness import FreshnessPolicy
 from networth.plaid import BalanceRecord, InvestmentRecords
 from networth.scheduling import FullSyncSchedule
 from networth.storage import migrate
@@ -362,3 +363,84 @@ def test_lock_held_by_another_thread_prevents_even_run_creation(
     finally:
         release.set()
         thread.join(5)
+
+
+def test_all_deferred_activation_creates_no_sync_run(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    db.execute("UPDATE account SET archived_at = ? WHERE item_id = 2", (NOW.isoformat(),))
+    db.commit()
+    client = Client()
+    client.fail = {"material-one"}
+    assert dispatcher(db, tmp_path, client, at=NOW).run_due().ok is False
+    runs_before = db.execute("SELECT count(*) FROM sync_run").fetchone()[0]
+
+    later = NOW + timedelta(minutes=5)
+    for _ in range(3):
+        assert dispatcher(db, tmp_path, client, at=later).run_due().state == "DEFERRED"
+
+    # A deferred activation is not a run: it must not append unfinished history.
+    assert db.execute("SELECT count(*) FROM sync_run").fetchone()[0] == runs_before
+
+
+class PartialClient(Client):
+    """One Item, two accounts: balances succeed, holdings raise."""
+
+    def fetch_holdings(self, access_token: str) -> InvestmentRecords:
+        self.calls.append(f"holdings:{access_token}")
+        raise RuntimeError("synthetic-private-provider-detail")
+
+
+def test_one_failing_account_backs_off_its_whole_item(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    # Item 1 gains a second account whose fetch fails while the first succeeds.
+    add_account(db, 1, "one-holdings", policy=FreshnessPolicy.SYNCED_HOLDINGS)
+    db.execute("UPDATE account SET archived_at = ? WHERE item_id = 2", (NOW.isoformat(),))
+    db.commit()
+    client = PartialClient()
+    runner = FullSyncDispatcher(
+        db,
+        client,
+        FakeTokens(),
+        balance_mode=BalanceMode.REALTIME,
+        lock_path=tmp_path / "sync.lock",
+        clock=lambda: NOW,
+    )
+    result = runner.run_due()
+    assert result.ok is False
+    assert client.calls == ["material-one", "holdings:material-one"]
+
+    # A partly-failed Item is a failed attempt: it must carry a backoff row.
+    assert db.execute("SELECT failures FROM full_sync_retry WHERE item_id = 1").fetchone() == (1,)
+    assert db.execute("SELECT count(*) FROM observation").fetchone() == (1,)
+    client.calls.clear()
+    assert (
+        dispatcher(db, tmp_path, client, at=NOW + timedelta(minutes=5)).run_due().state
+        == "DEFERRED"
+    )
+    assert client.calls == []
+
+
+def test_backwards_completion_clock_never_reaches_the_success_clock(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ticks = iter([NOW, NOW - timedelta(seconds=1)])
+    runner = FullSyncDispatcher(
+        db,
+        Client(),
+        FakeTokens(),
+        balance_mode=BalanceMode.REALTIME,
+        lock_path=tmp_path / "sync.lock",
+        clock=lambda: next(ticks),
+    )
+    with pytest.raises(ValueError, match="precedes its start"):
+        runner.run_due()
+
+    # No row may be written whose finish precedes its start: FullSyncSchedule
+    # raises on any such committed success, permanently and for every later run.
+    assert db.execute("SELECT finished_at, ok FROM sync_run").fetchall() == [(None, None)]
+    assert db.execute("SELECT count(*) FROM observation").fetchone() == (0,)
+    assert db.execute("SELECT count(*) FROM full_sync_retry").fetchone() == (0,)
+    due = FullSyncSchedule(db).due(at=NOW + timedelta(days=1))
+    assert due.due and due.last_successful_finish is None
