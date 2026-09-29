@@ -114,6 +114,10 @@ void main() {
       publishedAt: published ?? publishedAt,
       publishInterval: publishInterval,
       grace: grace,
+      // Unreachable here rather than unknown: every case in this file evaluates
+      // against `BaselineAbsent`, which conjunct 3 answers before it asks what
+      // the copy's own counter is. No value passed here could change a verdict.
+      copySeq: null,
       deviceNow: deviceNow,
       continuity: evidence.at(deviceNow),
       diagnostics: diagnostics,

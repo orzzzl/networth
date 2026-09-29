@@ -197,6 +197,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'your server\'s latest copy isn\'t the one shown here';
 
   @override
+  String get copyReasonCopyNotConfirmed =>
+      'this device can\'t confirm it has checked the copy shown here';
+
+  @override
   String get copyUnknownFuture =>
       'the copy is dated ahead of this device\'s clock, so its age can\'t be worked out';
 

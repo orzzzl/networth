@@ -21,17 +21,23 @@ final DateTime _published = DateTime.utc(2026, 9, 15, 4);
 final DateTime _deadline = DateTime.utc(2026, 9, 16, 10);
 final PublicationSeq _held = PublicationSeq.parse('41');
 
+/// [copySeq] defaults to [_held] — the same counter the default baseline names —
+/// so every case written before conjunct 3 checked the copy keeps its meaning:
+/// the notes are about the payload on screen. A case that wants them to describe
+/// a *different* publication passes its own.
 CopyState _evaluate({
   required DateTime deviceNow,
   DateTime? publishedAt,
   DiagnosticsState diagnostics = const DiagnosticsAbsent(),
   BaselineState? baseline,
   ClockContinuity continuity = trustedClock,
+  PublicationSeq? copySeq,
 }) =>
     evaluateCopyState(
       publishedAt: publishedAt ?? _published,
       publishInterval: _interval,
       grace: _grace,
+      copySeq: copySeq ?? _held,
       deviceNow: deviceNow,
       continuity: continuity,
       diagnostics: diagnostics,
@@ -398,6 +404,7 @@ void main() {
         publishedAt: _published,
         publishInterval: _interval,
         grace: _grace,
+        copySeq: PublicationSeq.parse('10'),
         deviceNow: now,
         continuity: trustedClock,
         diagnostics: _succeededAt(afterDue, seq: PublicationSeq.parse('10')),

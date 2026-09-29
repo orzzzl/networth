@@ -47,6 +47,7 @@ void main() {
       const NeverFetched(),
       const NotCheckedSinceDue(),
       const ServedPayloadNotHeld(),
+      const CopyNotConfirmed(),
       const RecordsUnusable('anchor file is not JSON'),
       for (final c in FetchFailureClass.values) FetchFailed(c),
     ])

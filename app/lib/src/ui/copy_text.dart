@@ -6,12 +6,13 @@ import 'instant.dart';
 /// The words for §9.1's copy verdict — the whole matrix, as two pure functions.
 ///
 /// **Its own file, and public, because the widget path cannot reach most of it.**
-/// There are fourteen distinct sentences here, and this build performs no
+/// There are fifteen distinct sentences here, and this build performs no
 /// fetches, so its diagnostics are [DiagnosticsAbsent] and a widget test can only
 /// ever drive four: the three clock disagreements and `NeverFetched`. The other
-/// ten — every [FetchFailureClass], `NotCheckedSinceDue`, `RecordsUnusable`,
-/// `ServedPayloadNotHeld`, `HostNotPublishing` and `HostServingNothing` — become
-/// reachable on screen only when this task's transport starts writing records.
+/// eleven — every [FetchFailureClass], `NotCheckedSinceDue`, `RecordsUnusable`,
+/// `ServedPayloadNotHeld`, `CopyNotConfirmed`, `HostNotPublishing` and
+/// `HostServingNothing` — become reachable on screen only when this task's
+/// transport starts writing records.
 ///
 /// *(It said **twelve** and **eight** until [FetchFailureClass.unknownFailure]
 /// forced a recount, and the recount found the number had been wrong before this
@@ -20,11 +21,17 @@ import 'instant.dart';
 /// defect this file's own task keeps finding elsewhere, so the count is now
 /// asserted in `copy_text_test.dart` rather than maintained by hand.)*
 ///
-/// Left private inside the view they would have been eight strings nothing could
-/// pin until then, which is how the sentence this change exists to delete got
-/// into the shipped build in the first place: it was *computed* correctly and
-/// then rendered by a branch no test looked at. Mapping a verdict to a sentence
-/// is a unit; laying it out is the widget's job.
+/// Left private inside the view they would have been strings nothing could pin
+/// until then, which is how the sentence this change exists to delete got into
+/// the shipped build in the first place: it was *computed* correctly and then
+/// rendered by a branch no test looked at. Mapping a verdict to a sentence is a
+/// unit; laying it out is the widget's job.
+///
+/// *(That sentence carried a second count — "eight" — which the recount above
+/// missed because the assertion in `copy_text_test.dart` reads the first
+/// paragraph only. The fix is to stop restating the number, not to widen a test
+/// that parses this file's prose: one count, pinned where the reader needs it,
+/// and none anywhere else.)*
 
 /// The copy row's own claim: what is on screen, and how old it is.
 ///
@@ -90,6 +97,7 @@ String _cannotCheckText(AppLocalizations l10n, CannotCheckCause cause) => switch
       NeverFetched() => l10n.copyReasonNeverFetched,
       NotCheckedSinceDue() => l10n.copyReasonNotCheckedSinceDue,
       ServedPayloadNotHeld() => l10n.copyReasonServedPayloadNotHeld,
+      CopyNotConfirmed() => l10n.copyReasonCopyNotConfirmed,
       // The sentence carries none of the stored bytes and names no path: this is
       // the owner's screen, and `RecordsUnusable.reason` is `debugLog`'s.
       RecordsUnusable() => l10n.copyReasonRecordsUnusable,

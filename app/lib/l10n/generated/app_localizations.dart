@@ -280,11 +280,17 @@ abstract class AppLocalizations {
   /// **'this device can\'t read its own notes, so it can\'t tell why'**
   String get copyReasonRecordsUnusable;
 
-  /// ServedPayloadNotHeld. On this design the divergence has exactly one cause — a fetch this phone REFUSED under I6 — so the sentence states the divergence and accuses the host of nothing; the §9.3 downgrade warning beside it is the honest surface for the cause.
+  /// ServedPayloadNotHeld. The divergence has two causes on this design and neither is the host's fault — a fetch this phone REFUSED under I6, and one it accepted and could not store — so the sentence states the divergence and accuses the host of nothing; the §9.3 downgrade warning beside it is the honest surface where a cause has one. (Said 'exactly one cause' until the copy-first protocol made the second reachable.)
   ///
   /// In en, this message translates to:
   /// **'your server\'s latest copy isn\'t the one shown here'**
   String get copyReasonServedPayloadNotHeld;
+
+  /// CopyNotConfirmed. The notes are intact and readable but describe the publication BEFORE the one on screen, because §9.3 writes the copy first and a kill in that window leaves the records behind. Deliberately not copyReasonServedPayloadNotHeld, whose sentence would be false here — the host's latest copy IS the one shown — and not copyReasonRecordsUnusable, because nothing is damaged. It names only what is true: nothing confirms this copy. Self-repairing on the next successful fetch, so it blames nobody and asks the owner for nothing.
+  ///
+  /// In en, this message translates to:
+  /// **'this device can\'t confirm it has checked the copy shown here'**
+  String get copyReasonCopyNotConfirmed;
 
   /// ClockDisagreement.payloadFromTheFuture. Neither clock is called wrong, because this side cannot tell which one is (DESIGN.md §9.1 rule 1: the two clocks are never merged).
   ///

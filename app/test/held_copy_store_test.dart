@@ -152,13 +152,26 @@ void main() {
       expect(state.reason, isNot(contains('4250000')));
     });
 
-    test('a file that cannot be read at all is unreadable rather than absent', () async {
+    test('a file that cannot be read at all is not-read, and never absent', () async {
       // A directory where the copy should be: `readAsString` fails and
       // `exists()` answers false, which is exactly the inference `stored_file`
       // exists to refuse.
+      //
+      // **It asserted `HeldCopyUnreadable` until round 2 of review, and that
+      // was the bug one layer up.** Both states refuse the absence inference,
+      // which is all this test used to ask for — but only one of them is
+      // *evidence about what is stored*. "The document came back and names no
+      // usable `seq`" lets the replay floor fall back to the baseline; "the
+      // bytes never arrived" must not, because under the copy-first protocol
+      // the baseline is allowed to lag the copy it would be standing in for.
+      // Nothing here looked at a document, so the honest state is the one that
+      // claims nothing: see `snapshot_refresh_test.dart`'s transient-open case.
       await Directory(file.path).create(recursive: true);
 
-      expect(await store.read('fixture-pairing'), isA<HeldCopyUnreadable>());
+      final state = await store.read('fixture-pairing');
+      expect(state, isA<HeldCopyNotRead>());
+      expect(state, isNot(isA<HeldCopyUnreadable>()));
+      expect((state as HeldCopyNotRead).reason, isNot(isEmpty));
     });
   });
 

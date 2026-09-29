@@ -45,8 +45,12 @@ enum FetchFailureClass {
   ///
   /// It passes the test above rather than being an escape hatch: *what should he
   /// do about it* is **wait and look again**, which is not what any of the other
-  /// four say. An unnamed fault is usually transient, and the one action it must
-  /// not produce is re-pairing a host that is fine.
+  /// four say, and the one action it must not produce is re-pairing a host that
+  /// is fine. *(It also said an unnamed fault is "usually transient". Nothing in
+  /// the classifier establishes that — not knowing a fault's cause is not
+  /// evidence about how long it lasts — and the value's justification does not
+  /// need it: **look again** is the honest instruction for a phone that cannot
+  /// say where the failure was, whether or not it clears.)*
   unknownFailure,
 }
 

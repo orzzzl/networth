@@ -78,6 +78,15 @@ class FileHeldCopyStore implements HeldCopyStore {
     // rather than bypassing a defence — but "your phone has never fetched
     // anything" is still a false claim about the owner's own history, and the
     // proof is already written.
+    //
+    // **The third case is [HeldCopyNotRead], not [HeldCopyUnreadable], and the
+    // two are not interchangeable one layer up.** `readStoredFile` answers
+    // `StoredBytes` exactly when the read returned, so its third case means the
+    // bytes were never obtained — a `path_provider` failure, an unsearchable
+    // parent, a directory in the file's place. Every other branch below has
+    // *read the document* and found it unusable. Reporting "damaged" for a
+    // question that was never asked is what let a transient `open` failure
+    // lower I6's replay floor; see [HeldCopyNotRead].
     final String bytes;
     switch (await readStoredFile(open)) {
       case StoredBytes(bytes: final read):
@@ -85,7 +94,7 @@ class FileHeldCopyStore implements HeldCopyStore {
       case StoredAbsent():
         return const HeldCopyAbsent();
       case StoredUnreadable(reason: final reason):
-        return HeldCopyUnreadable('held copy could not be read: $reason');
+        return HeldCopyNotRead('held copy could not be read: $reason');
     }
 
     final Object? decoded;
