@@ -181,6 +181,7 @@ def test_poll_all_persists_every_visible_axis_a_state(
     }
     poller, client, tokens = poller_for(store, outcomes)
 
+    db.commit()
     batch = poller.poll_all(at=NOW)
     results = batch.recorded
 
@@ -226,6 +227,7 @@ def test_due_boundary_polls_never_polled_and_exactly_one_hour_old_items(
     }
     poller, client, _ = poller_for(store, outcomes)
 
+    db.commit()
     batch = poller.poll_due(at=NOW)
 
     assert batch.attempted_count == 2
@@ -255,6 +257,7 @@ def test_link_transition_may_be_newer_than_the_previous_health_poll(
         {"relinked": item_status("relinked", ItemState.REVOKED)},
     )
 
+    db.commit()
     stored = poller.poll_item(item_id, at=NOW - timedelta(minutes=1))
 
     assert stored is not None
@@ -305,6 +308,7 @@ def test_pending_disconnect_is_not_a_poll_driven_transition(
     )
     poller, _, _ = poller_for(store, {"pending": pending})
 
+    db.commit()
     stored = poller.poll_item(item_id, at=NOW)
 
     assert stored.status is ItemState.NEEDS_REAUTH
@@ -327,6 +331,7 @@ def test_transport_failure_preserves_the_last_observed_investments_clock(
     )
     poller, _, _ = poller_for(store, {"transport": failure})
 
+    db.commit()
     stored = poller.poll_item(item_id, at=NOW)
 
     assert stored.status is ItemState.DEGRADED
@@ -382,6 +387,7 @@ def test_no_item_state_evidence_cannot_demote_an_actionable_state(
     store = Store(db)
     poller, _, _ = poller_for(store, {suffix: outcome})
 
+    db.commit()
     stored = poller.poll_item(item_id, at=NOW)
 
     assert stored.status is prior_state
@@ -406,6 +412,7 @@ def test_observed_null_investments_clock_clears_to_unknown(
     )
     poller, _, _ = poller_for(store, {"unknown": outcome})
 
+    db.commit()
     stored = poller.poll_item(item_id, at=NOW)
 
     assert stored.status is ItemState.HEALTHY
@@ -431,6 +438,7 @@ def test_response_for_a_different_item_cannot_mark_the_target_healthy(
     )
     poller, _, _ = poller_for(store, {"expected": wrong})
 
+    db.commit()
     stored = poller.poll_item(item_id, at=NOW)
 
     assert stored.status is ItemState.DEGRADED
@@ -459,6 +467,7 @@ def test_healthy_response_without_item_identity_cannot_mark_the_target_healthy(
     )
     poller, _, _ = poller_for(store, {"missing-identity": missing_identity})
 
+    db.commit()
     stored = poller.poll_item(item_id, at=NOW)
 
     assert stored.status is ItemState.DEGRADED
@@ -488,6 +497,7 @@ def test_one_unresolvable_token_does_not_discard_or_block_other_item_polls(
     )
     poller = ItemHealthPoller(store.items, client, tokens)
 
+    db.commit()
     batch = poller.poll_due(at=NOW)
 
     assert batch.attempted_count == 3
@@ -532,7 +542,9 @@ def test_late_arriving_older_poll_cannot_overwrite_newer_health(
         {"ordered": item_status("ordered", ItemState.REVOKED)},
     )
 
+    db.commit()
     newer = newer_poller.poll_item(item_id, at=NOW)
+    db.commit()
     older = older_poller.poll_item(item_id, at=NOW - timedelta(minutes=1))
 
     assert newer.status is ItemState.NEEDS_REAUTH

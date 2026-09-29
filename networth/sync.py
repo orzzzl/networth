@@ -169,6 +169,7 @@ class FullSync:
     ) -> FullSyncPlan:
         """Fetch and plan without writes; the caller must not hold a transaction."""
 
+        self._store.items.require_no_transaction()
         require_nonempty(sync_run_id, field="sync_run_id")
         fetched_at = self._clock() if at is None else at
         require_utc(fetched_at, field="sync time")

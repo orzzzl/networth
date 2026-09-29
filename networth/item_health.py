@@ -113,6 +113,7 @@ class ItemHealthPoller:
     def collect_due(self, *, at: datetime | None = None) -> PollPlan:
         """Observe due Items without writing or holding a write transaction."""
 
+        self._items.require_no_transaction()
         polled_at = self._poll_time(at)
         due = self._items.due_at_or_before(polled_at - POLL_INTERVAL)
         return self._collect(due, polled_at)
@@ -129,12 +130,14 @@ class ItemHealthPoller:
     def collect_all(self, *, at: datetime | None = None) -> PollPlan:
         """Observe every Item without persisting; for explicit full sweeps."""
 
+        self._items.require_no_transaction()
         polled_at = self._poll_time(at)
         return self._collect(self._items.all(), polled_at)
 
     def poll_item(self, item_id: int, *, at: datetime | None = None) -> ItemHealth:
         """Poll one Item immediately, such as directly after Link completes."""
 
+        self._items.require_no_transaction()
         target = self._items.get(item_id)
         if target is None:
             raise ItemNotFoundError(f"item {item_id} does not exist")

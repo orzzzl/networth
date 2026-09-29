@@ -3552,7 +3552,7 @@ The timer fires every 5 minutes and the worker asks the database what is due:
 
 | Job | Due when |
 |---|---|
-| health poll | >60 min since the last poll |
+| health poll | never polled or ≥60 min since the last poll (task 10's inclusive boundary) |
 | full sync | **either** no successful full sync since the most recent market close + 1h, **or** >20h since the last successful full sync — whichever comes first (see below) |
 | quote refresh | any `MANUAL_QTY_LIVE_PRICE` price older than the last close |
 | publish | a snapshot exists newer than the last successful `publication` (§6.4) |
@@ -3641,7 +3641,7 @@ the existing per-Item retry backoff; it must never interpret this refusal as
 "not due" or silently skip the sync. Caller precondition failures (a non-UTC
 check time or an active transaction on the supplied connection) raise
 `ValueError` instead: the dispatcher must surface and correct its misuse, not
-catch it as bad stored evidence. No dispatcher implements this contract yet.
+catch it as bad stored evidence. `FullSyncDispatcher` implements this contract.
 
 The planner validates every historical full-sync success. A bad row therefore
 continues to force this fallback even after later successful syncs; a future
@@ -3669,6 +3669,14 @@ as the canonical lock for the selected database. It is not yet wired to a
 command, complete alert/manual/snapshot/publication cycle, or installed service.
 See `tasks/16-scheduling-contract.md` for the recovery and validation contract.
 
+`HealthDispatcher` uses the same canonical sync lock and short write-retry helper.
+It collects hourly due Items without a transaction and atomically persists the
+batch; it creates no full-sync success or retry evidence. Targets with no observed
+outcome keep their old poll clock and retry next activation; classified provider
+failures remain health observations. Both workers now refuse active transactions
+at their own collection entry points, before resolving tokens, including through
+the combined convenience methods. Those methods still leave persistence commit
+ownership with the caller. Health dispatch is not yet invoked by a command.
 
 **Why the full sync has two predicates and not one.** *(From review. Rev 3 made
 a sync due only after a new market close, which quietly redefined the product:

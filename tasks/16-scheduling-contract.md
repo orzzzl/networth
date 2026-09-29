@@ -254,9 +254,13 @@ rule that an older observation cannot replace a newer one.
 This separation is needed because wrapping the old combined methods in
 `BEGIN IMMEDIATE` holds a write lock across their provider calls; waiting until
 a combined call returns starts the explicit transaction after its writes.
-The old `run()` / `poll_due()` / `poll_all()` convenience methods remain for
-existing callers and preserve caller-owned transaction behavior. They are not
-the scheduled runtime entry points. `poll_item()` is unchanged.
+The `run()` / `poll_due()` / `poll_all()` convenience methods retain caller-owned
+persistence, but now reject an active transaction before collection, as does
+`poll_item()`. Callers must commit their preceding work before invoking them and
+commit or roll back their resulting writes themselves. They are not the scheduled
+runtime entry points. The class guards use the actual Item repository connection
+and run before token resolution; caller misuse is raised, not caught as a provider
+failure or converted to carried-forward observations.
 
 The plans contain sensitive account/health facts, not credentials, and must not
 be logged or serialized as recovery files. A process death before persistence
@@ -277,10 +281,9 @@ remaining live `record-pull` / `pair` / `revoke` contention acceptance.
 
 `FullSyncDispatcher` constructs its worker on its own connection and enforces
 no active transaction before planning and immediately before collection. This
-is PR122 review finding 1's caller-side enforcement. It does not change the
-compatibility methods; the future health dispatcher owes the equivalent guard
-on its actual collection call. PR122 finding 2's stale health-loop comment is
-also corrected; simplifying the `_Plan` wrapper is deferred cleanup.
+is PR122 review finding 1's caller-side enforcement; both workers now also guard
+their collection entry points on the actual repository connection. PR122 finding
+2's stale health-loop comment is also corrected; simplifying the `_Plan` wrapper is deferred cleanup.
 
 Admission holds the selected database's canonical sync file lock, nonblocking,
 through the whole run; nested dispatch is refused even in the same thread.
@@ -323,10 +326,37 @@ backoff boundaries, cap/reset and recovery from an unfinished run. The full
 cycle still must value manual accounts, evaluate alerts, snapshot and publish;
 this component does not claim those acceptance criteria or add a CLI command.
 
+## Health dispatch
+
+`HealthDispatcher` shares full sync's canonical file lock and three-attempt
+BUSY write helper. It collects due health observations with no active transaction,
+then persists the whole plan under `BEGIN IMMEDIATE`. A write retry reuses that
+plan; a newer poll already on disk retains precedence. Nothing writes `sync_run`
+or the full-sync retry table: health completion must not satisfy full-sync due-ness.
+
+Due work comes from each Item's committed `last_health_poll_at`, including never
+polled Items and polls exactly one hour old (the existing task-10 inclusive
+boundary). Restart catches up without a timer stamp, on non-market days too.
+Unclassified exceptions leave that target's clock unchanged and return a degraded
+batch; other collected observations still commit. Classified provider outcomes,
+including transport failure, are health observations and advance the poll clock
+without inventing successful source data. There is no additional exponential
+health retry delay: unobserved failures retry next activation, which can cost a
+call each tick until repaired. A crash before commit discards the in-memory plan
+and repeats idempotent health reads on restart. No Link exchange uses this policy.
+
+The combined worker APIs now refuse active transactions, including read-only
+`BEGIN`, before resolving tokens. Existing health fixtures explicitly commit
+setup and successive polls. No production caller uses those convenience health
+APIs yet. Persistence still never commits behind the caller. Synthetic WAL tests
+pin writer availability, atomic rollback/replay, newer-poll precedence, restart,
+exact hourly due boundary, and mutual exclusion with full sync. No executable or
+runtime installation is introduced here.
+
 ## Remaining task-16 work
 
-The subsequent implementation still owes the other job predicates, health dispatch
-with its collection guard, per-cycle health/account/manual alert facts,
+The subsequent implementation still owes the other job predicates,
+per-cycle health/account/manual alert facts,
 manual quote observations before snapshot, publication and archive ordering,
 writer-contention tests, and reaper scheduling. Live acceptance still owes the
 reviewed runtime install, forced backup dispatcher ownership/mode/byte equality,
