@@ -1,8 +1,9 @@
 # Task 16: Link scheduling and archive capture decision
 
 Status: A approved and merged in PR #115; capture-boundary implementation
-merged in PR #118. Socket timeout/no-retry policy is the next review slice.
-Scheduler implementation and live acceptance remain owed.
+merged in PR #118; socket timeout/no-retry policy merged in PR #120.
+Stored-state full-sync planning is the next review slice. Runtime dispatch,
+remaining scheduler implementation and live acceptance remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
 ## Decision: restore the specified capture boundary (A)
@@ -61,6 +62,9 @@ These are explicit operating limits, not measured provider latency guarantees;
 an exchange that reaches one remains uncertain and is never retried by the
 worker. The real SDK transport disables retries **and redirects**, including
 connection-error retries; one wrapper invocation cannot hide another send.
+The cost is that idempotent data fetches lose their former transport retries too:
+a transient failure now reaches the scheduler, whose explicit backoff and the
+20-hour catch-up rule must provide recovery. No per-call resend policy is added.
 
 Verified against the locked plaid-python 43.0.0 and urllib3 2.7.0 path, with
 synthetic loopback responses and a failing connection factory. The tests observe
@@ -195,10 +199,49 @@ https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html
 6. Prove Link wakes while real sync/archive work remains active. Verify the unit
    wiring and timer on Linux, not just through source-text assertions on macOS.
 
+## Stored full-sync due planner
+
+Migration 0010 distinguishes `FULL_SYNC` from `OTHER` in `sync_run`, because
+manual revisions and quote-only work already use this ledger. Legacy successes
+remain `OTHER`; the first scheduled activation therefore conservatively runs a
+full sync. The runtime caller must explicitly mark full-sync runs at creation.
+`FullSyncSchedule` reads only committed, completed successes of that kind.
+The two-value vocabulary is deliberate: manual revisions and quote-only work
+both remain `OTHER` because this planner only needs to distinguish full syncs.
+Distinguishing those other jobs later requires a migration that rebuilds
+`sync_run` to widen its `CHECK`; it is not just another value a caller can write.
+
+The latest successful start satisfies market close + 1h; the latest successful
+finish controls the strict >20h clock. Separate maxima preserve both facts when
+runs finish out of order. A run starting before market readiness cannot satisfy
+it merely by finishing afterward. The existing local market calendar supplies
+holidays, DST and early closes. Planning is read-only, consumes no due work and
+is identical after reopening the database; failed and interrupted runs do not
+advance the clock. Malformed, non-UTC, reversed or future success clocks raise
+`ScheduleStateError` with a fixed diagnostic. Per DESIGN §13, this means due:
+the dispatcher must report the diagnostic and schedule a full sync subject to
+per-Item retry backoff, never skip it as "not due". Caller misuse (an active
+transaction or non-UTC check time) raises `ValueError` separately and must not
+enter that fallback.
+
+All historical successes are validated. One bad row can keep this fallback
+active across subsequent healthy syncs: future clocks require time to catch up,
+and malformed or reversed clocks require explicit repair. The cost is repeated
+diagnostics and potentially a full sync on every activation; new successes do
+not heal old evidence, and no automatic ledger rewrite or deletion is added.
+Runtime dispatch acceptance must demonstrate this fallback with a bad historical
+row plus newer healthy rows, and show that caller misuse escapes it.
+
+This is a prerequisite, not a scheduled runtime: no command currently dispatches
+this planner or writes `FULL_SYNC`. Per-Item failure backoff, other job predicates,
+full cycle assembly, units and live installation remain owed. The regression
+suite uses migrated databases, a real WAL reader and a reopen after interruption.
+
 ## Remaining task-16 work
 
-The subsequent implementation still owes the stored-state due engine (including
-weekends and successful-sync clocks), per-cycle health/account/manual alert facts,
+The subsequent implementation still owes dispatch of the stored-state full-sync
+planner, the other job predicates and retry backoff, per-cycle health/account/manual
+alert facts,
 manual quote observations before snapshot, publication and archive ordering,
 writer-contention tests, and reaper scheduling. Live acceptance still owes the
 reviewed runtime install, forced backup dispatcher ownership/mode/byte equality,
