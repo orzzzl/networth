@@ -1,4 +1,4 @@
-"""Task 16 full-sync dispatch; not yet the complete scheduled cycle or CLI.
+"""Task 16 full-sync and health dispatch; not yet the complete scheduled cycle or CLI.
 
 The caller supplies the canonical sync lock path for the selected database.
 All dispatchers for that database must use that same path. The connection and
@@ -20,6 +20,7 @@ from typing import TypeVar
 from uuid import uuid4
 
 from networth.filelock import exclusive_file_lock
+from networth.item_health import ItemHealthPoller, PollBatchResult, _ItemGetter
 from networth.model.figure import require_utc
 from networth.scheduling import FullSyncSchedule, ScheduleStateError
 from networth.store import Store
@@ -48,7 +49,52 @@ class DispatchResult:
     schedule_state_error: bool = False
 
 
-class FullSyncDispatcher:
+class _Dispatcher:
+    """Shared connection ownership, admission and short write retry policy."""
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        lock_path: Path,
+        clock: Callable[[], datetime],
+        sleep: Callable[[float], None],
+    ) -> None:
+        self._db = connection
+        self._idle()
+        self._db.execute("PRAGMA busy_timeout = 5000")
+        self._store = Store(connection)
+        self._lock_path = lock_path
+        self._clock = clock
+        self._sleep = sleep
+        self._active = False
+
+    def _idle(self) -> None:
+        if self._db.in_transaction:
+            raise ValueError("dispatch requires a connection with no active transaction")
+
+    def _write(self, operation: Callable[[], T]) -> T:
+        self._idle()
+        for attempt in range(3):
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                result = operation()
+                self._db.commit()
+                return result
+            except BaseException as exc:
+                if self._db.in_transaction:
+                    self._db.rollback()
+                code = getattr(exc, "sqlite_errorcode", None)
+                busy = isinstance(exc, sqlite3.OperationalError) and (
+                    code is not None and code & 0xFF == sqlite3.SQLITE_BUSY
+                )
+                if not busy or attempt == 2:
+                    raise
+                self._sleep(random.uniform(0.05, 0.15) * (2**attempt))
+        raise AssertionError("unreachable write retry")
+
+
+class FullSyncDispatcher(_Dispatcher):
     """Admit one run, collect without a transaction, then commit its outcome.
 
     Run creation is durable before provider calls. A crash or unexpected error
@@ -69,20 +115,9 @@ class FullSyncDispatcher:
         clock: Callable[[], datetime] = _now,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._db = connection
-        self._idle()
-        self._db.execute("PRAGMA busy_timeout = 5000")
-        self._store = Store(connection)
+        super().__init__(connection, lock_path=lock_path, clock=clock, sleep=sleep)
         self._worker = FullSync(self._store, client, tokens, balance_mode=balance_mode)
         self._schedule = FullSyncSchedule(connection)
-        self._lock_path = lock_path
-        self._clock = clock
-        self._sleep = sleep
-        self._active = False
-
-    def _idle(self) -> None:
-        if self._db.in_transaction:
-            raise ValueError("dispatch requires a connection with no active transaction")
 
     def run_due(self) -> DispatchResult:
         self._idle()
@@ -178,22 +213,40 @@ class FullSyncDispatcher:
                 (outcome.item_id, failures, _text(retry_at)),
             )
 
-    def _write(self, operation: Callable[[], T]) -> T:
+
+class HealthDispatcher(_Dispatcher):
+    """Poll hourly from committed Item clocks under the canonical sync lock.
+
+    No sync_run row is needed: only persisted health observations consume due
+    work, and these must never advance the full-sync clock. Failed collection
+    targets retain their old clock and are attempted again next activation.
+    """
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        client: _ItemGetter,
+        tokens: _TokenResolver,
+        *,
+        lock_path: Path,
+        clock: Callable[[], datetime] = _now,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        super().__init__(connection, lock_path=lock_path, clock=clock, sleep=sleep)
+        self._worker = ItemHealthPoller(self._store.items, client, tokens)
+
+    def run_due(self) -> PollBatchResult:
         self._idle()
-        for attempt in range(3):
+        if self._active:
+            raise ValueError("dispatch is already active")
+        with exclusive_file_lock(self._lock_path, blocking=False, reentrant=False):
+            self._active = True
             try:
-                self._db.execute("BEGIN IMMEDIATE")
-                result = operation()
-                self._db.commit()
-                return result
-            except BaseException as exc:
-                if self._db.in_transaction:
-                    self._db.rollback()
-                code = getattr(exc, "sqlite_errorcode", None)
-                busy = isinstance(exc, sqlite3.OperationalError) and (
-                    code is not None and code & 0xFF == sqlite3.SQLITE_BUSY
-                )
-                if not busy or attempt == 2:
-                    raise
-                self._sleep(random.uniform(0.05, 0.15) * (2**attempt))
-        raise AssertionError("unreachable write retry")
+                at = self._clock()
+                self._idle()
+                plan = self._worker.collect_due(at=at)
+                if not plan.attempted_count:
+                    return PollBatchResult(0, (), ())
+                return self._write(lambda: self._worker.persist(plan))
+            finally:
+                self._active = False

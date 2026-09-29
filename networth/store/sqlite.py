@@ -323,6 +323,12 @@ class ItemRepository:
         _require_foreign_keys(connection)
         self._connection = connection
 
+    def require_no_transaction(self) -> None:
+        """Refuse provider collection while this repository holds a transaction."""
+
+        if self._connection.in_transaction:
+            raise ValueError("collection requires a connection with no active transaction")
+
     def get(self, item_id: int) -> ItemHealth | None:
         row = _row(
             self._connection.execute(
