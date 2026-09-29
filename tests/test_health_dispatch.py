@@ -85,6 +85,30 @@ def test_health_frees_writer_and_due_clock_survives_restart(
     reopened.close()
 
 
+def test_nothing_due_health_returns_while_another_writer_holds_lock(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    client = HealthClient()
+    runner = health(db, tmp_path, client)
+    assert runner.run_due().recorded_count == 2
+    runner._clock = lambda: NOW + timedelta(hours=1, microseconds=-1)
+    db.execute("PRAGMA busy_timeout = 0")
+    rival = sqlite3.connect(tmp_path / "dispatch.db", timeout=0)
+    try:
+        rival.execute("BEGIN IMMEDIATE")
+        rival.execute("UPDATE institution SET is_oauth = is_oauth")
+        # A result-only check cannot distinguish an empty persistence transaction.
+        # Returning with this writer held proves the idle path never reserves it.
+        assert runner.run_due() == PollBatchResult(0, (), ())
+        assert rival.in_transaction
+        assert client.calls == ["material-one", "material-two"]
+    finally:
+        rival.rollback()
+        rival.close()
+    runner._clock = lambda: NOW + timedelta(hours=1)
+    assert runner.run_due().recorded_count == 2
+
+
 def test_failed_health_target_stays_due_without_discarding_other_observation(
     db: sqlite3.Connection, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
