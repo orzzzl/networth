@@ -1,0 +1,357 @@
+"""The sink's whole subject is *when* it is consulted, so that is what these pin.
+
+`07b` criterion 1: *"The durable destination is chosen and verified **before** the
+exchange is attempted, and the script refuses to exchange if it is not writable.
+Verifying the sink after spending the token repeats the rev-17 mistake: a fallback
+chosen after the irreversible step is not a fallback."*
+
+That makes the interesting assertions negative ones — that :meth:`prepare` **raises**
+in the cases that would otherwise raise at commit — and a negative assertion is worth
+only the proof that its failure has one cause. So every refusal test below is paired
+with the positive control that the same construction succeeds when the destination is
+sound; without the pair, "prepare raised" is equally satisfied by a sink that refuses
+everything.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from networth.backup import crypto
+from networth.link_sink import (
+    ARTIFACT_SCHEMA,
+    REQUIRED_FIELDS,
+    ArtifactUnreadable,
+    EmergencyArtifactSink,
+    Pairing,
+    RecoveredItem,
+    ReplacementHostSink,
+    SinkKind,
+    SinkNotWritable,
+    SinkWriteFailed,
+    restore,
+)
+from networth.tokenstore import Secret, SecretKind, TokenStore, secret_ref_for
+
+NOW = datetime(2026, 9, 29, 4, 30, tzinfo=UTC)
+
+#: Generated at run time, never committed. The value is synthetic either way, but
+#: `check-no-secrets.sh` refuses an access-token-shaped *literal* in this public
+#: repo on purpose: a scanner that allowed a fixture through would have to tell
+#: synthetic from real, and it cannot. It said so when this file first tried one.
+ACCESS_TOKEN = "access-sandbox-" + secrets.token_hex(16)
+ITEM_ID = "item-0000000000000000"
+#: A *minted* flow id: `secret_ref_for` takes 32 lowercase hex and nothing else,
+#: because the ref encodes it. A readable stand-in like `flow-0001` is rejected.
+FLOW_ID = "1f0c9a2b3d4e5f60718293a4b5c6d7e8"
+OTHER_FLOW_ID = "9a8b7c6d5e4f30211203a4b5c6d7e8f9"
+
+
+@pytest.fixture
+def key_file(tmp_path: Path) -> Path:
+    path = tmp_path / "backup.key"
+    path.write_text(secrets.token_hex(crypto.KEY_BYTES) + "\n")
+    path.chmod(0o600)
+    return path
+
+
+def item(**overrides: object) -> RecoveredItem:
+    fields: dict[str, object] = {
+        "access_token": Secret(ACCESS_TOKEN),
+        "item_id": ITEM_ID,
+        "flow_id": FLOW_ID,
+        "link_session_id": "session-0001",
+        "request_id": "request-0001",
+    }
+    fields.update(overrides)
+    return RecoveredItem(**fields)  # type: ignore[arg-type]
+
+
+class TestProofHappensBeforeTheExchange:
+    """Criterion 1, for both branches: the refusal lands on the cheap side."""
+
+    def test_replacement_host_refuses_an_unwritable_directory(self, tmp_path: Path) -> None:
+        blocked = tmp_path / "locked" / "tokens"
+        blocked.parent.mkdir(mode=0o500)
+        sink = ReplacementHostSink(blocked)
+
+        with pytest.raises(SinkNotWritable):
+            sink.prepare()
+
+    def test_and_the_control_accepts_a_sound_one(self, tmp_path: Path) -> None:
+        # Without this the test above is satisfied by a sink that refuses
+        # everything, and "prepare raised" would carry no information.
+        ReplacementHostSink(tmp_path / "tokens").prepare()
+
+    def test_artifact_refuses_a_key_its_own_loader_rejects(self, tmp_path: Path) -> None:
+        # Mode 0644 is a key `03a`'s loader will not read. Discovering that after
+        # the exchange is the mistake criterion 1 names, so it must surface here.
+        loose = tmp_path / "loose.key"
+        loose.write_text(secrets.token_hex(crypto.KEY_BYTES) + "\n")
+        loose.chmod(0o644)
+        sink = EmergencyArtifactSink(tmp_path / "artifact.sealed", key_file=loose)
+
+        with pytest.raises(SinkNotWritable):
+            sink.prepare()
+
+    def test_and_the_control_accepts_an_escrowed_key(self, tmp_path: Path, key_file: Path) -> None:
+        EmergencyArtifactSink(tmp_path / "artifact.sealed", key_file=key_file).prepare()
+
+    def test_a_proof_leaves_nothing_behind(self, tmp_path: Path, key_file: Path) -> None:
+        # The probe is removed, and the destination is untouched. A prepare that
+        # left a file would make the artifact branch's own existence check below
+        # refuse the very recovery it just proved possible.
+        tokens = tmp_path / "tokens"
+        ReplacementHostSink(tokens).prepare()
+        assert [p.name for p in tokens.iterdir() if not p.name.startswith(".lock")] == []
+
+        artifact = tmp_path / "artifact.sealed"
+        EmergencyArtifactSink(artifact, key_file=key_file).prepare()
+        assert not artifact.exists()
+
+    def test_permission_bits_are_not_the_proof(self, tmp_path: Path, key_file: Path) -> None:
+        """A key that is mode-0600 and *not a valid key* must still be refused.
+
+        `os.access` and a mode check both pass here; only actually using the key
+        fails. This is the test that separates "the file looks right" from "the
+        write that happens after the irreversible step will succeed".
+        """
+        wrong_length = tmp_path / "short.key"
+        wrong_length.write_text("00" * 16 + "\n")
+        wrong_length.chmod(0o600)
+        assert os.access(wrong_length, os.R_OK)
+
+        with pytest.raises(SinkNotWritable):
+            EmergencyArtifactSink(tmp_path / "a.sealed", key_file=wrong_length).prepare()
+
+
+class TestRefusalsMovedOffTheExpensiveSide:
+    """Each of these would otherwise raise *after* the token is spent."""
+
+    def test_an_existing_artifact_is_refused_before_the_exchange(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        artifact = tmp_path / "artifact.sealed"
+        artifact.write_bytes(b"an earlier recovery")
+        sink = EmergencyArtifactSink(artifact, key_file=key_file)
+
+        with pytest.raises(SinkNotWritable, match="already exists"):
+            sink.prepare()
+
+        assert artifact.read_bytes() == b"an earlier recovery", "it must not be overwritten"
+
+    def test_an_existing_token_for_this_flow_is_refused_before_the_exchange(
+        self, tmp_path: Path
+    ) -> None:
+        # `TokenStore.put` raises rather than overwrite, which is right and which
+        # would otherwise raise after the exchange. `prepare_for` asks now.
+        tokens = tmp_path / "tokens"
+        TokenStore(tokens).put(SecretKind.ACCESS_TOKEN, FLOW_ID, ACCESS_TOKEN, item_id=ITEM_ID)
+        sink = ReplacementHostSink(tokens)
+
+        with pytest.raises(SinkNotWritable, match="already holds"):
+            sink.prepare_for(FLOW_ID)
+
+    def test_and_the_control_accepts_an_unused_flow(self, tmp_path: Path) -> None:
+        tokens = tmp_path / "tokens"
+        TokenStore(tokens).put(SecretKind.ACCESS_TOKEN, OTHER_FLOW_ID, ACCESS_TOKEN)
+
+        ReplacementHostSink(tokens).prepare_for(FLOW_ID)
+
+
+class TestCommitRefusesToRunUnprepared:
+    def test_replacement_host(self, tmp_path: Path) -> None:
+        with pytest.raises(SinkWriteFailed, match="before prepare"):
+            ReplacementHostSink(tmp_path / "tokens").commit(item(), now=NOW)
+
+    def test_emergency_artifact(self, tmp_path: Path, key_file: Path) -> None:
+        with pytest.raises(SinkWriteFailed, match="before prepare"):
+            EmergencyArtifactSink(tmp_path / "a.sealed", key_file=key_file).commit(item(), now=NOW)
+
+
+class TestWhatLandsAndWhatIsStillOwed:
+    """Criterion 2's four fields, and the receipt that may not overstate them."""
+
+    def test_the_replacement_host_reports_the_two_it_cannot_hold(self, tmp_path: Path) -> None:
+        sink = ReplacementHostSink(tmp_path / "tokens")
+        sink.prepare_for(FLOW_ID)
+
+        receipt = sink.commit(item(), now=NOW)
+
+        assert receipt.kind is SinkKind.REPLACEMENT_HOST
+        assert receipt.durable == ("access_token", "item_id")
+        assert receipt.owed == ("link_session_id", "request_id")
+        assert receipt.pairing is Pairing.ON_FLOW_ROW
+        assert not receipt.complete, "a receipt with fields owed is not a finished recovery"
+
+    def test_the_artifact_holds_all_four(self, tmp_path: Path, key_file: Path) -> None:
+        sink = EmergencyArtifactSink(tmp_path / "artifact.sealed", key_file=key_file)
+        sink.prepare()
+
+        receipt = sink.commit(item(), now=NOW)
+
+        assert receipt.kind is SinkKind.EMERGENCY_ARTIFACT
+        assert receipt.durable == REQUIRED_FIELDS
+        assert receipt.owed == ()
+        assert receipt.pairing is Pairing.IN_ARTIFACT
+        assert receipt.complete
+
+    def test_the_credential_is_actually_on_disk_and_readable(self, tmp_path: Path) -> None:
+        tokens = tmp_path / "tokens"
+        sink = ReplacementHostSink(tokens)
+        sink.prepare_for(FLOW_ID)
+
+        sink.commit(item(), now=NOW)
+
+        store = TokenStore(tokens)
+        reference = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW_ID)
+        assert store.get(reference).reveal() == ACCESS_TOKEN
+        assert store.record(reference).item_id == ITEM_ID
+
+
+class TestTheArtifactIsAnArtifactAndNotJustBytes:
+    def test_it_is_sealed_rather_than_written(self, tmp_path: Path, key_file: Path) -> None:
+        artifact = tmp_path / "artifact.sealed"
+        sink = EmergencyArtifactSink(artifact, key_file=key_file)
+        sink.prepare()
+
+        sink.commit(item(), now=NOW)
+
+        raw = artifact.read_bytes()
+        assert ACCESS_TOKEN.encode() not in raw, "§15: no runtime secret in the clear on this Mac"
+        assert ITEM_ID.encode() not in raw
+        assert raw.startswith(crypto.MAGIC), "03a's envelope, not a second one"
+        assert artifact.stat().st_mode & 0o077 == 0
+
+    def test_it_carries_the_pairing_criterion_3_needs(self, tmp_path: Path, key_file: Path) -> None:
+        # *"An artifact that carries the credential without the pairing recreates
+        # the defect one step later."*
+        artifact = tmp_path / "artifact.sealed"
+        sink = EmergencyArtifactSink(artifact, key_file=key_file)
+        sink.prepare()
+        sink.commit(item(), now=NOW)
+
+        payload = json.loads(
+            crypto.open_sealed(artifact.read_bytes(), crypto.load_backup_key(key_file))
+        )
+
+        assert payload["schema"] == ARTIFACT_SCHEMA
+        assert payload["flow_id"] == FLOW_ID
+        assert payload["item_id"] == ITEM_ID
+        assert payload["link_session_id"] == "session-0001"
+        assert payload["request_id"] == "request-0001"
+
+    def test_a_backup_archive_is_not_mistaken_for_one(self, tmp_path: Path, key_file: Path) -> None:
+        # The envelope is shared with `03a`'s archives, so the schema name is what
+        # distinguishes them. A restore pointed at the wrong file must fail on the
+        # name rather than on a KeyError three fields later.
+        key = crypto.load_backup_key(key_file)
+        impostor = tmp_path / "archive.sealed"
+        impostor.write_bytes(crypto.seal(json.dumps({"schema": "something.else"}).encode(), key))
+
+        with pytest.raises(ArtifactUnreadable, match=ARTIFACT_SCHEMA):
+            restore(impostor, key_file=key_file, token_store_directory=tmp_path / "tokens")
+
+    def test_a_missing_optional_field_is_not_the_same_as_a_null_one(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        # Present-and-None is a measurement; absent is an older or truncated
+        # writer. Issue #14 makes the support id the fallback when a credential is
+        # lost, so the two must not be read as the same thing.
+        key = crypto.load_backup_key(key_file)
+        truncated = tmp_path / "truncated.sealed"
+        truncated.write_bytes(
+            crypto.seal(
+                json.dumps(
+                    {
+                        "schema": ARTIFACT_SCHEMA,
+                        "flow_id": FLOW_ID,
+                        "item_id": ITEM_ID,
+                        "access_token": ACCESS_TOKEN,
+                        "link_session_id": None,
+                    }
+                ).encode(),
+                key,
+            )
+        )
+
+        with pytest.raises(ArtifactUnreadable, match="request_id"):
+            restore(truncated, key_file=key_file, token_store_directory=tmp_path / "tokens")
+
+    def test_another_key_cannot_open_it(self, tmp_path: Path, key_file: Path) -> None:
+        artifact = tmp_path / "artifact.sealed"
+        sink = EmergencyArtifactSink(artifact, key_file=key_file)
+        sink.prepare()
+        sink.commit(item(), now=NOW)
+
+        other = tmp_path / "other.key"
+        other.write_text(secrets.token_hex(crypto.KEY_BYTES) + "\n")
+        other.chmod(0o600)
+
+        with pytest.raises(ArtifactUnreadable):
+            restore(artifact, key_file=other, token_store_directory=tmp_path / "tokens")
+
+
+class TestTheRestorePathExists:
+    """Criterion 1 requires the artifact branch to have one, not to imply one."""
+
+    def test_an_artifact_restores_into_a_real_token_store(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        artifact = tmp_path / "artifact.sealed"
+        sink = EmergencyArtifactSink(artifact, key_file=key_file)
+        sink.prepare()
+        sink.commit(item(), now=NOW)
+
+        tokens = tmp_path / "tokens"
+        receipt = restore(artifact, key_file=key_file, token_store_directory=tokens)
+
+        store = TokenStore(tokens)
+        reference = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW_ID)
+        assert store.get(reference).reveal() == ACCESS_TOKEN
+        assert store.record(reference).item_id == ITEM_ID
+        # The pairing came out of the artifact, which is criterion 3's destination
+        # for this branch — not the flow row the replacement-host sink reports.
+        assert receipt.pairing is Pairing.IN_ARTIFACT
+
+    def test_a_restore_that_would_overwrite_is_refused(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        artifact = tmp_path / "artifact.sealed"
+        sink = EmergencyArtifactSink(artifact, key_file=key_file)
+        sink.prepare()
+        sink.commit(item(), now=NOW)
+
+        tokens = tmp_path / "tokens"
+        TokenStore(tokens).put(SecretKind.ACCESS_TOKEN, FLOW_ID, "an-earlier-token")
+
+        with pytest.raises(SinkNotWritable, match="already holds"):
+            restore(artifact, key_file=key_file, token_store_directory=tokens)
+
+
+class TestNothingPrintsMaterial:
+    def test_the_repr_redacts_the_token_and_the_item_id(self) -> None:
+        # `item_id` is not a secret; it names one of the owner's institutions
+        # (`AGENTS.md` rule 0), and this object is what a traceback renders.
+        rendered = repr(item())
+
+        assert ACCESS_TOKEN not in rendered
+        assert ITEM_ID not in rendered
+        assert "session-0001" not in rendered
+        assert FLOW_ID in rendered, "the flow id is the one thing an operator needs to read"
+
+    def test_no_refusal_message_carries_material(self, tmp_path: Path) -> None:
+        tokens = tmp_path / "tokens"
+        TokenStore(tokens).put(SecretKind.ACCESS_TOKEN, FLOW_ID, ACCESS_TOKEN, item_id=ITEM_ID)
+
+        with pytest.raises(SinkNotWritable) as raised:
+            ReplacementHostSink(tokens).prepare_for(FLOW_ID)
+
+        assert ACCESS_TOKEN not in str(raised.value)
+        assert ITEM_ID not in str(raised.value)

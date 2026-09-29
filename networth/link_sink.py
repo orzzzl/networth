@@ -461,6 +461,16 @@ class EmergencyArtifactSink:
         # The part that makes this a proof of a *destination* and not of a directory.
         # A file that seals and will not open is a durable loss, and the one moment it
         # is free to discover that is now.
+        #
+        # **It cannot currently fail, and that is measured rather than assumed.**
+        # Mutation testing removed this round-trip and all 23 tests stayed green, so
+        # the honest reading is that `load_backup_key` already excludes everything
+        # that would make it fail — mode, encoding, one line, exactly 32 bytes — and
+        # ChaCha20-Poly1305 round-trips for every 32-byte key. It stays because it
+        # asserts a contract that spans two modules rather than a branch inside this
+        # one: it is `crypto`'s guarantee, checked on the cheap side of the exchange,
+        # so a future change there surfaces here instead of after the token is spent.
+        # What it must not be mistaken for is a tested guard.
         try:
             reopened = crypto.open_sealed(crypto.seal(_PROBE_PLAINTEXT, key), key)
         except (crypto.AuthenticationError, ValueError) as exc:
