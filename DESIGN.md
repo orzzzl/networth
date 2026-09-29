@@ -3678,6 +3678,17 @@ at their own collection entry points, before resolving tokens, including through
 the combined convenience methods. Those methods still leave persistence commit
 ownership with the caller. Health dispatch is not yet invoked by a command.
 
+`AlertDispatcher` evaluates stored cycle facts under that same lock and a short
+write transaction, even when no new sync or snapshot completed. Freshness is
+recomputed from the source clock through task 11; missing observations supply no
+freshness assessment. Each active account supplies its reconciliation state and
+an explicitly read manual-side observation. Excluding an account from the total
+does not exempt it from alerts. Archived/superseded subjects are omitted without
+resolving their existing alerts. Bad clocks refuse the batch; the three-attempt
+BUSY retry rereads facts after rollback. Alert prompt timestamps remain Publisher's
+responsibility. The future cycle runner must call this after persisting worker
+results and before publication; executable wiring is still owed.
+
 **Why the full sync has two predicates and not one.** *(From review. Rev 3 made
 a sync due only after a new market close, which quietly redefined the product:
 after a successful Friday run the predicate stayed false all weekend, so a Monday

@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
+from networth.alerts import AlertEvaluation
+from networth.cycle_alerts import CycleAlertEvaluator
 from networth.filelock import exclusive_file_lock
 from networth.item_health import ItemHealthPoller, PollBatchResult, _ItemGetter
 from networth.model.figure import require_utc
@@ -248,5 +250,38 @@ class HealthDispatcher(_Dispatcher):
                 if not plan.attempted_count:
                     return PollBatchResult(0, (), ())
                 return self._write(lambda: self._worker.persist(plan))
+            finally:
+                self._active = False
+
+
+class AlertDispatcher(_Dispatcher):
+    """Reassess stored facts on each activation, even without a new snapshot.
+
+    Advancing wall time can make an unchanged source frozen or a share count
+    overdue. No successful sync or timer stamp is required to evaluate it.
+    The future cycle runner must call this after collection/persistence and
+    before Publisher.publish(); this class does not publish by itself.
+    """
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        lock_path: Path,
+        clock: Callable[[], datetime] = _now,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        super().__init__(connection, lock_path=lock_path, clock=clock, sleep=sleep)
+        self._evaluator = CycleAlertEvaluator(connection)
+
+    def run(self) -> AlertEvaluation:
+        self._idle()
+        if self._active:
+            raise ValueError("dispatch is already active")
+        with exclusive_file_lock(self._lock_path, blocking=False, reentrant=False):
+            self._active = True
+            try:
+                at = self._clock()
+                return self._write(lambda: self._evaluator.evaluate(at=at))
             finally:
                 self._active = False
