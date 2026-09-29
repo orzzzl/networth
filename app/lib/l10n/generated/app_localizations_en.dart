@@ -15,6 +15,25 @@ class AppLocalizationsEn extends AppLocalizations {
   String get snapshotUnreadable => 'couldn\'t read the published snapshot';
 
   @override
+  String get homeNotPaired => 'this phone isn\'t paired yet';
+
+  @override
+  String get homePairingUnreadable => 'couldn\'t read this phone\'s pairing';
+
+  @override
+  String get copyAbsent => 'nothing saved on this phone yet';
+
+  @override
+  String get copyUnreadable => 'the copy saved on this phone is damaged';
+
+  @override
+  String get copyNotRead => 'couldn\'t open the copy saved on this phone';
+
+  @override
+  String get copyOutdated =>
+      'the copy saved on this phone was written by a different version of the app';
+
+  @override
   String instantUtc(DateTime date, DateTime time) {
     final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
     final String dateString = dateDateFormat.format(date);

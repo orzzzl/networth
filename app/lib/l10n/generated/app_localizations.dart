@@ -106,6 +106,42 @@ abstract class AppLocalizations {
   /// **'couldn\'t read the published snapshot'**
   String get snapshotUnreadable;
 
+  /// HomeNotPaired. A fresh install, or a phone the owner has revoked. Promises no action, because the intake that would perform one is task 21a and does not exist yet; naming a button that is not there is worse than naming nothing.
+  ///
+  /// In en, this message translates to:
+  /// **'this phone isn\'t paired yet'**
+  String get homeNotPaired;
+
+  /// HomePairingUnreadable. Never the homeNotPaired sentence: telling an owner whose device is fine that he has never paired sends him to re-pair, which is the one action that destroys the copy he still has.
+  ///
+  /// In en, this message translates to:
+  /// **'couldn\'t read this phone\'s pairing'**
+  String get homePairingUnreadable;
+
+  /// HeldCopyAbsent — a fresh install, or a phone re-paired since its last copy. Not damage and nothing to report, so the wording gives the owner nothing to do; the next successful fetch fills it.
+  ///
+  /// In en, this message translates to:
+  /// **'nothing saved on this phone yet'**
+  String get copyAbsent;
+
+  /// HeldCopyUnreadable — the document was read and this build cannot use it. Says damage, established by looking. Must never read as copyAbsent, which would be a claim about the owner's history with nothing behind it. Carries no stored bytes and no path.
+  ///
+  /// In en, this message translates to:
+  /// **'the copy saved on this phone is damaged'**
+  String get copyUnreadable;
+
+  /// HeldCopyNotRead — the bytes were never obtained, so nothing is known about what is held. Deliberately claims neither damage (copyUnreadable) nor absence (copyAbsent): this state establishes nothing about the copy, only about the attempt to reach it.
+  ///
+  /// In en, this message translates to:
+  /// **'couldn\'t open the copy saved on this phone'**
+  String get copyNotRead;
+
+  /// HeldCopyOutdated — a copy whose schema_version is well-formed and not the one this build reads. Ordinary news rather than alarming: the usual cause is that the owner installed a new APK. 'a different version' rather than 'an older version' because a rolled-back APK lands here too. No version number reaches the screen; it means nothing to the owner and the state is evidence about one field.
+  ///
+  /// In en, this message translates to:
+  /// **'the copy saved on this phone was written by a different version of the app'**
+  String get copyOutdated;
+
   /// An instant, always displayed in UTC with the zone named. The zone is shown rather than silently converted so the displayed date and the stored one stay the same fact. The month name comes from the locale's own date symbols, which is why this is a placeholder rather than a Dart constant list.
   ///
   /// In en, this message translates to:
