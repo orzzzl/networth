@@ -91,8 +91,14 @@ class HomeLoader {
   /// it rather than the copy itself.
   final PairingVault vault;
 
-  /// The only writer of the three stores, and the thing that fetches.
-  final SnapshotRefresher refresher;
+  /// The refresh this load performs before it reads.
+  ///
+  /// Typed as the interface rather than as [SnapshotRefresher] so the refresh
+  /// can be decorated — [RecordingSnapshotRefresher] wraps it to keep the
+  /// phone's own history — while the contract this loader depends on is
+  /// unchanged: one call, never throws, and the three stores are written before
+  /// it returns. Underneath it is still the single writer of those stores.
+  final SnapshotRefreshing refresher;
 
   final HeldCopyStore heldCopies;
   final FetchDiagnosticsStore diagnostics;
