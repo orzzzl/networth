@@ -1,6 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/domain/clock_continuity.dart';
 import 'package:networth_app/src/domain/copy_freshness.dart';
+import 'package:networth_app/src/domain/fetch_diagnostics.dart';
+import 'package:networth_app/src/domain/publication_seq.dart';
+import 'package:networth_app/src/domain/seq_baseline.dart';
 
 import 'fixtures.dart';
 
@@ -75,7 +78,112 @@ void main() {
   test('the shipped fixtures evaluate against a chosen instant', () {
     final payload = loadFixture(knownFixture);
 
-    expect(payload.copyFreshness(DateTime.utc(2026, 9, 15, 12), continuity: trustedClock), CopyFreshness.fresh);
-    expect(payload.copyFreshness(DateTime.utc(2026, 9, 20), continuity: trustedClock), CopyFreshness.stale);
+    CopyFreshness at(DateTime deviceNow) => payload.copyFreshness(
+          deviceNow,
+          continuity: trustedClock,
+          diagnostics: noFetchRecords,
+          baseline: noSeqBaseline,
+        );
+
+    expect(at(DateTime.utc(2026, 9, 15, 12)), CopyFreshness.fresh);
+    expect(at(DateTime.utc(2026, 9, 20)), CopyFreshness.stale);
+  });
+
+  group('the records reach the predicate through copyState', () {
+    // **The test the structural change needs, because the change itself is
+    // invisible to a mutation run.** Making `diagnostics` and `baseline`
+    // required is enforced by the analyzer, so reverting the signature does not
+    // fail a test — it fails to compile, and nothing in a green suite says so.
+    //
+    // What a test *can* pin is the behaviour the parameters exist to make
+    // reachable: a caller's records actually deciding the verdict. The mutation
+    // this is aimed at is the quiet one — keep the parameters, ignore them, and
+    // hardcode absence inside `copyState` again, exactly as it was. That
+    // compiles, and it silently restores a screen that can never report
+    // HOST_NOT_PUBLISHING.
+    final payload = loadFixture(alertsOpenFixture);
+    // Past `published_at` + interval + grace, so the copy is stale and the
+    // reason is the only thing left to decide.
+    final deviceNow = DateTime.utc(2026, 9, 17, 12);
+    final seq = PublicationSeq.parse(payload.seq);
+
+    test('held records naming the copy report HOST_NOT_PUBLISHING', () {
+      // All three conjuncts hold: the last attempt succeeded (so attempt and
+      // success coincide by construction), it is at or after the copy went
+      // stale, and the seq it fetched is the baseline the phone holds.
+      final copy = payload.copyState(
+        deviceNow,
+        continuity: trustedClock,
+        diagnostics: DiagnosticsHeld(
+          FetchDiagnostics.succeeded(
+            pairingId: payload.pairingId,
+            at: deviceNow.subtract(const Duration(minutes: 5)),
+            seq: seq,
+          ),
+        ),
+        baseline: BaselineHeld(
+          SeqBaseline(pairingId: payload.pairingId, lastSeq: seq),
+        ),
+      );
+
+      expect(copy, isA<CopyStale>());
+      expect((copy as CopyStale).reason, isA<HostNotPublishing>());
+    });
+
+    test('absent records over the same copy can only say CANNOT_CHECK', () {
+      // The control, and it is what makes the assertion above mean something:
+      // same payload, same instant, same clock — only the records differ. If
+      // `copyState` ignored its arguments both cases would land here, so this
+      // pair is what tells "the records are read" from "the records are named".
+      final copy = payload.copyState(
+        deviceNow,
+        continuity: trustedClock,
+        diagnostics: noFetchRecords,
+        baseline: noSeqBaseline,
+      );
+
+      expect(copy, isA<CopyStale>());
+      expect((copy as CopyStale).reason, isA<CannotCheck>());
+    });
+  });
+
+  test('a recorded attempt ahead of the device clock reaches copyFreshness', () {
+    // **`copyFreshness` is its own forwarding boundary and needs its own
+    // regression.** It delegates to `copyState`, so it looks covered by the
+    // group above — but a mutation that keeps its parameters and hands
+    // `DiagnosticsAbsent`/`BaselineAbsent` to `copyState` compiles and leaves
+    // every other test green, because nothing else calls this accessor with
+    // records that matter.
+    //
+    // It is not merely a lost *reason* on an enum-only accessor, which is the
+    // easy thing to assume here: the diagnostics record participates in rule 1.
+    // This device's own stored `last_fetch_attempt_at` is later than the instant
+    // it now believes it is, which is a backwards clock proved by two of its own
+    // readings — so the honest answer is `unknown`, and the copy's age must not
+    // be computed from that wall clock at all. Under the mutation the record is
+    // never seen, the age arithmetic runs anyway, and a copy published at this
+    // very instant reports `fresh`: maximum confidence from the one input that
+    // disproves it.
+    final payload = loadFixture(alertsOpenFixture);
+    final deviceNow = payload.publishedAt;
+
+    CopyFreshness withAttemptAt(DateTime at) => payload.copyFreshness(
+          deviceNow,
+          continuity: trustedClock,
+          diagnostics: DiagnosticsHeld(
+            FetchDiagnostics.succeeded(
+              pairingId: payload.pairingId,
+              at: at,
+              seq: PublicationSeq.parse(payload.seq),
+            ),
+          ),
+          baseline: noSeqBaseline,
+        );
+
+    expect(withAttemptAt(deviceNow.add(const Duration(minutes: 1))), CopyFreshness.unknown);
+    // The control that makes it an assertion about the record and not about the
+    // payload: same call, same instant, an attempt that does not precede the
+    // device clock — and the age arithmetic is allowed to run.
+    expect(withAttemptAt(deviceNow.subtract(const Duration(minutes: 1))), CopyFreshness.fresh);
   });
 }

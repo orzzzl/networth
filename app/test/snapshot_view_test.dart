@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/domain/clock_continuity.dart';
 import 'package:networth_app/src/domain/copy_freshness.dart';
+import 'package:networth_app/src/domain/fetch_diagnostics.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
+import 'package:networth_app/src/domain/publication_seq.dart';
+import 'package:networth_app/src/domain/seq_baseline.dart';
 import 'package:networth_app/src/ui/headline.dart';
 import 'package:networth_app/src/ui/snapshot_view.dart';
 
@@ -16,6 +19,8 @@ Future<void> _pump(
   NetWorthHistory? history = NetWorthHistory.empty,
   bool recordingFailed = false,
   ClockContinuity continuity = trustedClock,
+  DiagnosticsState diagnostics = noFetchRecords,
+  BaselineState baseline = noSeqBaseline,
 }) async {
   await tester.pumpWidget(
     localized(
@@ -25,6 +30,8 @@ Future<void> _pump(
         recordingFailed: recordingFailed,
         deviceNow: deviceNow,
         continuity: continuity,
+        diagnostics: diagnostics,
+        baseline: baseline,
       ),
     ),
   );
@@ -67,6 +74,61 @@ void main() {
       // version of the same accusation cannot slip past it.
       expect(find.textContaining('nothing newer has been published'), findsNothing);
       expect(find.textContaining('nothing new since'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'held records naming this copy let the screen say the host stopped publishing',
+    (tester) async {
+      // **The positive half of the test above, and the pair is the instrument.**
+      // The absence control alone cannot tell "the screen reads its records"
+      // from "the screen ignores them and absence happens to be the answer" —
+      // under the mutation this is aimed at, both land on the same sentence.
+      //
+      // The mutation: `SnapshotView.build` keeps its `diagnostics`/`baseline`
+      // fields and passes `DiagnosticsAbsent()`/`BaselineAbsent()` to
+      // `copyState` anyway. It compiles, it leaves the domain pair in
+      // `copy_freshness_test.dart` green — that one calls the predicate
+      // directly — and it silently restores a screen that can only ever say
+      // "this device hasn't checked yet" about a host that has genuinely gone
+      // quiet. §11 makes this screen the only place that fault is ever visible.
+      final payload = loadFixture(knownFixture);
+      final deviceNow = DateTime.utc(2026, 9, 20);
+      final seq = PublicationSeq.parse(payload.seq);
+
+      await _pump(
+        tester,
+        payload,
+        deviceNow,
+        // All three of §9.1 rule 3's conjuncts, and only together do they reach
+        // `HOST_NOT_PUBLISHING`: the last attempt succeeded, it is after the
+        // copy went stale, and the seq it saw is the one this phone holds.
+        diagnostics: DiagnosticsHeld(
+          FetchDiagnostics.succeeded(
+            pairingId: payload.pairingId,
+            at: deviceNow.subtract(const Duration(hours: 1)),
+            seq: seq,
+          ),
+        ),
+        baseline: BaselineHeld(
+          SeqBaseline(pairingId: payload.pairingId, lastSeq: seq),
+        ),
+      );
+
+      // The confirmation instant is asserted with the sentence rather than
+      // separately: `HOST_NOT_PUBLISHING` is a claim about *when the server last
+      // confirmed this copy*, and the accusation without its instant is the
+      // unfalsifiable half.
+      expect(
+        find.text(
+          'nothing newer has been published — your server last confirmed this '
+          'copy Sep 19, 2026, 23:00 UTC',
+        ),
+        findsOneWidget,
+      );
+      // And the absence sentence is gone: the two are mutually exclusive
+      // readings of the same row, so finding both would mean neither was read.
+      expect(find.text("this device hasn't checked yet"), findsNothing);
     },
   );
 
@@ -288,6 +350,8 @@ void main() {
                 recordingFailed: false,
                 deviceNow: DateTime.utc(2026, 9, 20),
                 continuity: trustedClock,
+                diagnostics: noFetchRecords,
+                baseline: noSeqBaseline,
               ),
             ),
           ),

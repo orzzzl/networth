@@ -161,6 +161,8 @@ void main() {
           // Placement is the subject here, so the clock is held neutral rather
           // than left to a default — `continuity` has none, by design.
           continuity: trustedClock,
+          diagnostics: noFetchRecords,
+          baseline: noSeqBaseline,
         ),
       ),
     );
@@ -183,6 +185,8 @@ void main() {
           // An empty alert set is the subject; a distrusted clock changes the
           // copy row above and would leave this asserting two things at once.
           continuity: trustedClock,
+          diagnostics: noFetchRecords,
+          baseline: noSeqBaseline,
         ),
       ),
     );

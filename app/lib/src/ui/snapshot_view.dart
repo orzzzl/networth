@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import '../../l10n/generated/app_localizations.dart';
 import '../domain/clock_continuity.dart';
 import '../domain/copy_freshness.dart';
+import '../domain/fetch_diagnostics.dart';
 import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
+import '../domain/seq_baseline.dart';
 import 'alert_list.dart';
 import 'copy_text.dart';
 import 'headline.dart';
@@ -25,6 +27,8 @@ class SnapshotView extends StatelessWidget {
     required this.recordingFailed,
     required this.deviceNow,
     required this.continuity,
+    required this.diagnostics,
+    required this.baseline,
   });
 
   final PhonePayload payload;
@@ -49,6 +53,20 @@ class SnapshotView extends StatelessWidget {
   /// still owes is unbuilt.
   final ClockContinuity continuity;
 
+  /// §9.1's four fetch facts as the phone's own record has them.
+  ///
+  /// Required for the third time on this constructor and for the same reason,
+  /// which by now is the file's rule rather than three separate arguments: the
+  /// value a forgetful caller would get by default is the flattering one.
+  /// [DiagnosticsAbsent] means *never fetched*, which forces the reason down to
+  /// [CannotCheck] — so a defaulted record could not report
+  /// `HOST_NOT_PUBLISHING` at all, and §11 makes this screen the only place that
+  /// fault can ever be seen.
+  final DiagnosticsState diagnostics;
+
+  /// The I6 baseline, `last_seq`'s half of the same predicate.
+  final BaselineState baseline;
+
   /// Injected rather than read from the clock inside `build`, so the copy
   /// dimension is testable at a chosen instant and a widget test never depends
   /// on the day it runs.
@@ -64,7 +82,12 @@ class SnapshotView extends StatelessWidget {
     // enum is the indicator only: the reason travels beside it, and dropping it
     // here is what made the copy row assert `HOST_NOT_PUBLISHING` over every
     // stale copy (see `copyStale`'s note in the ARB).
-    final copy = payload.copyState(deviceNow, continuity: continuity);
+    final copy = payload.copyState(
+      deviceNow,
+      continuity: continuity,
+      diagnostics: diagnostics,
+      baseline: baseline,
+    );
     // **Scrollable, because this screen's height is not ours to choose.** The
     // curve made the content taller than a 640x360 landscape viewport and the
     // `Column` rendered overflow stripes — and the same arithmetic fails in

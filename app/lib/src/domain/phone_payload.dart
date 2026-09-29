@@ -118,18 +118,32 @@ class PhonePayload {
   /// change behaviour is the one asserting the clock is fine — which is the
   /// exact claim the type exists to stop anybody making for free.
   ///
-  /// **The two stores are absent here and that is a measurement, not a
-  /// default.** This build holds no fetch records because it performs no
-  /// fetches, so [DiagnosticsAbsent] is what is true of it — §9.1's *"never
-  /// fetched"* and nothing else. That is the difference from [continuity]
-  /// above, which is required precisely because the reassuring value would be
-  /// fabricated: absence of records is a fact this phone can establish, and
-  /// absence of clock evidence is not a claim that the clock is sound. When
-  /// task `22`'s transport lands, the records stop being absent and this
-  /// accessor is where they arrive.
+  /// **The two records arrive here, and they are required for the reason
+  /// [continuity] is.** They used to be hardcoded to [DiagnosticsAbsent] and
+  /// [BaselineAbsent], and the note that stood here defended it correctly: a
+  /// build that performs no fetches *has* no fetch records, so absence was a
+  /// measurement rather than a default, and it said this accessor is where the
+  /// records arrive once task `22`'s transport lands. That is this change.
+  ///
+  /// What flips with it is who may claim absence. Absence is now one of three
+  /// things the stores can report — absent, held, unreadable — so a caller that
+  /// does not read them is not establishing the first, it is *asserting* it, and
+  /// [DiagnosticsAbsent] is the reassuring value: it is §9.1's "never fetched",
+  /// which drops the reason to [CannotCheck] and so can never say
+  /// `HOST_NOT_PUBLISHING` about a host that has genuinely stopped publishing —
+  /// the one fault §11 makes this screen the only possible reporter of. A
+  /// default would hand that silence to every caller who forgot, which is the
+  /// same bargain [continuity] refuses.
+  ///
+  /// Dart enforces this at compile time rather than at review time, which is
+  /// the point: the callers up the cascade — [SnapshotView], then `HomePage`,
+  /// then `main.dart` — do not build until each has said where its records come
+  /// from.
   CopyState copyState(
     DateTime deviceNow, {
     required ClockContinuity continuity,
+    required DiagnosticsState diagnostics,
+    required BaselineState baseline,
   }) =>
       evaluateCopyState(
         publishedAt: publishedAt,
@@ -138,8 +152,8 @@ class PhonePayload {
         copySeq: publicationSeq,
         deviceNow: deviceNow,
         continuity: continuity,
-        diagnostics: const DiagnosticsAbsent(),
-        baseline: const BaselineAbsent(),
+        diagnostics: diagnostics,
+        baseline: baseline,
       );
 
   /// [seq] as the counter I6 compares, or `null` when this document spells it a
@@ -174,8 +188,15 @@ class PhonePayload {
   CopyFreshness copyFreshness(
     DateTime deviceNow, {
     required ClockContinuity continuity,
+    required DiagnosticsState diagnostics,
+    required BaselineState baseline,
   }) =>
-      copyState(deviceNow, continuity: continuity).freshness;
+      copyState(
+        deviceNow,
+        continuity: continuity,
+        diagnostics: diagnostics,
+        baseline: baseline,
+      ).freshness;
 
   static String _string(Map<String, Object?> body, String field) {
     final value = body[field];
