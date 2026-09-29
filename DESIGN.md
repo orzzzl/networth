@@ -3194,7 +3194,13 @@ not have:
   see it. It is owner-actionable (usually a re-link fixes it), which is why the
   same condition is `ACTION_NEEDED` on screen (§9.2) — **this paragraph is the
   single definition of the threshold**; the display state and the alert both
-  derive from it rather than each carrying their own number.
+  derive from it rather than each carrying their own number. Reconciliation
+  gates Axis B in all three consumers: snapshots, account reads and cycle
+  alerts do not assess freshness for `NEW` accounts. They supply no value or
+  freshness verdict until reconciled; pending-reconciliation and manual-side
+  signals still count, and Item health alerts remain independent. Missing
+  assessment does not resolve a standing frozen-data alert (§11's silence
+  rule); it cannot raise a new one.
 - **Pending reconciliation** — accounts are sitting at `NEW` and contributing
   nothing (§8.5), so the total is knowingly understated until the owner confirms
   a mapping.
@@ -3677,6 +3683,17 @@ failures remain health observations. Both workers now refuse active transactions
 at their own collection entry points, before resolving tokens, including through
 the combined convenience methods. Those methods still leave persistence commit
 ownership with the caller. Health dispatch is not yet invoked by a command.
+
+`AlertDispatcher` evaluates stored cycle facts under that same lock and a short
+write transaction, even when no new sync or snapshot completed. Freshness is
+recomputed from the source clock through task 11; missing observations supply no
+freshness assessment. Each active account supplies its reconciliation state and
+an explicitly read manual-side observation. Excluding an account from the total
+does not exempt it from alerts. Archived/superseded subjects are omitted without
+resolving their existing alerts. Bad clocks refuse the batch; the three-attempt
+BUSY retry rereads facts after rollback. Alert prompt timestamps remain Publisher's
+responsibility. The future cycle runner must call this after persisting worker
+results and before publication; executable wiring is still owed.
 
 **Why the full sync has two predicates and not one.** *(From review. Rev 3 made
 a sync due only after a new market close, which quietly redefined the product:

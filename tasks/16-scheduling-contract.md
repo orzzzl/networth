@@ -5,7 +5,8 @@ merged in PR #118; socket timeout/no-retry policy merged in PR #120.
 Stored-state full-sync planning merged in PR #121 and worker collection/persistence
 merged in PR #122. Full-sync dispatch and per-Item retry admission merged in PR #124; health
 dispatch and worker transaction guards merged in PR #125. Manual equity quote
-collection/persistence is the next review slice. Complete cycle assembly, executable
+collection/persistence merged in PR #128. Stored cycle alert assembly/dispatch
+is the next review slice. Complete cycle assembly, executable
 wiring, remaining scheduler implementation and live acceptance remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
 
@@ -357,14 +358,14 @@ runtime installation is introduced here.
 ## Remaining task-16 work
 
 The subsequent implementation still owes the other job predicates,
-per-cycle health/account/manual alert facts,
+integration of the stored alert dispatcher,
 manual quote observations before snapshot, publication and archive ordering,
 writer-contention tests, and reaper scheduling. Live acceptance still owes the
 reviewed runtime install, forced backup dispatcher ownership/mode/byte equality,
 active services and timer next elapse, exact tailnet listener/public baseline and
 no-Funnel checks. Task 16 cannot be DONE from this proposal or unit files alone.
 
-## Manual equity quote collection (next review slice)
+## Manual equity quote collection (merged #128)
 
 `ManualQuoteWorker` reads every active included `MANUAL_QTY_LIVE_PRICE` account
 and its stored `EQUITY_SHARES` holding in one read transaction, closes that
@@ -398,3 +399,38 @@ uncommitted observations staying invisible to that rival, rollback after the
 second append fails, and retry with no second quote call. The successful path
 feeds the real Snapshotter and checks its total and source age. This is local
 component evidence, not Linux unit or live-host acceptance.
+
+## Cycle alert assembly and dispatch (next review slice)
+
+`CycleAlertEvaluator` reads every stored Item and every active account in its
+caller's transaction, derives freshness through `StalenessMachine`, explicitly
+reads each manual side, then calls `AlertEvaluator.evaluate()`. `AlertDispatcher`
+owns the canonical sync lock and the short `BEGIN IMMEDIATE`/three-attempt BUSY
+retry policy for that operation. There is no provider I/O in the transaction.
+Retries reread the facts after rollback: a rival writer may have changed them.
+
+Account selection includes accounts excluded from the headline: that choice does
+not confirm a replacement or a share count. All archive/supersession markers
+exclude a subject; its omitted signals deliberately do not resolve old alerts.
+Non-static accounts use their latest stored observation, preserving source and
+fetch clocks. No new successful sync is required: wall time alone can make an
+old price frozen or a share count overdue, including on non-market days. A missing
+observation produces no freshness assessment, preserving any standing frozen
+alert while still evaluating reconciliation and manual facts. A property uses
+the effective lineage revision, as Snapshotter does, not latest insertion order.
+
+A read missing manual row or a property row supplies `ShareCountObservation(None)`;
+a share row supplies its validated confirmation clock. Malformed/non-UTC manual
+clocks and future Item/observation/confirmation clocks refuse the batch. They do
+not become absence or healthy evidence. All input assembly precedes alert writes;
+a later write failure rolls back the entire evaluation. No alert prompt is marked
+here: Publisher owns marking only the alerts in a committed envelope.
+
+The future cycle runner must invoke alert dispatch after worker persistence and
+before publication, even when no new snapshot was produced. The synthetic test
+assembles all five alert kinds, snapshots, encrypts with the real Publisher and
+decodes the resulting bulletin. This proves component compatibility and delivery
+when called in that order; it is not executable scheduling evidence. No command
+or live runtime is added in this slice. Full/manual cycle completion, quote due
+planning, independent publication retry, archive scheduling, Link latency, units
+and installation remain owed before task 16 can close.

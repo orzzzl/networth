@@ -466,26 +466,32 @@ class AccountRepository:
         return tuple(_linked_account_from_row(row) for row in rows)
 
     def for_snapshot(self) -> tuple[SnapshotAccount, ...]:
-        """Every active account the owner chose to include in the headline.
+        """Active accounts included in the headline, including NEW accounts."""
+        return self._active(included_only=True)
 
-        ``NEW`` accounts stay in the population so the snapshot can count them
-        while excluding their values. Any archive/supersession marker excludes
-        an account independently; a half-finished transition fails closed
-        instead of double-counting an old and replacement account.
+    def for_alerts(self) -> tuple[SnapshotAccount, ...]:
+        """Active accounts, including those excluded from the headline.
+
+        Excluding a value from the total does not confirm a replacement account
+        or a share count. Archived/superseded subjects are omitted; omission
+        deliberately does not resolve their standing alerts.
         """
+        return self._active(included_only=False)
 
+    def _active(self, *, included_only: bool) -> tuple[SnapshotAccount, ...]:
         rows = _rows(
             self._connection.execute(
                 f"""
                 SELECT {_SNAPSHOT_ACCOUNT_COLUMNS}
                 FROM account AS a
-                WHERE a.include_in_net_worth = 1
+                WHERE (? = 0 OR a.include_in_net_worth = 1)
                   AND a.reconciliation_state <> 'ARCHIVED'
                   AND a.archived_at IS NULL
                   AND a.superseded_by_account_id IS NULL
                   AND a.superseded_at IS NULL
                 ORDER BY a.id
-                """
+                """,
+                (int(included_only),),
             )
         )
         return tuple(_snapshot_account_from_row(row) for row in rows)
