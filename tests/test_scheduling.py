@@ -208,7 +208,8 @@ def test_uncommitted_success_does_not_delay_other_reader(tmp_path: Path) -> None
         writer.execute("BEGIN IMMEDIATE")
         _run(writer)
         assert FullSyncSchedule(reader).due(at=FRIDAY_READY).due
-        with pytest.raises(ScheduleStateError, match="no active transaction"):
+        # Caller misuse must escape the dispatcher's corrupt-clock fallback.
+        with pytest.raises(ValueError, match="no active transaction"):
             FullSyncSchedule(writer).due(at=FRIDAY_READY)
         writer.commit()
         assert not FullSyncSchedule(reader).due(at=FRIDAY_READY).due

@@ -206,6 +206,10 @@ manual revisions and quote-only work already use this ledger. Legacy successes
 remain `OTHER`; the first scheduled activation therefore conservatively runs a
 full sync. The runtime caller must explicitly mark full-sync runs at creation.
 `FullSyncSchedule` reads only committed, completed successes of that kind.
+The two-value vocabulary is deliberate: manual revisions and quote-only work
+both remain `OTHER` because this planner only needs to distinguish full syncs.
+Distinguishing those other jobs later requires a migration that rebuilds
+`sync_run` to widen its `CHECK`; it is not just another value a caller can write.
 
 The latest successful start satisfies market close + 1h; the latest successful
 finish controls the strict >20h clock. Separate maxima preserve both facts when
@@ -213,8 +217,20 @@ runs finish out of order. A run starting before market readiness cannot satisfy
 it merely by finishing afterward. The existing local market calendar supplies
 holidays, DST and early closes. Planning is read-only, consumes no due work and
 is identical after reopening the database; failed and interrupted runs do not
-advance the clock. Malformed, non-UTC, reversed or future success clocks refuse
-with a fixed diagnostic, rather than suppressing due work using bad evidence.
+advance the clock. Malformed, non-UTC, reversed or future success clocks raise
+`ScheduleStateError` with a fixed diagnostic. Per DESIGN §13, this means due:
+the dispatcher must report the diagnostic and schedule a full sync subject to
+per-Item retry backoff, never skip it as "not due". Caller misuse (an active
+transaction or non-UTC check time) raises `ValueError` separately and must not
+enter that fallback.
+
+All historical successes are validated. One bad row can keep this fallback
+active across subsequent healthy syncs: future clocks require time to catch up,
+and malformed or reversed clocks require explicit repair. The cost is repeated
+diagnostics and potentially a full sync on every activation; new successes do
+not heal old evidence, and no automatic ledger rewrite or deletion is added.
+Runtime dispatch acceptance must demonstrate this fallback with a bad historical
+row plus newer healthy rows, and show that caller misuse escapes it.
 
 This is a prerequisite, not a scheduled runtime: no command currently dispatches
 this planner or writes `FULL_SYNC`. Per-Item failure backoff, other job predicates,

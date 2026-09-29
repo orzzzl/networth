@@ -19,7 +19,11 @@ FULL_SYNC_POST_CLOSE_GRACE = timedelta(hours=1)
 
 
 class ScheduleStateError(RuntimeError):
-    """Stored scheduling evidence is not safe to use; no row content is exposed."""
+    """Stored clocks are unusable: dispatch treats this as due, without row content.
+
+    Caller precondition failures raise ValueError instead and must not trigger
+    this conservative full-sync fallback.
+    """
 
 
 def _timestamp(value: object) -> datetime:
@@ -76,7 +80,7 @@ class FullSyncSchedule:
     def due(self, *, at: datetime) -> FullSyncDue:
         require_utc(at, field="scheduling time")
         if self._connection.in_transaction:
-            raise ScheduleStateError("scheduling requires a connection with no active transaction")
+            raise ValueError("scheduling requires a connection with no active transaction")
         # One SELECT is one committed SQLite view. Parse before comparing: old
         # writers used both whole and fractional seconds, whose TEXT ordering
         # differs at the same second ('...00Z' sorts after '...00.500000Z').

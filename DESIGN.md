@@ -3634,6 +3634,23 @@ and holidays, and is strict (`>20h`). Failed and interrupted attempts advance
 neither clock. `FullSyncSchedule` reads committed rows without consuming due work;
 it does not dispatch calls, enforce retry backoff, or establish a Link deadline.
 
+**`ScheduleStateError` means due.** Malformed, non-UTC, reversed or future
+success clocks raise this fixed diagnostic without exposing stored row content.
+The dispatcher must report the diagnostic and schedule a full sync, subject to
+the existing per-Item retry backoff; it must never interpret this refusal as
+"not due" or silently skip the sync. Caller precondition failures (a non-UTC
+check time or an active transaction on the supplied connection) raise
+`ValueError` instead: the dispatcher must surface and correct its misuse, not
+catch it as bad stored evidence. No dispatcher implements this contract yet.
+
+The planner validates every historical full-sync success. A bad row therefore
+continues to force this fallback even after later successful syncs; a future
+stamp stops doing so only when the check time catches up, while malformed or
+reversed clocks need explicit repair. This can keep a full sync due on every
+activation, with repeated diagnostics and extra provider work. Successful runs
+do not repair the ledger, and this contract authorizes no automatic rewriting
+or deletion of its append-only history.
+
 **Why the full sync has two predicates and not one.** *(From review. Rev 3 made
 a sync due only after a new market close, which quietly redefined the product:
 after a successful Friday run the predicate stayed false all weekend, so a Monday
