@@ -146,4 +146,44 @@ void main() {
       expect((copy as CopyStale).reason, isA<CannotCheck>());
     });
   });
+
+  test('a recorded attempt ahead of the device clock reaches copyFreshness', () {
+    // **`copyFreshness` is its own forwarding boundary and needs its own
+    // regression.** It delegates to `copyState`, so it looks covered by the
+    // group above — but a mutation that keeps its parameters and hands
+    // `DiagnosticsAbsent`/`BaselineAbsent` to `copyState` compiles and leaves
+    // every other test green, because nothing else calls this accessor with
+    // records that matter.
+    //
+    // It is not merely a lost *reason* on an enum-only accessor, which is the
+    // easy thing to assume here: the diagnostics record participates in rule 1.
+    // This device's own stored `last_fetch_attempt_at` is later than the instant
+    // it now believes it is, which is a backwards clock proved by two of its own
+    // readings — so the honest answer is `unknown`, and the copy's age must not
+    // be computed from that wall clock at all. Under the mutation the record is
+    // never seen, the age arithmetic runs anyway, and a copy published at this
+    // very instant reports `fresh`: maximum confidence from the one input that
+    // disproves it.
+    final payload = loadFixture(alertsOpenFixture);
+    final deviceNow = payload.publishedAt;
+
+    CopyFreshness withAttemptAt(DateTime at) => payload.copyFreshness(
+          deviceNow,
+          continuity: trustedClock,
+          diagnostics: DiagnosticsHeld(
+            FetchDiagnostics.succeeded(
+              pairingId: payload.pairingId,
+              at: at,
+              seq: PublicationSeq.parse(payload.seq),
+            ),
+          ),
+          baseline: noSeqBaseline,
+        );
+
+    expect(withAttemptAt(deviceNow.add(const Duration(minutes: 1))), CopyFreshness.unknown);
+    // The control that makes it an assertion about the record and not about the
+    // payload: same call, same instant, an attempt that does not precede the
+    // device clock — and the age arithmetic is allowed to run.
+    expect(withAttemptAt(deviceNow.subtract(const Duration(minutes: 1))), CopyFreshness.fresh);
+  });
 }

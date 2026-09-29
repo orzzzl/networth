@@ -80,13 +80,9 @@ void main() {
     // a sentence and must not be counted as one.
     final sentences = everyCopyState.map(reason).whereType<String>().toSet();
 
-    // The four a widget test in this build can actually drive: the three clock
-    // disagreements and `NeverFetched`.
-    const reachableFromTheWidget = 4;
-    // A count outside the table would otherwise interpolate `null` into both
-    // matchers and fail as "the comment is wrong" — which it would not be.
+    // A count outside the table would otherwise interpolate `null` into the
+    // matcher and fail as "the comment is wrong" — which it would not be.
     expect(words.keys, contains(sentences.length));
-    expect(words.keys, contains(sentences.length - reachableFromTheWidget));
 
     final source = File('lib/src/ui/copy_text.dart').readAsStringSync();
     expect(
@@ -94,12 +90,14 @@ void main() {
       contains('There are ${words[sentences.length]} distinct sentences here'),
       reason: 'copy_text.dart states a total; there are ${sentences.length}',
     );
-    expect(
-      source,
-      contains('The other\n/// ${words[sentences.length - reachableFromTheWidget]}'),
-      reason: 'copy_text.dart states how many are out of the widget path; '
-          'there are ${sentences.length - reachableFromTheWidget}',
-    );
+    // **The second assertion that stood here is deleted, not updated.** It
+    // pinned a split of this total — how many sentences a widget test could
+    // reach — which held only while the build could not produce fetch records
+    // at all. `SnapshotView` takes `diagnostics` and `baseline` as parameters
+    // now, so a widget test reaches whichever sentence it passes the records
+    // for, and there is no partition left to count. Replacing the number
+    // instead would have restated an unmeasurable claim in a test whose whole
+    // point is that a number nobody checks goes wrong.
   });
 
   group('the claim on the first line names no cause', () {

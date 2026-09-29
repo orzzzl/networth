@@ -5,21 +5,30 @@ import 'instant.dart';
 
 /// The words for §9.1's copy verdict — the whole matrix, as two pure functions.
 ///
-/// **Its own file, and public, because the widget path cannot reach most of it.**
-/// There are fifteen distinct sentences here, and this build performs no
-/// fetches, so its diagnostics are [DiagnosticsAbsent] and a widget test can only
-/// ever drive four: the three clock disagreements and `NeverFetched`. The other
-/// eleven — every [FetchFailureClass], `NotCheckedSinceDue`, `RecordsUnusable`,
-/// `ServedPayloadNotHeld`, `CopyNotConfirmed`, `HostNotPublishing` and
-/// `HostServingNothing` — become reachable on screen only when this task's
-/// transport starts writing records.
+/// **Its own file, and public, because mapping a verdict to a sentence is a
+/// unit.** There are fifteen distinct sentences here.
 ///
-/// *(It said **twelve** and **eight** until [FetchFailureClass.unknownFailure]
-/// forced a recount, and the recount found the number had been wrong before this
-/// change too: `HostServingNothing` was added with the `404`'s own state and the
+/// *(It said **twelve** until [FetchFailureClass.unknownFailure] forced a
+/// recount, and the recount found the number had been wrong before that change
+/// too: `HostServingNothing` was added with the `404`'s own state and the
 /// sentence above was not touched. A count in prose that nothing checks is the
 /// defect this file's own task keeps finding elsewhere, so the count is now
 /// asserted in `copy_text_test.dart` rather than maintained by hand.)*
+///
+/// **This paragraph used to split that total**, claiming a widget test could
+/// drive only four of the sentences — the three clock disagreements and
+/// `NeverFetched` — because the build performed no fetches and its diagnostics
+/// were therefore always [DiagnosticsAbsent]. That premise is gone, not merely
+/// out of date: the records are a constructor parameter on `SnapshotView` now,
+/// so a widget test supplies whichever state it wants and the sentence it
+/// reaches is a matter of what it passes. The split is deleted rather than
+/// recounted, together with the assertion that pinned it — a partition whose
+/// cause no longer exists cannot be kept honest by putting a new number in it.
+///
+/// What is still unfinished is one layer out and belongs to task `22`: the
+/// shipping `HomePage` passes absence, because nothing writes the records yet.
+/// That is a fact about the screen's caller, not about what this file's
+/// sentences can be reached by.
 ///
 /// Left private inside the view they would have been strings nothing could pin
 /// until then, which is how the sentence this change exists to delete got into
