@@ -1,50 +1,89 @@
 import 'package:flutter/material.dart';
 
 import 'l10n/generated/app_localizations.dart';
+import 'src/data/fetch_diagnostics_store.dart';
+import 'src/data/held_copy_store.dart';
 import 'src/data/history_source.dart';
 import 'src/data/history_store.dart';
-import 'src/data/snapshot_source.dart';
+import 'src/data/home_load.dart';
+import 'src/data/recording_refresh.dart';
+import 'src/data/seq_baseline_store.dart';
+import 'src/data/snapshot_reader.dart';
+import 'src/data/snapshot_refresh.dart';
+import 'src/pairing/pairing_vault.dart';
 import 'src/ui/home_page.dart';
 
-/// Which published snapshot this build shows.
+/// Where the payload comes from — **the owner's own host, over his tailnet.**
 ///
-/// The app is read-only: it holds no Plaid token and never calls Plaid. Today
-/// the payload comes from a bundled fixture so the screen can be built and
-/// tested against the real payload shape without waiting on task 20's HTTP
-/// route. The mixed known/unknown fixture is the default deliberately — it is
-/// the state the display is most easily got wrong in, so it is the one visible
-/// by default rather than the flattering one.
-const SnapshotSource _source = FixtureSnapshotSource(
-  'assets/fixtures/mixed_known_and_unknown.json',
-);
+/// The app is read-only: it holds no Plaid token and never calls Plaid. Until
+/// this commit it read a bundled fixture, which is what let the screen be built
+/// and tested against the real payload shape; a shipped build reading a
+/// synthetic file is a demo, and every state the task exists for — no pairing,
+/// an unreachable host, a copy aging on disk — was unreachable from the app's
+/// own entry point.
+///
+/// Everything below is assembled here rather than in the screen because the
+/// screen must not be able to choose its own collaborators: what a test pumps
+/// and what the owner runs are then the same object graph, differing only in
+/// where the bytes and the keystore come from.
+HomeLoader _homeLoader(HistoryStore history) {
+  // **One vault instance for both readers.** The two *reads* stay separate and
+  // ordered — `HomeLoader` documents why the display scope must be the later
+  // one — but there is one Android keystore, and a second vault object would be
+  // a second cache of nothing pretending otherwise.
+  final vault = PairingVault();
+
+  // **One instance of each store, shared between the refresher and the loader.**
+  // `SnapshotRefresher` states the contract it cannot enforce: the three stores
+  // must have exactly one writer and it is that class. Building a second
+  // `FileHeldCopyStore.appPrivate()` for the read side would put two objects
+  // over one directory, which is the shape that contract rules out.
+  final heldCopies = FileHeldCopyStore.appPrivate();
+  final diagnostics = FileFetchDiagnosticsStore.appPrivate();
+  final baselines = FileSeqBaselineStore.appPrivate();
+
+  return HomeLoader(
+    vault: vault,
+    // **The recorder wraps the refresh, not the screen.** Keeping a reading is
+    // a property of accepting a payload rather than of drawing one, so it sits
+    // here; nothing that renders has to know, and the screen asks this same
+    // object whether the last write succeeded rather than being told separately.
+    refresher: RecordingSnapshotRefresher(
+      inner: SnapshotRefresher(
+        reader: PairedSnapshotReader(vault: vault),
+        diagnostics: diagnostics,
+        baselines: baselines,
+        heldCopies: heldCopies,
+        clock: DateTime.now,
+      ),
+      store: history,
+    ),
+    heldCopies: heldCopies,
+    diagnostics: diagnostics,
+    baselines: baselines,
+  );
+}
 
 /// The curve's series — **the phone's own record, and nothing else.**
 ///
-/// The payload above is synthetic and that is fine; a synthetic *past* is not
-/// the same object. A made-up today announces itself, because the screen it
-/// draws is covered in `UNKNOWN` and stale annotations. A made-up thirty-day
-/// curve announces nothing: it carries no figures to recognise as wrong, and it
-/// would sit directly under a headline that becomes real before this file is
-/// next edited. So no entry point names a bundled series — there is no longer
-/// one to name.
+/// No entry point names a bundled series and there is no longer one to name. A
+/// made-up *today* announces itself, because the screen it draws is covered in
+/// `UNKNOWN` and stale annotations; a made-up thirty-day curve announces
+/// nothing, carrying no figures to recognise as wrong under a headline that is
+/// real.
 ///
-/// What fills this is [RecordingSnapshotSource] below, one reading per accepted
-/// payload. Until task `22` swaps the fixture above for the real transport it
-/// records nothing at all, because the recorder refuses a synthetic source, so
-/// what the owner sees here is the truth: a new install has recorded nothing,
-/// and the curve says so.
+/// What fills it is [RecordingSnapshotRefresher] above, one reading per accepted
+/// payload. Until this commit that recorded nothing at all, because the source
+/// under it was synthetic and the recorder refuses a synthetic source; from here
+/// it records what the host actually served, so a new install shows an empty
+/// curve that fills as the days pass rather than one that never fills.
 HistoryStore _historyStore() => FileHistoryStore.appPrivate();
 
 void main() {
   final history = _historyStore();
-  // **One wrapper, and it is where task 22's change lands.** Recording is a
-  // property of accepting a payload rather than of a screen, so it sits on the
-  // source: swapping `_source` for the networked one is the whole of making the
-  // curve fill, and nothing that renders has to know.
-  //
   runApp(
     NetWorthApp(
-      source: RecordingSnapshotSource(inner: _source, store: history),
+      loader: _homeLoader(history),
       historySource: history,
     ),
   );
@@ -59,11 +98,11 @@ class NetWorthApp extends StatelessWidget {
   /// one would have written to the *host's* documents directory.
   const NetWorthApp({
     super.key,
-    required this.source,
+    required this.loader,
     required this.historySource,
   });
 
-  final SnapshotSource source;
+  final HomeLoader loader;
   final HistorySource historySource;
 
   @override
@@ -80,7 +119,7 @@ class NetWorthApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2F6F4E)),
         useMaterial3: true,
       ),
-      home: HomePage(source: source, historySource: historySource),
+      home: HomePage(loader: loader, historySource: historySource),
     );
   }
 }

@@ -11,6 +11,36 @@
     "description": "Shown when the payload cannot be loaded or parsed. Deliberately says nothing about a total: there is no total to speak of, and I2/I4 forbid a number without its age."
   },
 
+  "homeNotPaired": "this phone isn't paired yet",
+  "@homeNotPaired": {
+    "description": "HomeNotPaired. A fresh install, or a phone the owner has revoked. Promises no action, because the intake that would perform one is task 21a and does not exist yet; naming a button that is not there is worse than naming nothing."
+  },
+
+  "homePairingUnreadable": "couldn't read this phone's pairing",
+  "@homePairingUnreadable": {
+    "description": "HomePairingUnreadable. Never the homeNotPaired sentence: telling an owner whose device is fine that he has never paired sends him to re-pair, which is the one action that destroys the copy he still has."
+  },
+
+  "copyAbsent": "nothing saved on this phone yet",
+  "@copyAbsent": {
+    "description": "HeldCopyAbsent — a fresh install, or a phone re-paired since its last copy. Not damage and nothing to report, so the wording gives the owner nothing to do; the next successful fetch fills it."
+  },
+
+  "copyUnreadable": "the copy saved on this phone is damaged",
+  "@copyUnreadable": {
+    "description": "HeldCopyUnreadable — the document was read and this build cannot use it. Says damage, established by looking. Must never read as copyAbsent, which would be a claim about the owner's history with nothing behind it. Carries no stored bytes and no path."
+  },
+
+  "copyNotRead": "couldn't open the copy saved on this phone",
+  "@copyNotRead": {
+    "description": "HeldCopyNotRead — the bytes were never obtained, so nothing is known about what is held. Deliberately claims neither damage (copyUnreadable) nor absence (copyAbsent): this state establishes nothing about the copy, only about the attempt to reach it."
+  },
+
+  "copyOutdated": "the copy saved on this phone was written by a different version of the app",
+  "@copyOutdated": {
+    "description": "HeldCopyOutdated — a copy whose schema_version is well-formed and not the one this build reads. Ordinary news rather than alarming: the usual cause is that the owner installed a new APK. 'a different version' rather than 'an older version' because a rolled-back APK lands here too. No version number reaches the screen; it means nothing to the owner and the state is evidence about one field."
+  },
+
   "instantUtc": "{date}, {time} UTC",
   "@instantUtc": {
     "description": "An instant, always displayed in UTC with the zone named. The zone is shown rather than silently converted so the displayed date and the stored one stay the same fact. The month name comes from the locale's own date symbols, which is why this is a placeholder rather than a Dart constant list.",
