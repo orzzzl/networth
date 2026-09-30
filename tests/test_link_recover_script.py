@@ -224,3 +224,24 @@ def test_the_right_machine_still_reaches_the_recovery_verb(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     argv = (tmp_path / "uv.argv").read_text().split()
     assert "complete-hosted-link" in argv
+
+
+def test_the_owner_is_told_what_the_fence_costs_him_before_he_is_asked(
+    tmp_path: Path,
+) -> None:
+    """`07b` criterion 6's second half, asserted on what the script *prints*.
+
+    *"State plainly in the owner-facing text that this host is also his exit node
+    (§15.1), so powering it off is a real decision and not a formality."* The prompt
+    itself says so too (``test_link_fence.py``), but it arrives after the script has
+    already told him what the run is going to ask for — and a comment in the header is
+    not owner-facing text, so this reads the transcript rather than the source.
+    """
+    result = run(FLOW_ID, *SINK, tmp_path=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "exit node" in result.stdout
+    assert "VPN exit" in result.stdout
+    assert "powered off" in result.stdout
+    # And that nothing is presented as a check: the fence is his attestation.
+    assert "nothing here pings anything" in result.stdout

@@ -93,7 +93,7 @@ that row. He caught it, not us.)
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **DONE** (#104, #109; acceptance recorded 2026-09-24) |
-| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | **READY** |
+| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | **WIP** (the durable sink, its pre-exchange proof and the incomplete-receipt guard merged #129; the fence in review. Owed: crash classification (4), the Sandbox rehearsal (5), the losing branch on returned Item identity (7) and its three synthetic shapes (8), the `item_id` → `link_flow` write-back (3, needs `07a`'s table), 30-minute owner text (9), and `NETWORTH_ENV=production` acceptance. **Only criterion 6 is ticked below**: 1 and 10 are substantially met by #129 but 1's replacement-host half is *refused* from the CLI until a verified far-side destination exists, and 2 finishes only with 3) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
@@ -1650,7 +1650,7 @@ capture is issue **#14**.
       exchange; this criterion is the rehearsal of the whole script, crash injection
       included. **A recovery procedure that has never been executed is a paragraph** — and
       this one would otherwise execute for the first time during the emergency.
-- [ ] **A fencing precondition that is real, because the shared claim is not.** An earlier
+- [x] **A fencing precondition that is real, because the shared claim is not.** An earlier
       revision of this entry required the exchange to happen "under the same conditional
       claim `07a` uses." It cannot. That claim is a conditional `UPDATE` against the VPS's
       `link_flow` row, and this script runs precisely when that host and that database are

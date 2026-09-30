@@ -72,6 +72,14 @@ field names only; :class:`RecoveredItem` redacts its ``access_token`` *and* its
 ``item_id``, the second because an Item id names one of the owner's institutions
 (`AGENTS.md` rule 0) even though it is not a secret.
 
+**The fence rides with the credential, and is not optional.** Criterion 6 requires the
+owner's typed confirmation that the old worker is off to be *"recorded with the
+recovery artifact"*, so :class:`RecoveredItem` carries a
+:class:`~networth.link_fence.FenceAttestation` as a required field, the artifact seals
+it beside the token, and :func:`read_artifact` refuses a credential that arrives
+without one. Asking for it is :mod:`networth.link_fence`'s job; this module's is
+making it impossible to store a recovered credential that nobody fenced.
+
 **What this module deliberately does not do.** It does not write the recovered
 ``item_id`` back onto the originating ``link_flow`` row — that is `07b`'s third
 criterion, it needs `07a`'s table, and its two destinations differ by sink. What this
@@ -96,6 +104,7 @@ from typing import Final, Protocol
 
 from networth.backup import crypto
 from networth.filelock import LockUnavailable, exclusive_file_lock
+from networth.link_fence import FenceAttestation, FenceRecordInvalid
 from networth.tokenstore import (
     FILE_MODE,
     Secret,
@@ -111,7 +120,12 @@ from networth.tokenstore import (
 #: artifact indistinguishable from a backup archive until it is opened, which is why
 #: the plaintext names itself: a restore pointed at the wrong file must fail on the
 #: schema rather than on a ``KeyError`` three fields later.
-ARTIFACT_SCHEMA: Final = "networth.link-recovery-artifact.1"
+#: Bumped from ``.1`` when criterion 6's fence confirmation became a required field.
+#: The bump costs nothing: criterion 5's rehearsal has not been run, so no artifact of
+#: either version exists anywhere. It is still a bump rather than an optional field,
+#: because a reader that accepts an artifact with no attestation cannot tell a recovery
+#: that was fenced from one that skipped the only step protecting it.
+ARTIFACT_SCHEMA: Final = "networth.link-recovery-artifact.2"
 
 #: The four fields `07b` criterion 2 requires be durable before recovery is reported
 #: successful: *"``access_token`` **and** ``item_id`` are written, ``fsync``ed, **read
@@ -119,6 +133,12 @@ ARTIFACT_SCHEMA: Final = "networth.link-recovery-artifact.1"
 #: ``link_session_id`` and the exchange ``request_id`` (issue #14) — in this scenario
 #: the support ticket is the fallback."*
 REQUIRED_FIELDS: Final = ("access_token", "item_id", "link_session_id", "request_id")
+
+#: Criterion 6's attestation, named as a receipt field because it is one: it is
+#: *recorded with the recovery artifact*, so on that branch it lands and on the
+#: replacement-host branch it is owed. Separate from :data:`REQUIRED_FIELDS`, which is
+#: criterion 2's list and should not silently grow a criterion 6 member.
+FENCE_FIELD: Final = "fence_attestation"
 
 _PROBE_PLAINTEXT: Final = b"networth link-sink durability probe; holds no material\n"
 
@@ -190,6 +210,14 @@ class RecoveredItem:
     the session id comes from the poll, which in the uncertain shapes may not name
     one. They are still *stored* fields: ``None`` is recorded as ``None``, which is a
     measurement, rather than omitted, which is indistinguishable from an older writer.
+
+    **``fence`` is required and has no default**, which is criterion 6 expressed in the
+    type rather than in a review comment: *"the script takes an explicit typed
+    confirmation naming that instance, recorded with the recovery artifact"*. A
+    recovered credential that reaches this module without one is a recovery that was
+    never fenced, and the moment to find that out is before anything is written — not
+    by noticing an absent field in an artifact a year later. The cost of the choice is
+    that every caller must have asked; that is the point of it.
     """
 
     access_token: Secret
@@ -197,16 +225,20 @@ class RecoveredItem:
     flow_id: str
     link_session_id: str | None
     request_id: str | None
+    fence: FenceAttestation
 
     def __repr__(self) -> str:
         # Presence, never values. ``item_id`` is redacted for a different reason than
         # the token: it is not a secret, it names one of the owner's institutions
-        # (`AGENTS.md` rule 0), and this object is what a traceback renders.
+        # (`AGENTS.md` rule 0), and this object is what a traceback renders. The fence
+        # renders as its instance because that is infra this repo already names, and a
+        # traceback saying *which* host was fenced is worth more than one saying a
+        # fence existed.
         return (
             f"RecoveredItem(flow_id={self.flow_id!r}, item_id=<redacted>, "
             f"access_token=<Secret: redacted>, "
             f"link_session_id={'<redacted>' if self.link_session_id else 'None'}, "
-            f"request_id={self.request_id!r})"
+            f"request_id={self.request_id!r}, fence={self.fence.instance!r})"
         )
 
 
@@ -387,6 +419,12 @@ class ReplacementHostSink:
     Plaid returned, so ``link_session_id`` and ``request_id`` belong to the
     ``link_flow`` row on that host and are reported as :attr:`SinkReceipt.owed` rather
     than quietly dropped.
+
+    Criterion 6's fence confirmation is owed for the same reason and is listed with
+    them. It is *"recorded with the recovery artifact"* and this branch has no
+    artifact — so here the attestation belongs to the ``link_flow`` row as well, and a
+    receipt that omitted it would let a recovery whose only protection was the owner's
+    power-off report itself complete with that fact stored nowhere.
     """
 
     kind = SinkKind.REPLACEMENT_HOST
@@ -480,7 +518,12 @@ class ReplacementHostSink:
             kind=self.kind,
             destination=self.destination,
             durable=("access_token", "item_id"),
-            owed=("link_session_id", "request_id"),
+            # `item.fence` is deliberately not written anywhere by this branch rather
+            # than dropped quietly: a `SecretRecord` has one metadata field and it is
+            # `item_id`. Inventing a place for the attestation inside the token store
+            # would put a second format next to the one `05a` owns, in the middle of an
+            # emergency, to hold a fact criterion 3's flow row is already the home for.
+            owed=("link_session_id", "request_id", FENCE_FIELD),
             pairing=Pairing.ON_FLOW_ROW,
         )
 
@@ -608,6 +651,12 @@ class EmergencyArtifactSink:
                 "access_token": item.access_token.reveal(),
                 "link_session_id": item.link_session_id,
                 "request_id": item.request_id,
+                # Criterion 6: the typed confirmation is *"recorded with the recovery
+                # artifact"*, and this is that record. Inside the sealed plaintext
+                # rather than beside the file, so it cannot be separated from the
+                # credential it fenced — an attestation in a neighbouring log is
+                # evidence about a run, not about this token.
+                "fence": item.fence.to_record(),
                 "recovered_at": now.isoformat(),
             },
             sort_keys=True,
@@ -652,7 +701,7 @@ class EmergencyArtifactSink:
         return SinkReceipt(
             kind=self.kind,
             destination=self.destination,
-            durable=REQUIRED_FIELDS,
+            durable=(*REQUIRED_FIELDS, FENCE_FIELD),
             owed=(),
             pairing=Pairing.IN_ARTIFACT,
         )
@@ -702,6 +751,17 @@ def read_artifact(path: Path, *, key_bytes: bytes) -> dict[str, object]:
             raise ArtifactUnreadable(
                 f"the artifact at {path} does not record {optional}, even as null"
             )
+    # Criterion 6, on the reading side. Validated here rather than only where it is
+    # used, because every reader of an artifact — the commit's own read-back included —
+    # has to agree on what a complete one is. A credential that opens without an
+    # attestation is the case *"an artifact that carries the credential without the
+    # pairing recreates the defect one step later"* is about, one criterion over: the
+    # restore would put a token into a real store with nothing saying the host that
+    # could still exchange it was ever turned off.
+    try:
+        FenceAttestation.from_record(payload.get("fence"))
+    except FenceRecordInvalid as exc:
+        raise ArtifactUnreadable(f"the artifact at {path} is not fenced: {exc}") from None
     return payload
 
 
@@ -716,6 +776,11 @@ def restore(path: Path, *, key_file: Path, token_store_directory: Path) -> SinkR
     The ``item_id`` travels with the credential, so the pairing criterion 3 requires
     arrives here rather than having to be reconstructed; applying it to a ``link_flow``
     row remains that criterion's work.
+
+    The fence attestation travels the same way and is read back into the item rather
+    than re-asked for. Re-prompting on the replacement host would be a *second*
+    attestation about a moment that has passed — the exchange it fenced already
+    happened — and the one this artifact carries is the one that was true then.
     """
     key = crypto.load_backup_key(key_file)
     payload = read_artifact(path, key_bytes=key)
@@ -727,6 +792,7 @@ def restore(path: Path, *, key_file: Path, token_store_directory: Path) -> SinkR
         if payload["link_session_id"] is None
         else str(payload["link_session_id"]),
         request_id=None if payload["request_id"] is None else str(payload["request_id"]),
+        fence=FenceAttestation.from_record(payload["fence"]),
     )
     sink = ReplacementHostSink(token_store_directory)
     sink.prepare_for(item.flow_id)
@@ -735,10 +801,18 @@ def restore(path: Path, *, key_file: Path, token_store_directory: Path) -> SinkR
         kind=receipt.kind,
         destination=receipt.destination,
         # What the restore established is the union of what the artifact carried and
-        # what the store accepted: the two optional fields were durable in the
-        # artifact before this ran, and remain readable there.
-        durable=receipt.durable,
-        owed=receipt.owed,
+        # what the store accepted: the optional fields and the fence attestation were
+        # durable in the artifact before this ran, and remain readable there.
+        #
+        # **The union is now computed rather than described.** This passed the
+        # replacement-host sink's own tuples straight through, which contradicted the
+        # sentence above it — that sink reports as `owed` exactly what a `SecretRecord`
+        # cannot hold, and every one of those things is in the file this function just
+        # opened. Harmless while the two were optional support ids; not harmless once
+        # criterion 6's attestation joined them, because it would have reported the
+        # fence as missing while reading it out of the artifact in the same call.
+        durable=(*REQUIRED_FIELDS, FENCE_FIELD),
+        owed=(),
         # The pairing came *out of the artifact*, which is the destination criterion 3
         # names for this branch — not the flow row the replacement-host sink reports.
         pairing=Pairing.IN_ARTIFACT,

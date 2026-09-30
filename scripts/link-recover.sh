@@ -35,6 +35,19 @@
 # the escrowed key, not by declining to write; the credential reaches a real
 # TokenStore through the restore, on the replacement host, where that name is true.
 #
+# THE FENCE, AND WHAT IT COSTS YOU (`07b` criterion 6). Before it exchanges, the verb
+# asks you to confirm — by typing the host's name — that the host running the old Link
+# worker is POWERED OFF or DESTROYED in your provider's control plane. Unreachable is
+# not off: a host that fails a ping can still be in the middle of `/link/token/get`,
+# and that call spends the same one-time public_token this recovery is about.
+#
+# That host is also your Tailscale exit node (`DESIGN.md` §15.1), and it was that before
+# this project existed. Powering it off takes your VPN exit with it, so this is a real
+# decision and nothing here makes it for you. Nothing pings anything: the confirmation
+# is your attestation, it is sealed inside the recovery artifact beside the credential,
+# and the local database claim is NOT a substitute for it — that claim only serialises
+# two runs on this Mac and says nothing about the other host.
+#
 # SANDBOX ONLY, IN THIS FORM. The verb refuses any other environment before a
 # credential is read, and this script pins `NETWORTH_ENV` rather than inheriting it:
 # a rehearsal that is one exported variable away from Production is not a rehearsal.
@@ -104,7 +117,8 @@ uv run --quiet networth verify-this-mac ||
 printf 'host          %s (measurement (iv): the VPS takes no part in either call)\n' "$(hostname)"
 printf 'flow          %s\n' "$flow"
 printf 'recovery dir  %s\n' "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}"
-printf 'prompts       client_id and the sandbox secret, on this terminal; the link token comes from the record\n\n'
+printf 'prompts       the fence (type the name of the host you powered off), then client_id and the sandbox secret, on this terminal; the link token comes from the record\n'
+printf 'fence         that host is also your Tailscale exit node: powering it off takes your VPN exit with it, and nothing here pings anything\n\n'
 
 # `--exchange` rather than a choice. In the emergency this script is the first form
 # of, there is exactly one thing to do — retrieve, then exchange — and an operator
