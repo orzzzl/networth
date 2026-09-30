@@ -80,14 +80,17 @@ it beside the token, and :func:`read_artifact` refuses a credential that arrives
 without one. Asking for it is :mod:`networth.link_fence`'s job; this module's is
 making it impossible to store a recovered credential that nobody fenced.
 
-**What this module deliberately does not do.** It does not write the recovered
-``item_id`` back onto the originating ``link_flow`` row — that is `07b`'s third
-criterion, it needs `07a`'s table, and its two destinations differ by sink. What this
-module owes that criterion is the ability to *say which destination applies* without a
-caller guessing, which is :class:`Pairing`, and the ability to refuse to overstate what
-landed, which is :attr:`SinkReceipt.owed`. A receipt with a non-empty ``owed`` is not a
-successful recovery, and the caller that reports one as such is wrong in a way a
-reader can see.
+**Where the recovered ``item_id`` goes afterwards is criterion 3**, and this module
+owns only one end of it: the ability to *say which destination applies* without a
+caller guessing, which is :class:`Pairing`, and the ability to refuse to overstate
+what landed, which is :attr:`SinkReceipt.owed`. A receipt with a non-empty ``owed``
+is not a successful recovery, and the caller that reports one as such is wrong in a
+way a reader can see. The write itself belongs to :mod:`networth.link_pairing`,
+because it is a decision about `07a`'s table taken against the rows that are
+actually there, and :func:`restore` is where the two meet — on the replacement host,
+which is the only place both the credential's destination and a ``link_flow`` row
+exist at once. Neither ``commit`` reaches it: the Mac has no such row to write, and
+that is precisely why the pairing travels sealed inside the artifact.
 """
 
 from __future__ import annotations
@@ -96,6 +99,7 @@ import contextlib
 import json
 import os
 import secrets
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -105,6 +109,7 @@ from typing import Final, Protocol
 from networth.backup import crypto
 from networth.filelock import LockUnavailable, exclusive_file_lock
 from networth.link_fence import FenceAttestation, FenceRecordInvalid
+from networth.link_pairing import PairingOutcome, PairingRefused, apply_pairing
 from networth.tokenstore import (
     FILE_MODE,
     Secret,
@@ -139,6 +144,27 @@ REQUIRED_FIELDS: Final = ("access_token", "item_id", "link_session_id", "request
 #: replacement-host branch it is owed. Separate from :data:`REQUIRED_FIELDS`, which is
 #: criterion 2's list and should not silently grow a criterion 6 member.
 FENCE_FIELD: Final = "fence_attestation"
+
+#: Criterion 3's write-back, named the same way and kept out of both lists above for
+#: the same reason: it is not a field of the credential but a row in another
+#: database, and *"recovery is not reported successful until it is"*. It appears in
+#: :attr:`SinkReceipt.owed` whenever :func:`restore` could not put the recovered
+#: ``item_id`` onto a Link success row — including when it was given no database to
+#: look in, which is a common shape rather than a misuse.
+FLOW_PAIRING_FIELD: Final = "flow_pairing"
+
+#: Exit status for *"the credential is durable and recovery is still incomplete"*.
+#: It is its own code rather than ``2`` because ``2`` means *nothing happened* in the
+#: verbs that use it — every refusal returns it before anything irreversible — and the
+#: instruction that matters here is the opposite of a refusal's: do **not** run it
+#: again, because the one-time token is already spent. Not ``0`` either, for the reason
+#: :attr:`SinkReceipt.owed` exists at all.
+#:
+#: It lives here rather than in one verb because **two** now report it —
+#: ``complete-hosted-link`` and ``restore-link-artifact`` — and an operator or script
+#: reading exit 3 must get the same meaning from both. Two copies of the number is how
+#: they come to mean different things.
+INCOMPLETE_RECOVERY: Final = 3
 
 _PROBE_PLAINTEXT: Final = b"networth link-sink durability probe; holds no material\n"
 
@@ -924,7 +950,40 @@ def read_artifact(path: Path, *, key_bytes: bytes) -> dict[str, object]:
     return payload
 
 
-def restore(path: Path, *, key_file: Path, token_store_directory: Path) -> SinkReceipt:
+@dataclass(frozen=True, slots=True)
+class RestoreOutcome:
+    """What a restore established, in its two independent halves.
+
+    A restore does two things that can succeed separately — it makes the credential
+    usable, and it makes the slot countable — so one receipt cannot describe it. The
+    credential half is a :class:`SinkReceipt` exactly as the replacement-host
+    ``commit`` returns it, with criterion 3's field added to ``owed`` when the
+    pairing did not land. The pairing half carries the reason, which
+    :class:`SinkReceipt` has nowhere to put and an operator needs: *"no row for this
+    flow"* and *"the row names a different Item"* both leave the pairing owed and
+    call for opposite next actions.
+
+    ``pairing`` is ``None`` only when no database was given at all — a restore onto a
+    host whose database has not been restored yet, which is a real order of events
+    and not a misuse.
+    """
+
+    receipt: SinkReceipt
+    pairing: PairingOutcome | None
+
+    @property
+    def complete(self) -> bool:
+        """Did both halves land? The answer criterion 3 forbids rounding up."""
+        return self.receipt.complete
+
+
+def restore(
+    path: Path,
+    *,
+    key_file: Path,
+    token_store_directory: Path,
+    connection: sqlite3.Connection | None,
+) -> RestoreOutcome:
     """The restore path criterion 1 requires of the artifact branch.
 
     Opens the artifact under the escrowed key and puts the credential into a real
@@ -932,9 +991,28 @@ def restore(path: Path, *, key_file: Path, token_store_directory: Path) -> SinkR
     branch makes directly, so the two branches converge on one place a credential can
     be read from rather than two.
 
-    The ``item_id`` travels with the credential, so the pairing criterion 3 requires
-    arrives here rather than having to be reconstructed; applying it to a ``link_flow``
-    row remains that criterion's work.
+    **Then it applies criterion 3's write-back**, because this is the moment both of
+    its inputs exist: the ``item_id`` travelled sealed beside the credential, and the
+    ``link_flow`` row it names lives in this host's database. That is the criterion's
+    second destination — *"carried inside the Mac-side emergency artifact and applied
+    during restore"* — and it is applied **after** the credential is durable rather
+    than before. The order is deliberate and the cheap direction: a pairing written
+    onto a row for a credential that then fails to store would name a slot this host
+    cannot use, while a credential stored without its pairing is recoverable from the
+    artifact, which still holds it.
+
+    ``connection`` is required and may be ``None``. Required so a caller cannot get
+    the old credential-only behaviour by leaving an argument off — that would be a
+    silently incomplete recovery, which is the shape this criterion exists to stop —
+    and nullable because a replacement host may genuinely have a ``TokenStore``
+    before it has a database. ``None`` reports the pairing owed; it never skips it
+    quietly.
+
+    A :class:`~networth.link_pairing.PairingRefused` is **not** propagated. By the
+    time it can be raised the credential is durable and the one-time token is spent,
+    so a raise here would present a recovery that largely succeeded as a failure and
+    invite a re-run that cannot help. It is reported as owed, with the refusal's own
+    words, and the caller decides.
 
     The fence attestation travels the same way and is read back into the item rather
     than re-asked for. Re-prompting on the replacement host would be a *second*
@@ -956,7 +1034,16 @@ def restore(path: Path, *, key_file: Path, token_store_directory: Path) -> SinkR
     sink = ReplacementHostSink(token_store_directory)
     sink.prepare_for(item.flow_id)
     receipt = sink.commit(item, now=datetime.now().astimezone())
-    return SinkReceipt(
+
+    pairing: PairingOutcome | None = None
+    if connection is not None:
+        try:
+            pairing = apply_pairing(connection, flow_id=item.flow_id, item_id=item.item_id)
+        except PairingRefused as exc:
+            pairing = exc.outcome
+    owed = () if pairing is not None and pairing.paired else (FLOW_PAIRING_FIELD,)
+
+    credential = SinkReceipt(
         kind=receipt.kind,
         destination=receipt.destination,
         # What the restore established is the union of what the artifact carried and
@@ -971,8 +1058,46 @@ def restore(path: Path, *, key_file: Path, token_store_directory: Path) -> SinkR
         # criterion 6's attestation joined them, because it would have reported the
         # fence as missing while reading it out of the artifact in the same call.
         durable=(*REQUIRED_FIELDS, FENCE_FIELD),
-        owed=(),
+        # Criterion 3's field is the one thing this receipt can still owe, and it owes
+        # it whenever no row in this host's database names the recovered Item — no
+        # database given, no success row to name, or a row that disagrees. The other
+        # three of criterion 2's fields plus the fence are in the artifact this call
+        # just opened, which is what makes them durable rather than owed.
+        owed=owed,
         # The pairing came *out of the artifact*, which is the destination criterion 3
         # names for this branch — not the flow row the replacement-host sink reports.
+        # Unchanged by whether the write-back landed: this says where the pairing
+        # *lives*, and the artifact holds it either way.
         pairing=Pairing.IN_ARTIFACT,
+    )
+    return RestoreOutcome(receipt=credential, pairing=pairing)
+
+
+def pair_from_artifact(
+    path: Path, *, key_file: Path, connection: sqlite3.Connection
+) -> PairingOutcome:
+    """Criterion 3's write-back alone, from an artifact whose credential already landed.
+
+    **This exists because :func:`restore` cannot be re-run to finish an owed
+    pairing.** A restore whose pairing was owed — usually because this host had no
+    database yet — has already put the credential in the ``TokenStore``, so the
+    second run's :meth:`ReplacementHostSink.prepare_for` refuses with *"already holds
+    an access token for this flow"*, and that refusal is correct: it is the guard
+    against overwriting a credential. Without this function the only remaining
+    instruction would be *"re-run the restore"*, which cannot work — advice that
+    names a command that refuses is worse than no advice, and in a 30-minute
+    emergency it is how an owner concludes the recovery is broken.
+
+    It touches no credential and no ``TokenStore``. The artifact is opened only for
+    the two identifiers the pairing is made of, and :func:`read_artifact` still
+    validates the whole thing — including criterion 6's attestation — because a file
+    that is not a complete fenced recovery must not be a source of accounting either.
+
+    Raises rather than reporting: unlike inside :func:`restore`, nothing here has been
+    spent when it fails, so a caller that has not looked at the result must stop.
+    """
+    key = crypto.load_backup_key(key_file)
+    payload = read_artifact(path, key_bytes=key)
+    return apply_pairing(
+        connection, flow_id=str(payload["flow_id"]), item_id=str(payload["item_id"])
     )

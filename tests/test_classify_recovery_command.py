@@ -19,6 +19,7 @@ import pytest
 
 from networth import link_recovery
 from networth.backup import crypto
+from networth.cli import discover
 from networth.commands import classify_recovery
 from networth.link_fence import ATTESTATION, FENCED_INSTANCE, FenceAttestation
 from networth.link_sink import EmergencyArtifactSink, RecoveredItem
@@ -105,10 +106,13 @@ def test_a_durable_credential_exits_zero_and_says_do_not_exchange(
     assert "CREDENTIAL_DURABLE" in out
     assert "credential    DURABLE" in out
     assert "do not exchange again" in out.lower()
-    # The instruction must not name a command that does not exist. There is no
-    # restore verb in this checkout and inventing one would send the owner looking
-    # for it under a 30-minute clock.
-    assert "restore-link-artifact" not in out
+    # The instruction may name a command **only** if it exists. This assertion was
+    # `not in out` until criterion 3 built the verb: inventing a name would have sent
+    # the owner looking for it under a 30-minute clock. So it is checked against the
+    # CLI's own registry rather than as a string, which is the only form of this
+    # assertion that cannot go stale if the verb is renamed or removed.
+    assert "restore-link-artifact" in out
+    assert "restore-link-artifact" in discover()
 
 
 def test_a_torn_artifact_is_unverified_and_points_at_the_transcript(

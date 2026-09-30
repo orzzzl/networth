@@ -59,10 +59,10 @@ _NEXT = {
     link_crash.CrashState.CREDENTIAL_DURABLE: (
         "Your credential survived. Do NOT exchange again and do NOT move or delete the "
         "artifact — it is the only copy of what the recovery recovered. Keep it and the "
-        "escrowed backup key together until it is restored onto a replacement host. "
-        "NOTE: that restore is `networth.link_sink.restore()`, a library function with "
-        "no command of its own yet — 07b still owes the verb that runs it, so there is "
-        "nothing for you to type here. This is not a step you are missing."
+        "escrowed backup key together, and restore it **on the replacement host** with:\n"
+        "  networth restore-link-artifact --artifact PATH --backup-key PATH\n"
+        "Not on this Mac: that verb writes into NETWORTH_ENV's TokenStore, and §15 keeps "
+        "runtime secrets off this laptop."
     ),
     link_crash.CrashState.CREDENTIAL_LOST: (
         "This artifact opened under the key you supplied and will not give up a "

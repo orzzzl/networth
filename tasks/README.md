@@ -1624,7 +1624,7 @@ capture is issue **#14**.
 - [ ] `access_token` **and** `item_id` are written, `fsync`ed, **read back**, and only then
       is recovery reported successful. Also persist `link_session_id` and the exchange
       `request_id` (issue #14) — in this scenario the support ticket is the fallback.
-- [ ] **The recovered `item_id` is written back onto the originating `link_flow` row, and
+- [x] **The recovered `item_id` is written back onto the originating `link_flow` row, and
       recovery is not reported successful until it is.** `26a` (#54) reconciles the `item`
       and `link_flow` tables **by Item identity**; a recovery that stores the credential and
       leaves its flow row nameless is indistinguishable from an ordinary stranded flow —
@@ -1642,6 +1642,51 @@ capture is issue **#14**.
       *(Added 2026-09-08 alongside `26a`, whose module docstring now **states** this
       precondition instead of silently depending on it — the `#36` lesson: a module that is
       correct only because of a fact it never asserts is one edit away from not being.)*
+
+      *Measured 2026-09-30 (`networth/link_pairing.py`, `networth/commands/restore_link_artifact.py`).*
+      **The double count is measured rather than assumed**: with a nameless
+      `SUCCESS_PENDING_EXCHANGE` row beside the `item` row a restore commits,
+      `read_item_budget` returns `spent_count == 2` for one Link success — one
+      `IN_FLIGHT_FLOW` and one `ITEM` — and returns 1 after the write-back. That
+      measurement is the first test in the file, so every other assertion is read against
+      a demonstrated cost.
+
+      **The criterion turned out to be mostly refusals.** Exactly one shape may be
+      written — a success row for this flow that names no Item — and four others must
+      not: a row already naming a *different* Item (criterion 7's distinct-Items
+      accounting), a row at `EXCHANGED` with no name (an exchange was committed on the
+      host that died, so naming it with this recovery's Item asserts the two are the same
+      exchange), two nameless candidates, and a legacy `link_flow` row versus a new
+      `link_result` row, which are different `UPDATE` destinations. Writing a *guessed*
+      row is worse than leaving it nameless: `26a` would reconcile a wrong pair **and**
+      leave the right row unnamed, so a fabricated fact would hide the real one. One
+      shape is deliberately written despite disagreeing — `TOKEN_EXPIRED`, where the VPS
+      gave up on a token this recovery then exchanged — because refusing there preserves
+      the double count in the one case where the slot is known for certain to be spent.
+
+      **`restore()` is where the second destination is applied**, after the credential is
+      durable, and a refusal there is reported rather than raised: by that point the
+      one-time token is spent, and presenting a recovery whose credential landed as a
+      failure invites a re-run that cannot help. `SinkReceipt.owed` carries
+      `flow_pairing` until a row names the Item, so exit 0 means both halves and
+      `INCOMPLETE_RECOVERY` means the credential is durable and the accounting is not.
+
+      **Two things this closed that the criterion does not mention.** First, `restore()`
+      had **no production caller** — a library function reachable only from tests, which
+      is a failure this project has already made once and written down; `networth
+      restore-link-artifact` is now that caller, and `classify-recovery`'s own guidance
+      no longer has to say the verb is owed. Second, `--pairing-only` exists because the
+      obvious instruction was **false**: a plain re-run of the restore cannot finish an
+      owed pairing, since the credential it already stored makes the second
+      `prepare_for` refuse. That was found by writing the test that asserts the
+      limitation and then noticing the printed advice contradicted it.
+
+      An absent database is a **refusal**, not "nothing to pair" — `--without-database`
+      is the explicit opt-in. A wrong `NETWORTH_ENV` produces exactly the same shape, and
+      the tolerant version reports it as a measurement about a database nobody opened
+      (`AGENTS.md` rule 1's no-fallback rule). This verb is also the one that must **not**
+      gate on Production: `07b` exists for a Production Item lost with the VPS, and it
+      exchanges nothing.
 - [x] Crash injection **after the exchange response and before, during, and after** the
       emergency write; each leaves a state the next run can classify correctly.
 

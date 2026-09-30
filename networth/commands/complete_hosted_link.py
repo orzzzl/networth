@@ -118,7 +118,7 @@ import termios
 from datetime import UTC, datetime
 from pathlib import Path
 
-from networth import link_fence, link_recovery, mac_identity
+from networth import link_fence, link_recovery, link_sink, mac_identity
 from networth.config import ConfigError
 from networth.link_fence import FenceError
 from networth.link_recovery import LinkRecoveryError
@@ -155,13 +155,10 @@ from networth.tokenstore import (
 
 SUMMARY = "Retrieve a finished Hosted Link session and measure 06a's (ii) and (iv)."
 
-#: Exit status for "the exchange succeeded, the credential is durable, and recovery is
-#: still incomplete". It is its own code rather than ``2`` because ``2`` means *nothing
-#: happened* everywhere else in this verb — every refusal above returns it before the
-#: exchange — and the one instruction that matters on this path is the opposite of a
-#: refusal's: do **not** run it again, because the one-time token is already spent.
-#: Not ``0`` either, for the reason `SinkReceipt.owed` exists at all.
-INCOMPLETE_RECOVERY = 3
+#: Re-exported rather than defined here. It moved into :mod:`networth.link_sink` when
+#: ``restore-link-artifact`` began reporting the same status, because the same exit code
+#: meaning two things in two verbs is worse than an import.
+INCOMPLETE_RECOVERY = link_sink.INCOMPLETE_RECOVERY
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
