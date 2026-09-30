@@ -106,7 +106,7 @@ abstract class AppLocalizations {
   /// **'couldn\'t read the published snapshot'**
   String get snapshotUnreadable;
 
-  /// HomeNotPaired. A fresh install, or a phone the owner has revoked. Promises no action, because the intake that would perform one is task 21a and does not exist yet; naming a button that is not there is worse than naming nothing.
+  /// HomeNotPaired. A fresh install, or a phone the owner has revoked. It used to promise no action, because the intake that would perform one did not exist; task 21a built it, so the button is now beside this sentence and pairingIntakeTitle names it. The sentence itself is unchanged — it states what is true of the phone, and the offer to fix it belongs to the button rather than to the diagnosis.
   ///
   /// In en, this message translates to:
   /// **'this phone isn\'t paired yet'**
@@ -399,6 +399,54 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'this reading couldn\'t be saved, so it won\'t appear in the history'**
   String get historyNotRecorded;
+
+  /// Title of the intake form on a phone that is in no pairing, and the label of the button on the not-paired screen that opens it. One key for both on purpose: they name the same act, and two keys would be two places for the wording to drift apart.
+  ///
+  /// In en, this message translates to:
+  /// **'Pair this phone'**
+  String get pairingIntakeTitle;
+
+  /// Title of the same form reached from a phone that is already paired, and the tooltip of the app bar action that opens it. Says 'replace' rather than 'pair' because the vault holds one bundle under one key: a second pairing is not added, it takes the first one's place.
+  ///
+  /// In en, this message translates to:
+  /// **'Replace pairing'**
+  String get pairingReplaceTitle;
+
+  /// How the owner gets a bundle to type. Names the command because that is the one fact he cannot derive from the screen. Deliberately does not offer to scan a code: a scanner needs a camera package and is deferred beyond v0, and copy promising one would be the screen claiming a capability the build does not have.
+  ///
+  /// In en, this message translates to:
+  /// **'On your server, run networth pair and type the line it prints here.'**
+  String get pairingIntakeInstructions;
+
+  /// Shown above the field only when a pairing already exists. The second sentence is the consequence the owner cannot see coming: every record this app keeps is scoped to a pairing_id (DESIGN.md §9.1, §9.3), so a new pairing renders the held copy and its records absent rather than deleting them. Stated as 'stops being shown' for that reason — it is not an erasure, and describing it as one would be a false claim about his own data.
+  ///
+  /// In en, this message translates to:
+  /// **'This phone is already paired. Pairing it again replaces that, and the snapshot saved under the old pairing stops being shown.'**
+  String get pairingReplaceWarning;
+
+  /// Label of the single text field. Names the thing printed by the terminal rather than describing its contents — the value is a payload key and the label sits beside it on screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Pairing line'**
+  String get pairingIntakeFieldLabel;
+
+  /// The submit button, in both the first-pairing and the replacement case. One verb for both, because the write is the same write.
+  ///
+  /// In en, this message translates to:
+  /// **'Pair'**
+  String get pairingIntakeSubmit;
+
+  /// PairingIntakeUnreadable — PairingProvision.parse refused the text. The second clause is the part the owner needs and cannot observe: parsing happens before the write, so a phone that was paired still is. Carries none of the submitted text; the field holds a payload key, and echoing it into an error message would put it on screen and into any screenshot of one.
+  ///
+  /// In en, this message translates to:
+  /// **'that isn\'t a pairing line this app can read, so nothing changed'**
+  String get pairingIntakeUnreadable;
+
+  /// PairingIntakeNotStored — the bundle parsed and protected storage refused the write. Distinct from pairingIntakeUnreadable because the remedy is different: sending the owner to re-check a 100-character secret that was already correct is the wrong instruction when the keystore is what failed. Claims nothing about whether a previous pairing survived — the write is one platform call and what it did before failing belongs to the Android keystore.
+  ///
+  /// In en, this message translates to:
+  /// **'this phone couldn\'t save the pairing, so it isn\'t paired now — try again'**
+  String get pairingIntakeNotStored;
 }
 
 class _AppLocalizationsDelegate

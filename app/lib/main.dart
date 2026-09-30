@@ -10,6 +10,7 @@ import 'src/data/recording_refresh.dart';
 import 'src/data/seq_baseline_store.dart';
 import 'src/data/snapshot_reader.dart';
 import 'src/data/snapshot_refresh.dart';
+import 'src/pairing/pairing_intake.dart';
 import 'src/pairing/pairing_vault.dart';
 import 'src/ui/home_page.dart';
 
@@ -26,13 +27,7 @@ import 'src/ui/home_page.dart';
 /// screen must not be able to choose its own collaborators: what a test pumps
 /// and what the owner runs are then the same object graph, differing only in
 /// where the bytes and the keystore come from.
-HomeLoader _homeLoader(HistoryStore history) {
-  // **One vault instance for both readers.** The two *reads* stay separate and
-  // ordered — `HomeLoader` documents why the display scope must be the later
-  // one — but there is one Android keystore, and a second vault object would be
-  // a second cache of nothing pretending otherwise.
-  final vault = PairingVault();
-
+HomeLoader _homeLoader(HistoryStore history, PairingVault vault) {
   // **One instance of each store, shared between the refresher and the loader.**
   // `SnapshotRefresher` states the contract it cannot enforce: the three stores
   // must have exactly one writer and it is that class. Building a second
@@ -81,10 +76,20 @@ HistoryStore _historyStore() => FileHistoryStore.appPrivate();
 
 void main() {
   final history = _historyStore();
+  // **One vault instance for all three readers, and the third one is this
+  // commit.** The two *reads* stay separate and ordered — `HomeLoader` documents
+  // why the display scope must be the later one — but there is one Android
+  // keystore, and a second vault object would be a second cache of nothing
+  // pretending otherwise. Intake is the first *writer* of that keystore, which
+  // is why the instance moves out here: the object the form provisions and the
+  // object the next load reads have to be the same one, or the screen would read
+  // its pairing from a collaborator the write never reached.
+  final vault = PairingVault();
   runApp(
     NetWorthApp(
-      loader: _homeLoader(history),
+      loader: _homeLoader(history, vault),
       historySource: history,
+      intake: PairingIntake(vault: vault),
     ),
   );
 }
@@ -100,10 +105,16 @@ class NetWorthApp extends StatelessWidget {
     super.key,
     required this.loader,
     required this.historySource,
+    required this.intake,
   });
 
   final HomeLoader loader;
   final HistorySource historySource;
+
+  /// The third seam, required for the same reason as the other two: a build that
+  /// shipped without it would render "this phone isn't paired yet" permanently
+  /// and nothing would say so.
+  final PairingIntake intake;
 
   @override
   Widget build(BuildContext context) {
@@ -119,7 +130,7 @@ class NetWorthApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2F6F4E)),
         useMaterial3: true,
       ),
-      home: HomePage(loader: loader, historySource: historySource),
+      home: HomePage(loader: loader, historySource: historySource, intake: intake),
     );
   }
 }

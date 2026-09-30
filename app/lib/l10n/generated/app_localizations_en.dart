@@ -261,4 +261,32 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get historyNotRecorded =>
       'this reading couldn\'t be saved, so it won\'t appear in the history';
+
+  @override
+  String get pairingIntakeTitle => 'Pair this phone';
+
+  @override
+  String get pairingReplaceTitle => 'Replace pairing';
+
+  @override
+  String get pairingIntakeInstructions =>
+      'On your server, run networth pair and type the line it prints here.';
+
+  @override
+  String get pairingReplaceWarning =>
+      'This phone is already paired. Pairing it again replaces that, and the snapshot saved under the old pairing stops being shown.';
+
+  @override
+  String get pairingIntakeFieldLabel => 'Pairing line';
+
+  @override
+  String get pairingIntakeSubmit => 'Pair';
+
+  @override
+  String get pairingIntakeUnreadable =>
+      'that isn\'t a pairing line this app can read, so nothing changed';
+
+  @override
+  String get pairingIntakeNotStored =>
+      'this phone couldn\'t save the pairing, so it isn\'t paired now — try again';
 }
