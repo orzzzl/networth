@@ -580,10 +580,16 @@ class EmergencyArtifactSink:
             # refusal, moved to the side of the irreversible step where it is free.
             # Any directory entry counts, not just a file that opens: a symlink whose
             # target is absent is still a name `O_EXCL` will refuse to create.
-            raise SinkNotWritable(
-                f"an artifact already exists at {self._path}; it will not be "
-                "overwritten. Move it aside — it may hold an earlier recovery"
-            )
+            #
+            # **Which refusal, though, is `07b` criterion 4** (see `link_crash`). This
+            # used to be a single message ending *"Move it aside — it may hold an
+            # earlier recovery"*, and that advice is followed by a re-run. On an
+            # artifact that opens, the re-run exchanges a second time — measured as
+            # **ACCEPTED** with the first credential still healthy (`06a` (ii)), with
+            # the Item count unmeasured — after moving aside the only copy of the
+            # credential it was describing. So the one place that can tell these apart
+            # for free now does.
+            raise SinkNotWritable(self._describe_existing())
         _prove_durable(self._path.parent, what="emergency artifact directory")
 
         try:
@@ -624,6 +630,51 @@ class EmergencyArtifactSink:
         # loader can raise — mode, encoding, length — and re-reading would move them
         # to the far side of the exchange, which is the mistake criterion 1 names.
         self._key = key
+
+    def _describe_existing(self) -> str:
+        """Why the path is occupied, in the terms the owner has to act on.
+
+        Three answers, and the split is not cosmetic: *"this file holds your
+        credential"* and *"this file will never give it to you"* imply opposite
+        next actions, and the third — *"we could not look"* — must not be rounded
+        to either. It reads the artifact with this module's own
+        :func:`read_artifact` rather than through :mod:`networth.link_crash`,
+        which imports this one; the record half of that classifier is not needed
+        to answer a question about this path.
+
+        Loading the key here is a second load in the refusing case only, and that
+        case does not go on to exchange anything, so it cannot move a failure to
+        the far side of the irreversible step — the hazard the held key exists to
+        avoid.
+        """
+        try:
+            key = crypto.load_backup_key(self._key_file)
+        except crypto.BackupKeyError as exc:
+            return (
+                f"an artifact already exists at {self._path} and the escrowed backup key "
+                f"could not be loaded to see what it holds ({exc}), so whether your "
+                "credential is in it is unknown. Do not exchange again until you have "
+                "opened it: a second exchange is accepted on the wire and may cost a "
+                "lifetime Item"
+            )
+        try:
+            read_artifact(self._path, key_bytes=key)
+        except (ArtifactUnreadable, OSError) as exc:
+            return (
+                f"an artifact already exists at {self._path} and holds no usable "
+                f"credential ({exc}). It will not be overwritten. A run that died "
+                "during the write leaves exactly this, and the exchange it was writing "
+                "may already have happened — so treat the lifetime slot as spent and "
+                "quote the request_id from that run's transcript rather than exchanging "
+                "again blind"
+            )
+        return (
+            f"an artifact already exists at {self._path} and it opens under the "
+            "escrowed backup key with the credential and the fence intact. DO NOT "
+            "EXCHANGE again and do not move this file: your recovery already "
+            "succeeded and this is the only copy of what it recovered. Restore it "
+            "onto the replacement host instead"
+        )
 
     def prepare_for(self, flow_id: str) -> None:
         """:meth:`prepare`. This kind's flow-specific refusal is already in it.
