@@ -29,7 +29,15 @@ original = termios.tcgetattr(1)
 """
 
 
-def _exercise_prompt(source: str, replies: list[tuple[bytes, bytes]]) -> bytes:
+def _exercise_prompt(source: str, replies: list[tuple[bytes, bytes, bool]]) -> bytes:
+    """Run ``source`` against a real PTY, answering each prompt it reaches.
+
+    Each reply is ``(prompt, answer, echo_expected)``, and the third element is checked
+    on the **terminal itself** rather than inferred from the transcript: `07b`'s fence
+    prompt reads a host name and must echo, every other prompt here reads a credential
+    and must not, and "what the transcript happens to contain" cannot tell a silenced
+    terminal from one nobody typed at.
+    """
     master, slave = pty.openpty()
     transcript = bytearray()
     process: subprocess.Popen[bytes] | None = None
@@ -66,9 +74,10 @@ def _exercise_prompt(source: str, replies: list[tuple[bytes, bytes]]) -> bytes:
                 elif process is not None and process.poll() is not None:
                     raise AssertionError(f"prompt child exited: {bytes(transcript)!r}")
 
-        for prompt, answer in replies:
+        for prompt, answer, echo_expected in replies:
             read_until(prompt)
-            assert not termios.tcgetattr(slave)[3] & termios.ECHO, bytes(transcript)
+            echoing = bool(termios.tcgetattr(slave)[3] & termios.ECHO)
+            assert echoing is echo_expected, bytes(transcript)
             os.write(master, answer)
         read_until(b"PROMPT_TEST_PASSED\r\n")
         assert process.wait(timeout=5) == 0, bytes(transcript)
@@ -96,12 +105,43 @@ assert termios.tcgetattr(1) == original
 print('PROMPT_TEST_PASSED')
 """,
         [
-            (b"FIRST_PROMPT: ", b"synthetic-first-value\n"),
-            (b"SECOND_PROMPT: ", b"synthetic-second-value\n"),
+            (b"FIRST_PROMPT: ", b"synthetic-first-value\n", False),
+            (b"SECOND_PROMPT: ", b"synthetic-second-value\n", False),
         ],
     )
     assert b"synthetic-first-value" not in transcript
     assert b"synthetic-second-value" not in transcript
+    assert b"unrelated-piped-input" not in transcript
+
+
+def test_real_tty_the_fence_prompt_echoes_and_the_secret_after_it_does_not() -> None:
+    """`07b` criterion 6 asks the owner to *type a host name*, and a name typed blind
+    is a name typed wrong — on a 30-minute clock, into a refusal that deliberately
+    quotes nothing back.
+
+    So one prompt in this verb echoes, and this is the measurement that it is the right
+    one: the fence's answer comes back on the terminal, the secret typed immediately
+    after it does not, and the terminal is left as it was found either way. Patching
+    ``_read_from_tty`` cannot show any of that — the flag's whole effect is a termios bit
+    on a descriptor a unit test does not have.
+    """
+    transcript = _exercise_prompt(
+        """
+host = _read_from_tty('FENCE_PROMPT: ', echo=True)
+assert host == 'synthetic-host-name'
+assert termios.tcgetattr(1) == original
+secret = _read_from_tty('SECRET_PROMPT: ')
+assert secret == 'synthetic-secret-value'
+assert termios.tcgetattr(1) == original
+print('PROMPT_TEST_PASSED')
+""",
+        [
+            (b"FENCE_PROMPT: ", b"synthetic-host-name\n", True),
+            (b"SECRET_PROMPT: ", b"synthetic-secret-value\n", False),
+        ],
+    )
+    assert b"synthetic-host-name" in transcript, "the fence prompt must show what is typed"
+    assert b"synthetic-secret-value" not in transcript
     assert b"unrelated-piped-input" not in transcript
 
 
@@ -117,6 +157,6 @@ else:
 assert termios.tcgetattr(1) == original
 print('PROMPT_TEST_PASSED')
 """,
-        [(b"EOF_PROMPT: ", b"\x04")],
+        [(b"EOF_PROMPT: ", b"\x04", False)],
     )
     assert b"unrelated-piped-input" not in transcript

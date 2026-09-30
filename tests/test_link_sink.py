@@ -24,8 +24,10 @@ from pathlib import Path
 import pytest
 
 from networth.backup import crypto
+from networth.link_fence import ATTESTATION, FENCED_INSTANCE, FenceAttestation
 from networth.link_sink import (
     ARTIFACT_SCHEMA,
+    FENCE_FIELD,
     REQUIRED_FIELDS,
     ArtifactUnreadable,
     EmergencyArtifactSink,
@@ -51,6 +53,13 @@ ITEM_ID = "item-0000000000000000"
 #: because the ref encodes it. A readable stand-in like `flow-0001` is rejected.
 FLOW_ID = "1f0c9a2b3d4e5f60718293a4b5c6d7e8"
 OTHER_FLOW_ID = "9a8b7c6d5e4f30211203a4b5c6d7e8f9"
+#: Criterion 6's attestation, as the verb would hand it over: confirmed a few minutes
+#: before the exchange, which is the only ordering the artifact can later show.
+FENCE = FenceAttestation(
+    instance=FENCED_INSTANCE,
+    statement=ATTESTATION,
+    confirmed_at=datetime(2026, 9, 29, 4, 25, tzinfo=UTC),
+)
 
 
 @pytest.fixture
@@ -61,6 +70,29 @@ def key_file(tmp_path: Path) -> Path:
     return path
 
 
+def _payload_without(*absent: str) -> dict[str, object]:
+    """A complete artifact plaintext, minus the named fields.
+
+    Hand-built rather than produced by a sink, because what these check is the
+    **reader**: a sink cannot write an artifact missing a field the type system requires,
+    which is the point of that requirement and the reason the reader still needs its own
+    refusal for files that were not written by this version.
+    """
+    payload: dict[str, object] = {
+        "schema": ARTIFACT_SCHEMA,
+        "flow_id": FLOW_ID,
+        "item_id": ITEM_ID,
+        "access_token": ACCESS_TOKEN,
+        "link_session_id": "session-0001",
+        "request_id": "request-0001",
+        "fence": FENCE.to_record(),
+        "recovered_at": NOW.isoformat(),
+    }
+    for field in absent:
+        del payload[field]
+    return payload
+
+
 def item(**overrides: object) -> RecoveredItem:
     fields: dict[str, object] = {
         "access_token": Secret(ACCESS_TOKEN),
@@ -68,6 +100,7 @@ def item(**overrides: object) -> RecoveredItem:
         "flow_id": FLOW_ID,
         "link_session_id": "session-0001",
         "request_id": "request-0001",
+        "fence": FENCE,
     }
     fields.update(overrides)
     return RecoveredItem(**fields)  # type: ignore[arg-type]
@@ -296,7 +329,7 @@ class TestCommitRefusesToRunUnprepared:
 class TestWhatLandsAndWhatIsStillOwed:
     """Criterion 2's four fields, and the receipt that may not overstate them."""
 
-    def test_the_replacement_host_reports_the_two_it_cannot_hold(self, tmp_path: Path) -> None:
+    def test_the_replacement_host_reports_the_three_it_cannot_hold(self, tmp_path: Path) -> None:
         sink = ReplacementHostSink(tmp_path / "tokens")
         sink.prepare_for(FLOW_ID)
 
@@ -304,18 +337,23 @@ class TestWhatLandsAndWhatIsStillOwed:
 
         assert receipt.kind is SinkKind.REPLACEMENT_HOST
         assert receipt.durable == ("access_token", "item_id")
-        assert receipt.owed == ("link_session_id", "request_id")
+        # The fence attestation is the third, and it is owed for the same reason as the
+        # other two: a `SecretRecord` holds `item_id` and nothing else. Criterion 6 puts
+        # it *"with the recovery artifact"*, and this branch has none.
+        assert receipt.owed == ("link_session_id", "request_id", FENCE_FIELD)
         assert receipt.pairing is Pairing.ON_FLOW_ROW
         assert not receipt.complete, "a receipt with fields owed is not a finished recovery"
 
-    def test_the_artifact_holds_all_four(self, tmp_path: Path, key_file: Path) -> None:
+    def test_the_artifact_holds_all_four_and_the_fence(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
         sink = EmergencyArtifactSink(tmp_path / "artifact.sealed", key_file=key_file)
         sink.prepare()
 
         receipt = sink.commit(item(), now=NOW)
 
         assert receipt.kind is SinkKind.EMERGENCY_ARTIFACT
-        assert receipt.durable == REQUIRED_FIELDS
+        assert receipt.durable == (*REQUIRED_FIELDS, FENCE_FIELD)
         assert receipt.owed == ()
         assert receipt.pairing is Pairing.IN_ARTIFACT
         assert receipt.complete
@@ -331,6 +369,30 @@ class TestWhatLandsAndWhatIsStillOwed:
         reference = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW_ID)
         assert store.get(reference).reveal() == ACCESS_TOKEN
         assert store.record(reference).item_id == ITEM_ID
+
+
+class TestAnUnfencedRecoveryCannotBeConstructed:
+    """Criterion 6 in the type, and it needs its own test for a specific reason.
+
+    A required constructor parameter is **invisible to mutation testing**: giving
+    ``fence`` a default of ``None`` leaves every call site in the repo valid and every
+    other test green, because they all pass one. Only an assertion that the absence is a
+    ``TypeError`` can go red for that edit, so the structural guard gets an explicit
+    test rather than being trusted to the suite at large.
+    """
+
+    def test_a_recovered_item_without_an_attestation_is_a_type_error(self) -> None:
+        with pytest.raises(TypeError, match="fence"):
+            RecoveredItem(  # type: ignore[call-arg]
+                access_token=Secret(ACCESS_TOKEN),
+                item_id=ITEM_ID,
+                flow_id=FLOW_ID,
+                link_session_id=None,
+                request_id=None,
+            )
+
+    def test_and_the_control_constructs_with_one(self) -> None:
+        assert item().fence is FENCE
 
 
 class TestTheArtifactIsAnArtifactAndNotJustBytes:
@@ -364,6 +426,89 @@ class TestTheArtifactIsAnArtifactAndNotJustBytes:
         assert payload["item_id"] == ITEM_ID
         assert payload["link_session_id"] == "session-0001"
         assert payload["request_id"] == "request-0001"
+
+    def test_it_carries_the_fence_criterion_6_requires_be_recorded_with_it(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        # *"the script takes an explicit typed confirmation naming that instance,
+        # **recorded with the recovery artifact**"*. Inside the sealed plaintext, so the
+        # attestation cannot be separated from the credential it fenced — and with the
+        # statement, so a reader a year later knows what was confirmed rather than only
+        # that something was.
+        artifact = tmp_path / "artifact.sealed"
+        sink = EmergencyArtifactSink(artifact, key_file=key_file)
+        sink.prepare()
+        sink.commit(item(), now=NOW)
+
+        payload = json.loads(
+            crypto.open_sealed(artifact.read_bytes(), crypto.load_backup_key(key_file))
+        )
+
+        assert payload["fence"] == {
+            "instance": FENCED_INSTANCE,
+            "statement": ATTESTATION,
+            "confirmed_at": FENCE.confirmed_at.isoformat(),
+        }
+        assert FenceAttestation.from_record(payload["fence"]).confirmed_at < NOW, (
+            "the fence is confirmed before the exchange, and the artifact must be able "
+            "to show that rather than assert it"
+        )
+
+    def test_a_credential_that_arrives_unfenced_is_not_a_recovery(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        # The reading side of criterion 6. A sealed file that opens under the escrowed
+        # key, names this schema and carries a live credential is still refused when
+        # nothing in it says the host that could also exchange was turned off: the
+        # restore would otherwise put that token into a real store on the evidence of
+        # nobody.
+        key = crypto.load_backup_key(key_file)
+        unfenced = tmp_path / "unfenced.sealed"
+        unfenced.write_bytes(crypto.seal(json.dumps(_payload_without("fence")).encode(), key))
+
+        with pytest.raises(ArtifactUnreadable, match="not fenced"):
+            restore(unfenced, key_file=key_file, token_store_directory=tmp_path / "tokens")
+
+    def test_and_the_control_restores_when_the_same_payload_carries_one(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        # Without this pair, "restore raised" is equally satisfied by a hand-built
+        # payload this reader would never have accepted anyway.
+        key = crypto.load_backup_key(key_file)
+        fenced = tmp_path / "fenced.sealed"
+        fenced.write_bytes(crypto.seal(json.dumps(_payload_without()).encode(), key))
+
+        receipt = restore(fenced, key_file=key_file, token_store_directory=tmp_path / "tokens")
+
+        assert receipt.complete
+
+    @pytest.mark.parametrize(
+        "broken",
+        [
+            {"instance": FENCED_INSTANCE, "statement": ATTESTATION},
+            {"instance": "", "statement": ATTESTATION, "confirmed_at": NOW.isoformat()},
+            {
+                "instance": FENCED_INSTANCE,
+                "statement": ATTESTATION,
+                "confirmed_at": NOW.replace(tzinfo=None).isoformat(),
+            },
+            True,
+        ],
+    )
+    def test_a_fence_record_that_says_nothing_usable_is_refused_too(
+        self, tmp_path: Path, key_file: Path, broken: object
+    ) -> None:
+        # An attestation that cannot be read is not weaker evidence than one that is
+        # absent; it is the same evidence, and the third case is why the instant must
+        # carry an offset: "before the exchange" is the only claim its clock makes.
+        key = crypto.load_backup_key(key_file)
+        artifact = tmp_path / "broken.sealed"
+        payload = _payload_without()
+        payload["fence"] = broken
+        artifact.write_bytes(crypto.seal(json.dumps(payload).encode(), key))
+
+        with pytest.raises(ArtifactUnreadable, match="not fenced"):
+            restore(artifact, key_file=key_file, token_store_directory=tmp_path / "tokens")
 
     def test_a_backup_archive_is_not_mistaken_for_one(self, tmp_path: Path, key_file: Path) -> None:
         # The envelope is shared with `03a`'s archives, so the schema name is what
@@ -437,6 +582,28 @@ class TestTheRestorePathExists:
         # The pairing came out of the artifact, which is criterion 3's destination
         # for this branch — not the flow row the replacement-host sink reports.
         assert receipt.pairing is Pairing.IN_ARTIFACT
+
+    def test_a_restore_owes_nothing_it_is_already_carrying(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        """The receipt describes what the owner durably has, not what this call wrote.
+
+        The replacement-host sink reports as ``owed`` exactly what a ``SecretRecord``
+        cannot hold — and on this path every one of those things is in the artifact this
+        function just opened. Passing that sink's tuples straight through was harmless
+        while they were two support ids; with criterion 6's attestation among them it
+        would report the fence missing while reading it out of the file.
+        """
+        artifact = tmp_path / "artifact.sealed"
+        sink = EmergencyArtifactSink(artifact, key_file=key_file)
+        sink.prepare()
+        sink.commit(item(), now=NOW)
+
+        receipt = restore(artifact, key_file=key_file, token_store_directory=tmp_path / "tokens")
+
+        assert receipt.durable == (*REQUIRED_FIELDS, FENCE_FIELD)
+        assert receipt.owed == ()
+        assert receipt.complete
 
     def test_a_restore_that_would_overwrite_is_refused(
         self, tmp_path: Path, key_file: Path

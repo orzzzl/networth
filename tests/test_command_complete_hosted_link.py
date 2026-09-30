@@ -24,6 +24,7 @@ from plaid.exceptions import ApiException
 from networth import link_recovery, mac_identity
 from networth.cli import discover
 from networth.commands import complete_hosted_link
+from networth.link_fence import ATTESTATION, FENCED_INSTANCE, FenceAttestation
 from networth.link_recovery import RecoveryRecord
 from networth.link_sink import Pairing, RecoveredItem, SinkKind, SinkReceipt, read_artifact
 from networth.plaid import environment as environment_module
@@ -139,13 +140,29 @@ def _write_the_recovery_record(*, flow_id: str = FLOW_ID) -> None:
     )
 
 
-def _answer_the_terminal(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> None:
+def _answer_the_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    answers: list[str],
+    *,
+    asked: list[tuple[str, bool]] | None = None,
+) -> None:
     """Stand in for the terminal read, never for the decision to require one.
 
     The prompt's *refusal* is what matters and cannot be observed through a patch of
-    itself, so it is pinned in a subprocess below instead."""
+    itself, so it is pinned in a subprocess below instead.
+
+    ``asked`` collects ``(prompt, echo)`` for the tests that care about the order the
+    owner meets the prompts in and which of them echoes. What echo *does* is a termios
+    fact and is measured on a real PTY in ``test_tty_prompt.py``; what is checked here
+    is only that this verb asks for the fence with it on and for a secret with it off."""
     remaining = iter(answers)
-    monkeypatch.setattr(complete_hosted_link, "_read_from_tty", lambda prompt: next(remaining))
+
+    def read(prompt: str, *, echo: bool = False) -> str:
+        if asked is not None:
+            asked.append((prompt, echo))
+        return next(remaining)
+
+    monkeypatch.setattr(complete_hosted_link, "_read_from_tty", read)
 
 
 def _a_backup_key(tmp_path: Path) -> Path:
@@ -255,7 +272,7 @@ def test_from_tty_still_stores_nothing_in_this_hosts_token_store(
     """
     _install(monkeypatch, tmp_path, env="sandbox")
     _write_the_recovery_record()
-    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"])
+    _answer_the_terminal(monkeypatch, [FENCED_INSTANCE, "tty-client-id", "tty-secret"])
 
     def refuse_files(env: environment_module.PlaidEnvironment) -> PlaidCredentials:
         raise AssertionError("--from-tty must not read this host's credential files")
@@ -401,6 +418,121 @@ def test_the_replacement_host_sink_is_refused_because_it_would_write_here(
     assert not tokens.exists(), "the refused branch created the local store anyway"
 
 
+def test_the_fence_is_asked_before_the_secret_and_sealed_with_the_credential(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`07b` criterion 6, end to end through the verb the owner actually runs.
+
+    Three things at once, because they are one fact: the owner is asked to name the host
+    he powered off, he is asked **before** the prompt that reads his Plaid secret, and
+    what he answered is inside the sealed artifact next to the credential. The order
+    matters beyond tidiness — a refusal after the secret has been typed has spent the one
+    thing this command asks of him — and the sealed copy is the whole of *"recorded with
+    the recovery artifact"*.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+    asked: list[tuple[str, bool]] = []
+    _answer_the_terminal(monkeypatch, [FENCED_INSTANCE, "tty-client-id", "tty-secret"], asked=asked)
+    _over_a_fake_sdk(monkeypatch, _Finished())
+
+    artifact = tmp_path / "recovered.sealed"
+    key = _a_backup_key(tmp_path)
+
+    assert (
+        complete_hosted_link.run(
+            _args(
+                from_tty=True,
+                exchange=True,
+                sink=SinkKind.EMERGENCY_ARTIFACT.value,
+                artifact=artifact,
+                backup_key=key,
+            )
+        )
+        == 0
+    )
+
+    prompts = [prompt for prompt, _ in asked]
+    assert len(prompts) == 3, "one fence, then the two credential prompts"
+    assert "powered off or destroyed" in prompts[0]
+    assert "exit node" in prompts[0], "criterion 6: say plainly what powering it off costs"
+    assert "client_id" in prompts[1] and "secret" in prompts[2]
+    # The fence reads a host name and echoes; neither credential prompt may.
+    assert [echo for _, echo in asked] == [True, False, False]
+
+    sealed = read_artifact(artifact, key_bytes=bytes.fromhex(key.read_text().strip()))
+    fence = FenceAttestation.from_record(sealed["fence"])
+    assert fence.instance == FENCED_INSTANCE
+    assert fence.statement == ATTESTATION
+
+    out = capsys.readouterr().out
+    assert f"fence         {FENCED_INSTANCE}" in out, "the transcript must show what was fenced"
+
+
+def test_a_fence_nobody_confirmed_exchanges_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The refusal lands on the cheap side of the irreversible step.
+
+    Asserted as **zero exchange calls** rather than as a non-zero exit: an exit code says
+    what this process concluded, and the property that matters is what Plaid was asked to
+    do. The artifact must also not exist — a fence that refuses after sealing a credential
+    would have written the very thing it was protecting.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+    api = _Finished()
+    _over_a_fake_sdk(monkeypatch, api)
+    # What a formality looks like: the keypress the criterion exists to refuse.
+    _answer_the_terminal(monkeypatch, ["y"])
+
+    artifact = tmp_path / "recovered.sealed"
+
+    assert (
+        complete_hosted_link.run(
+            _args(
+                from_tty=True,
+                exchange=True,
+                sink=SinkKind.EMERGENCY_ARTIFACT.value,
+                artifact=artifact,
+                backup_key=_a_backup_key(tmp_path),
+            )
+        )
+        == 2
+    )
+
+    assert "item_public_token_exchange" not in api.called, "an unconfirmed fence spent a token"
+    assert not artifact.exists()
+    error = capsys.readouterr().err
+    assert "does not name the host" in error
+    # Recoverable rather than a dead end: the prompt withholds the name on purpose, so
+    # the refusal has to say where it is written or a renamed host ends the recovery.
+    assert "link_fence.py" in error
+
+
+def test_retrieve_only_is_not_fenced_because_it_exchanges_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The exemption, pinned rather than incidental.
+
+    The fence exists so that no second worker can exchange the token this run is about.
+    ``--retrieve-only`` exchanges nothing, so there is nothing to race and no reason to
+    make the owner give up his exit node to poll a session — the same reasoning that
+    exempts it from needing a sink. Left unpinned, a later edit that moved the fence one
+    line up would silently start demanding a power-off for a read.
+    """
+    _install(monkeypatch, tmp_path, env="sandbox")
+    _write_the_recovery_record()
+    asked: list[tuple[str, bool]] = []
+    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"], asked=asked)
+    _over_a_fake_sdk(monkeypatch, _Finished())
+
+    assert complete_hosted_link.run(_args(from_tty=True, retrieve_only=True)) == 0
+
+    assert [echo for _, echo in asked] == [False, False], "no fence prompt, and two secrets"
+    assert "fence" not in capsys.readouterr().out
+
+
 def test_the_sealed_pairing_names_the_session_that_supplied_the_token(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -435,7 +567,7 @@ def test_the_sealed_pairing_names_the_session_that_supplied_the_token(
 
     _install(monkeypatch, tmp_path, env="sandbox")
     _write_the_recovery_record()
-    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"])
+    _answer_the_terminal(monkeypatch, [FENCED_INSTANCE, "tty-client-id", "tty-secret"])
     _over_a_fake_sdk(monkeypatch, _TwoSessionsOneToken())
 
     artifact = tmp_path / "recovered.sealed"
@@ -488,7 +620,7 @@ def test_a_token_no_session_claims_seals_no_session_rather_than_the_nearest_one(
 
     _install(monkeypatch, tmp_path, env="sandbox")
     _write_the_recovery_record()
-    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"])
+    _answer_the_terminal(monkeypatch, [FENCED_INSTANCE, "tty-client-id", "tty-secret"])
     _over_a_fake_sdk(monkeypatch, _TokenFromAnUnnamedSession())
 
     artifact = tmp_path / "recovered.sealed"
@@ -581,7 +713,7 @@ def test_an_incomplete_receipt_neither_marks_the_flow_done_nor_retires_its_recor
     _install(monkeypatch, tmp_path, env="sandbox")
     _on_the_mac(monkeypatch, yes=True)
     record = _mac_record(datetime(2026, 9, 15, 11, 0, tzinfo=UTC))
-    _answer_the_terminal(monkeypatch, ["tty-client-id", "tty-secret"])
+    _answer_the_terminal(monkeypatch, [FENCED_INSTANCE, "tty-client-id", "tty-secret"])
     _over_a_fake_sdk(monkeypatch, _Finished())
 
     class _OwesTwoFields:

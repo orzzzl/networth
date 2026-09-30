@@ -95,6 +95,18 @@ exchange — ``link_sink`` writes and reads back a real probe rather than asking
 ``os.access``. A fallback chosen after the irreversible step is not a fallback.
 ``--retrieve-only`` exchanges nothing and so needs no sink, and that is the one path
 on which this command still stores nothing.
+
+**And the fence is asked for between those two** (`07b` criterion 6). Before an
+exchange, the owner confirms — by typing the host's name, not by pressing a key — that
+the host running the old Link worker is powered off or destroyed in his provider's
+control plane, and the confirmation is sealed inside the artifact with the credential.
+No probe stands in for it: *"unreachable is not off"*, and the emergency this command
+exists for is precisely a host that does not answer. The order is sink, then fence,
+then credentials, and each step is placed where its refusal costs the least — the sink
+proof asks nothing of him, the fence asks him to give up his exit node (§15.1), and the
+secret is asked for last so that neither refusal above can happen after he has typed
+it. ``--retrieve-only`` is exempt from the fence for the same reason it is exempt from
+the sink: it exchanges nothing, so there is nothing for a second worker to race.
 """
 
 from __future__ import annotations
@@ -106,8 +118,9 @@ import termios
 from datetime import UTC, datetime
 from pathlib import Path
 
-from networth import link_recovery, mac_identity
+from networth import link_fence, link_recovery, mac_identity
 from networth.config import ConfigError
+from networth.link_fence import FenceError
 from networth.link_recovery import LinkRecoveryError
 from networth.link_sink import (
     DurableSink,
@@ -229,8 +242,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _read_from_tty(prompt: str) -> str:
-    """One line from the **controlling terminal**, echo off, or a refusal.
+def _read_from_tty(prompt: str, *, echo: bool = False) -> str:
+    """One line from the **controlling terminal**, echo off by default, or a refusal.
 
     ``getpass.getpass`` is what this used to call and it is the wrong tool here,
     measured rather than assumed: fed three synthetic lines on stdin with no terminal
@@ -246,6 +259,16 @@ def _read_from_tty(prompt: str) -> str:
     happens to be a tty right now. Echo is turned off on that descriptor and restored
     in a ``finally``, so a refusal partway through does not leave the owner's shell
     silent.
+
+    **``echo=True`` silences nothing and is for the one prompt that reads no secret.**
+    `07b`'s fence asks the owner to *type a host name* (criterion 6), and a name typed
+    blind is a name typed wrong — on a 30-minute clock, in a procedure whose refusal
+    message deliberately does not quote what it read back. Everything else here is
+    unchanged on that path: the terminal is still opened by name, a process without one
+    is still refused rather than falling back to stdin, and the attributes are still
+    restored in a ``finally``. The difference is exactly the ``ECHO`` bit, which is why
+    it is one flag on this function rather than a second reader with its own idea of
+    what a terminal is.
     """
     try:
         descriptor = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
@@ -273,10 +296,11 @@ def _read_from_tty(prompt: str) -> str:
                 original = termios.tcgetattr(descriptor)
             except termios.error as exc:
                 raise ConfigError("/dev/tty opened but is not a terminal we can silence") from exc
-            silenced = list(original)
-            silenced[3] = int(silenced[3]) & ~termios.ECHO
+            wanted = list(original)
+            if not echo:
+                wanted[3] = int(wanted[3]) & ~termios.ECHO
             try:
-                termios.tcsetattr(descriptor, termios.TCSAFLUSH, silenced)
+                termios.tcsetattr(descriptor, termios.TCSAFLUSH, wanted)
                 terminal_output.write(prompt)
                 terminal_output.flush()
                 line = terminal_input.readline()
@@ -306,6 +330,20 @@ def _prompt_credentials(environment: PlaidEnvironment) -> PlaidCredentials:
     if not (client_id and secret):
         raise ConfigError("both prompts are required; nothing was read")
     return PlaidCredentials(environment=environment, client_id=client_id, secret=secret)
+
+
+def _confirm_fence() -> link_fence.FenceAttestation:
+    """Criterion 6's typed confirmation, read on the terminal and returned to be sealed.
+
+    The prompt echoes — it reads a host name, not a credential — and it is the only
+    prompt in this verb that does. :mod:`networth.link_fence` owns the wording, the
+    comparison and the refusal; this function owns nothing but the terminal, which is
+    the same split :func:`_prompt_credentials` uses.
+    """
+    return link_fence.confirm(
+        lambda prompt: _read_from_tty(prompt, echo=True),
+        now=datetime.now(UTC),
+    )
 
 
 def _link_token_from_this_host(environment: PlaidEnvironment, flow_id: str) -> str:
@@ -450,6 +488,16 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
                 sink.prepare_for(args.flow)
                 print(f"sink          {sink.destination}")
                 print("              proven writable before anything was spent")
+                # **The fence comes after the sink proof, and that order is the
+                # expensive part of it.** Both refuse before the exchange, so either
+                # order satisfies criterion 6 on paper — but this prompt is what makes
+                # the owner power off the host that is also his Tailscale exit node
+                # (§15.1). Asking first and *then* discovering the destination is
+                # unwritable would have spent his VPN to learn something free. The
+                # sink proof needs nothing from him; this needs a decision.
+                fence = _confirm_fence()
+                print(f"fence         {fence.instance} — {fence.statement}")
+                print(f"              confirmed at {fence.confirmed_at.isoformat()}")
             credentials = _prompt_credentials(environment)
         else:
             if not args.flow:
@@ -463,10 +511,19 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
 
         client = PlaidClient(credentials)
         poll = client.link_token_get(link_token)
-    except (ConfigError, PlaidCallError, TokenStoreError, LinkRecoveryError, SinkError) as exc:
+    except (
+        ConfigError,
+        PlaidCallError,
+        TokenStoreError,
+        LinkRecoveryError,
+        SinkError,
+        FenceError,
+    ) as exc:
         # Every one of these redacts itself; printing `exc` is safe because of that
         # property, not because this handler checked anything. `SinkError` joins them
         # under the same promise: `link_sink` raises paths and field names only.
+        # `FenceError` under a stricter one — its refusals quote nothing that was typed,
+        # because the prompt one line below this reads a Plaid secret.
         print(f"complete-hosted-link failed: {exc}", file=sys.stderr)
         return 2
 
@@ -548,6 +605,7 @@ def run(args: argparse.Namespace) -> int:  # noqa: PLR0911 — each return is a 
                     flow_id=args.flow,
                     link_session_id=session_id,
                     request_id=exchanged[0].request_id,
+                    fence=fence,
                 ),
                 now=datetime.now(UTC),
             )
