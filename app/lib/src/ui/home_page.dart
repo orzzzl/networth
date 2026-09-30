@@ -202,7 +202,25 @@ class _HomePageState extends State<HomePage> {
   /// [FutureBuilder] moves up rather than the state moving down.
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<_Loaded>(future: _loaded, builder: _scaffold);
+    return FutureBuilder<_Loaded>(
+      // **Keyed on the future, and this is the fix for a defect the `21a` tests
+      // found rather than a precaution.** `FutureBuilder.didUpdateWidget`
+      // unsubscribes from the old future and subscribes to the new one, but it
+      // carries the old `AsyncSnapshot`'s *data* across — only the connection
+      // state is reset. So replacing a pairing left the previous pairing's total
+      // on screen for the whole of the new load: the phone was paired to B and
+      // rendering A's figure, under A's age annotation, with no way for the owner
+      // to tell. A number belonging to a relationship that has ended is the one
+      // thing this product exists not to render.
+      //
+      // An [ObjectKey] over the future makes a new future a new element, so the
+      // reload starts from no data and renders the loading state it is in. Same
+      // family as the reused `State` that made the six-state test read one
+      // screen six times — a widget's identity is not its position.
+      key: ObjectKey(_loaded),
+      future: _loaded,
+      builder: _scaffold,
+    );
   }
 
   Widget _scaffold(BuildContext context, AsyncSnapshot<_Loaded> snapshot) {
