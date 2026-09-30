@@ -93,7 +93,7 @@ that row. He caught it, not us.)
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **DONE** (#104, #109; acceptance recorded 2026-09-24) |
-| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | **WIP** (the durable sink, its pre-exchange proof and the incomplete-receipt guard merged #129; the fence in review. Owed: crash classification (4), the Sandbox rehearsal (5), the losing branch on returned Item identity (7) and its three synthetic shapes (8), the `item_id` → `link_flow` write-back (3, needs `07a`'s table), 30-minute owner text (9), and `NETWORTH_ENV=production` acceptance. **Only criterion 6 is ticked below**: 1 and 10 are substantially met by #129 but 1's replacement-host half is *refused* from the CLI until a verified far-side destination exists, and 2 finishes only with 3) |
+| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | **WIP** (the durable sink, its pre-exchange proof and the incomplete-receipt guard merged #129; the fence, crash classification and the `item_id` → `link_flow` write-back are in review as the #135 → #136 → #137 stack, with the 30-minute owner text on top of it. Owed: the Sandbox rehearsal (5), the losing branch on returned Item identity (7) and its three synthetic shapes (8), and `NETWORTH_ENV=production` acceptance. **Ticked below: 3, 4, 6, 9.** 1, 2 and 10 are substantially met by #129 and stay unticked — 10 because its prompt is `06a`'s and unchanged; 1 and 2 because each was owed one thing that only this stack closes, and *what* was owed is recorded here so it is not derived a third time. **1**: the artifact branch had no *reachable* restore path — `link_sink.restore()` had no production caller on `main`, and the one place it was named was a comment in `complete_hosted_link.py` asserting that it had one — which `restore-link-artifact` (#137) now is. **2**: the substance held on the only sink this task can reach (the artifact persists all four fields and reads them back through the key; the replacement-host sink is *refused* from this CLI), but `restore()` reported it wrong, passing that sink's `owed` straight through beneath a comment claiming it computed a union — fixed in #137. **Both look tickable once the stack lands; left for the reviewer** rather than ticked by a PR whose diff does not implement them. 1's replacement-host half stays refused until a verified far-side destination exists, which is the criterion's "either", not a gap) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
@@ -1791,8 +1791,20 @@ capture is issue **#14**.
       entry, one slot), **distinct Items** (both retained, two slots), **unknown
       identity** (explicit unresolved, nothing discarded) — which needs no live exchange
       and no new owner action.
-- [ ] The owner-facing text states **30 minutes**, and the script is pre-staged as one
+- [x] The owner-facing text states **30 minutes**, and the script is pre-staged as one
       command — this is a minutes procedure, not a six-hour one.
+      **The second half held from the start and the first half did not**, which is why
+      this box outlived the script that was supposed to satisfy it: `link-recover.sh
+      <flow_id>` has always been one command execing one verb, and "30 minutes" has
+      always been *in the file* — in a source comment, explaining why `--exchange` is
+      not offered as a choice. A comment is not owner-facing text, and neither is
+      `DESIGN.md` §19 step 5, which is read before the emergency rather than during it.
+      The transcript printed host, flow, recovery dir, prompts and fence, and no clock.
+      It now prints the window **and when it opened** — the window runs from when Link
+      finished, not from the moment he starts reading — and names the six hours Plaid
+      really does keep the *session record* for, because rev 17 misread exactly that
+      number into the `public_token`'s lifetime and told him *"You have six hours, not
+      thirty minutes"*. Asserted on what the script prints rather than on its source.
 - [ ] **The Plaid client credential comes from the owner at a TTY, never from this Mac's
       disk.** §19 step 2a already specifies the prompt and §15 already says why: this
       machine must not store the client secret. **Extend the command `06a` (iv) built and
