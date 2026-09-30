@@ -396,8 +396,15 @@ void main() {
 
   testWidgets('two taps on submit are one provision', (tester) async {
     // The button is disabled while a submission is in flight *and* the handler
-    // returns early, because disabling alone is a property of one frame: a
-    // second tap delivered before the rebuild reaches the handler anyway.
+    // returns early, and this test is about the second half.
+    //
+    // **There is deliberately no `pump` between the two taps, and the first
+    // version of this test had one.** `_submit` sets `_submitting` synchronously,
+    // so a pump makes the button `onPressed: null` and the second tap lands on a
+    // disabled widget — the test then passes with the early return deleted,
+    // because a *different* guard satisfied it. Delivering both taps inside one
+    // frame is what the early return is for, and it is the only arrangement in
+    // which its absence is observable.
     final harness = _Harness(store: _CountingStore(stallWrites: true));
     await tester.pumpWidget(harness.app);
     await tester.pumpAndSettle();
@@ -405,7 +412,6 @@ void main() {
     await openIntake(tester, replacing: false);
     await tester.enterText(find.byKey(const Key('pairing-bundle-field')), encoded);
     await tester.tap(find.byKey(const Key('pairing-submit')));
-    await tester.pump();
     await tester.tap(find.byKey(const Key('pairing-submit')), warnIfMissed: false);
     await tester.pump();
 
