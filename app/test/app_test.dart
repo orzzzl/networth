@@ -18,6 +18,7 @@ import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
 import 'package:networth_app/src/domain/publication_seq.dart';
 import 'package:networth_app/src/domain/seq_baseline.dart';
+import 'package:networth_app/src/pairing/pairing_intake.dart';
 import 'package:networth_app/src/pairing/pairing_vault.dart';
 import 'package:networth_app/src/ui/headline.dart';
 import 'package:networth_app/src/ui/home_page.dart';
@@ -128,6 +129,15 @@ class _ThrowingRefresher implements SnapshotRefreshing {
   Future<SnapshotRefreshOutcome> refresh() async => throw StateError('no payload');
 }
 
+/// An intake over its own in-memory keystore, for the tests where pairing is not
+/// the subject.
+///
+/// **A fresh store per call, never a shared one.** `PairingIntake` writes, so a
+/// single instance across the file would let one test's provision be the pairing
+/// another test reads — the shape `fixtures.dart` warns about one level up, with
+/// the added property that the drifting copy is a *written* one.
+PairingIntake unusedIntake() => PairingIntake(vault: PairingVault(store: MemoryPairingStore()));
+
 /// The loader the app ships, over in-memory collaborators.
 ///
 /// `store` defaults to a vault holding the synthetic pairing bundle, so the
@@ -160,6 +170,7 @@ void main() {
         HomePage(
           loader: loaderOver(copy: heldCopy(knownFixture)),
           historySource: const _NoHistory(),
+          intake: unusedIntake(),
           clock: () => DateTime.utc(2026, 9, 15, 12),
         ),
         scaffold: false,
@@ -183,6 +194,7 @@ void main() {
             refresher: _PendingRefresher(),
           ),
           historySource: const _NoHistory(),
+          intake: unusedIntake(),
         ),
         scaffold: false,
       ),
@@ -200,6 +212,7 @@ void main() {
         HomePage(
           loader: loaderOver(refresher: _ThrowingRefresher()),
           historySource: const _NoHistory(),
+          intake: unusedIntake(),
         ),
         scaffold: false,
       ),
@@ -224,6 +237,7 @@ void main() {
         HomePage(
           loader: loaderOver(refresher: _ThrowingRefresher()),
           historySource: const _NoHistory(),
+          intake: unusedIntake(),
         ),
         scaffold: false,
       ),
@@ -286,7 +300,7 @@ void main() {
         final (loader, sentence) = entry.value;
         await tester.pumpWidget(
           localized(
-            HomePage(loader: loader, historySource: const _NoHistory()),
+            HomePage(loader: loader, historySource: const _NoHistory(), intake: unusedIntake()),
             scaffold: false,
           ),
         );
@@ -326,6 +340,7 @@ void main() {
               key: ValueKey(entry.key),
               loader: entry.value.$1,
               historySource: const _NoHistory(),
+              intake: unusedIntake(),
             ),
             scaffold: false,
           ),
@@ -385,6 +400,7 @@ void main() {
             ),
           ),
           historySource: const _NoHistory(),
+          intake: unusedIntake(),
           clock: () => deviceNow,
           // Without trustworthy clock evidence the copy is `COPY_UNKNOWN` and
           // its reason line is about the clock, so the records never reach the
@@ -423,12 +439,16 @@ void main() {
     Future<(Color?, Color)> iconColour(HomeLoader loader, String key) async {
       await tester.pumpWidget(
         localized(
-          HomePage(key: ValueKey(key), loader: loader, historySource: const _NoHistory()),
+          HomePage(key: ValueKey(key), loader: loader, historySource: const _NoHistory(), intake: unusedIntake()),
           scaffold: false,
         ),
       );
       await tester.pumpAndSettle();
-      final icon = find.byType(Icon);
+      // **By key, not by type.** `find.byType(Icon)` was unambiguous only while
+      // the screen had one icon; `21a` puts a replace-pairing action in the app
+      // bar over every paired state, and both of the loaders below are paired.
+      // The subject here is the *message's* icon, so it is the one named.
+      final icon = find.byKey(const Key('message-icon'));
       return (
         tester.widget<Icon>(icon).color,
         Theme.of(tester.element(icon)).colorScheme.error,
@@ -480,6 +500,7 @@ void main() {
               baselines: _MemoryBaselines(),
             ),
             historySource: store,
+            intake: unusedIntake(),
             clock: () => DateTime.utc(2026, 9, 15, 12),
           ),
           scaffold: false,
@@ -502,6 +523,7 @@ void main() {
           HomePage(
             loader: loaderOver(copy: heldCopy(knownFixture)),
             historySource: const _NoHistory(),
+            intake: unusedIntake(),
             clock: () => DateTime.utc(2026, 9, 15, 12),
           ),
           scaffold: false,
@@ -519,6 +541,7 @@ void main() {
       NetWorthApp(
         loader: loaderOver(copy: heldCopy(mixedFixture)),
         historySource: const _NoHistory(),
+        intake: unusedIntake(),
       ),
     );
     await tester.pumpAndSettle();

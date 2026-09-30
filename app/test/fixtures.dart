@@ -244,6 +244,26 @@ const otherKey = 'Hx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwYFBAMCAQA';
 const encodedWithOtherKey =
     'networth-pairing:v1:$pairingId:$otherKey:$tailnetName';
 
+/// A bundle for a **different relationship**, not the same one re-keyed.
+///
+/// The distinction is the whole point of it and [encodedWithOtherKey] cannot
+/// serve: every record this app keeps is scoped to a `pairing_id` (§9.1, §9.3),
+/// so a replacement that reused [pairingId] would read the *old* pairing's held
+/// copy and records back and look like isolation while proving none. Used by the
+/// `21a` replacement tests, where what must be shown is that the new pairing's
+/// screen is built from the new scope.
+const replacementPairingId = '00000000-0000-4000-8000-000000000003';
+const replacementEncoded =
+    'networth-pairing:v1:$replacementPairingId:$otherKey:$tailnetName';
+
+/// Text that [PairingProvision.parse] refuses, for the malformed-input path.
+///
+/// Refused on the *shape* rather than on a bad field, so it cannot become valid
+/// by accident if a field's pattern is ever loosened. It is deliberately not
+/// key-shaped: a fixture that looked like a real bundle would be a thing to
+/// mistake for one in a diff.
+const unparseableBundle = 'not a pairing line';
+
 class MemoryPairingStore implements SecureStringStore {
   MemoryPairingStore([this.stored]);
 
