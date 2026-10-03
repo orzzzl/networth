@@ -1,7 +1,7 @@
 # VPS runtime
 
 Task 16 composes the merged workers and installs them on the provisioned host.
-The first-install script requires a full commit that has passed CI and merged:
+The installer requires a full commit that has passed CI and merged:
 
 ```sh
 sudo bash scripts/install-runtime.sh <full-merged-commit>
@@ -11,9 +11,12 @@ Run it on `tokyo-exit` over the existing agent SSH key. It installs hash-pinned
 runtime/build dependencies, root-owned code in `/opt/networth/releases/<commit>`,
 `/opt/networth/current`, executable wrappers in `/usr/local/bin`, and the exact
 backup forced-command source at `/usr/local/lib/networth/backup-ssh-dispatch`.
-It preserves existing credentials and refuses a different existing runtime or
-configuration rather than stopping a possibly active exchange. Runtime upgrades
-need an explicit worker drain; this is intentionally a first-install script.
+It preserves existing credentials and configuration. To upgrade, pass
+`--upgrade-if-idle` after the commit. This holds
+`/var/lib/networth/.runtime-deploy.lock` (also required of task08's mint), refuses
+pending Link requests, stages the pinned release, stops workers, rechecks pending
+requests, then switches code and starts services. An active exchange has no forced
+kill timeout. A failed preflight leaves the old deployment running.
 
 `/etc/networth/networth.env` selects Production and the archive directory.
 Every job validates `/etc/networth/plaid.env` agrees with `NETWORTH_ENV` before
@@ -53,10 +56,9 @@ merely being installed. Also inspect `tailscale funnel status` after installatio
 ## Remaining acceptance boundaries
 
 Production starts with zero Items and without pairing. This proves deployment,
-not a real account balance on the phone. The existing Sandbox-only Link execution
-guard stays in place until task 08 supplies its Production release gate; existing
-Production rows would report a fixed refusal instead of exchanging. The owner
-alone opens Link and enters bank credentials/MFA. Task 24 owns signed APK delivery
+not a real account balance on the phone. Completion is enabled in the explicitly selected environment, including Production:
+once a request exists its short-lived token must be captured. Task08 owns the
+Production mint/release gate. The owner alone opens Link and enters bank credentials/MFA. Task 24 owns signed APK delivery
 and installed-phone pairing verification.
 
 The 30-second scan is an admission cadence, **not a proven five-minute exchange

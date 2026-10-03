@@ -4,7 +4,7 @@
 implemented service roles. Publication and archive jobs have independent timers;
 the Link supervisor scans every 30 seconds and gives each flow its own process.
 The historical three-role proposal below is superseded by those five roles.
-Production completion remains task08-gated; the five-minute wall-clock acceptance
+Production mint/release remains task08-gated; the five-minute wall-clock acceptance
 is not claimed by this deployment. No review gate remains under the owner directive.
 
 Status: A approved and merged in PR #115; capture-boundary implementation

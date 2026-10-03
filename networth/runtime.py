@@ -25,7 +25,6 @@ from networth.model import Quote
 from networth.pairing import PAYLOAD_KEY_FILENAME, read_payload_key
 from networth.plaid.client import PlaidClient
 from networth.plaid.environment import (
-    PlaidEnvironment,
     load_credentials,
     paths_for,
     selected_environment,
@@ -166,24 +165,12 @@ def link_loop(database: Path, countries: Sequence[str]) -> None:
             with closing(open_runtime_database(database)) as db:
                 flows = pending_flows(db)
             children = {flow: child for flow, child in children.items() if child.poll() is None}
-            if flows and selected_environment() is PlaidEnvironment.PRODUCTION:
-                # Task08 owns enabling Production completion, alongside its mint gate.
-                print("link: Production completion awaits task08 enablement", flush=True)
-            else:
-                for flow in flows:
-                    if flow not in children:
-                        args = [
-                            sys.executable,
-                            "-m",
-                            "networth",
-                            "daemon",
-                            "link-flow",
-                            "--flow",
-                            flow,
-                        ]
-                        for country in countries:
-                            args.extend(("--country-code", country))
-                        children[flow] = subprocess.Popen(args)
+            for flow in flows:
+                if flow not in children:
+                    args = [sys.executable, "-m", "networth", "daemon", "link-flow", "--flow", flow]
+                    for country in countries:
+                        args.extend(("--country-code", country))
+                    children[flow] = subprocess.Popen(args)
             print(f"link: scan complete; active workers={len(children)}", flush=True)
             time.sleep(LINK_SCAN_SECONDS)
     finally:
@@ -229,8 +216,8 @@ def run(args: argparse.Namespace) -> int:
                     raise ValueError("archive environment differs from daemon")
                 status = archive(at=datetime.now(UTC))
             else:
-                if environment is not PlaidEnvironment.SANDBOX or not args.flow:
-                    raise ValueError("Production Link completion belongs to task08")
+                if not args.flow:
+                    raise ValueError("Link completion requires an existing flow")
                 outcome = run_lifecycle(
                     db,
                     tokens,

@@ -160,7 +160,7 @@ def test_flow_selection_excludes_reaped_requests(tmp_path: Path) -> None:
         db.close()
 
 
-@pytest.mark.parametrize("environment,expected", [("sandbox", 2), ("production", 0)])
+@pytest.mark.parametrize("environment,expected", [("sandbox", 2), ("production", 2)])
 def test_link_supervisor_does_not_queue_second_flow_behind_running_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, environment: str, expected: int
 ) -> None:

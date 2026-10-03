@@ -3396,8 +3396,8 @@ Calendar timers use `Persistent=true`, `AccuracySec=1s`, and a boot activation.
 Link starts scanning immediately at boot, independently of all other services.
 A slow request cannot queue an unrelated flow behind it. The lifecycle worker owns
 recovery, terminal distinctions and reaping; the scheduler never infers expiry.
-The initial deployment leaves Production Link completion disabled until task 08
-ships its owner-run release gate. No daemon job creates a Link URL or an Item.
+Production completion handles only already-persisted requests; task 08 owns the
+owner-run mint/release gate. No daemon job creates a Link URL.
 There is no blanket exchange-process deadline: forcibly killing credential
 persistence could strand a returned token. DNS, trickling responses and slow
 capture remain outside a proven five-minute wall-clock bound; `RUNTIME.md`
