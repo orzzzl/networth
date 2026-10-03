@@ -117,7 +117,7 @@ that row. He caught it, not us.)
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **DONE** (#71, 2026-09-14) |
-| 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | **READY** |
+| 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | **WIP** (#141; read-only CLI and host-local diagnostics await Claude review) |
 | 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | **DONE** (#74, 2026-09-15) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **DONE** (#79, 2026-09-16) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | **DONE** (#82, 2026-09-16) |
