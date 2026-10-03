@@ -3380,31 +3380,35 @@ sibling project, and **entirely Mac-specific**. A VPS has no battery and never
 sleeps. Recorded here only so nobody reintroduces a workaround for a problem
 this host does not have.)*
 
-**Two units**, both running as a **dedicated unprivileged user** that owns the
-database and nothing else (§15), both **enabled at boot** — "the VPS is always
-awake" is a claim about the *host*, and it buys nothing if a reboot leaves the
-daemon stopped:
+**Five service roles**, running as the dedicated unprivileged `networth` user.
+The sync service, Link supervisor, serving process and all timers are enabled at
+boot. Timer stamps only wake workers; committed database state decides due work.
 
 | Unit | What it is | Database handle |
 |---|---|---|
-| `networth-sync.service` (+ `.timer`) | the periodic worker: poll, sync, snapshot, publish, build the backup archive | read-write — **the only long-running writer**; short-lived command writers exist and are listed below |
+| `networth-sync.service` (+ `.timer`, five minutes) | health, full sync, manual quotes and snapshots | read-write; canonical sync file lock |
+| `networth-publish.service` (+ `.timer`, one minute) | evaluate alerts, publish a new snapshot/pairing or the daily heartbeat | read-write; short transactions, independent publication lock |
+| `networth-archive.service` (+ `.timer`, five minutes) | build encrypted archives independently of provider I/O | read-write; existing coherent capture/build locks |
+| `networth-link.service` | scan pending requests every 30 seconds, one process per flow | read-write; per-request file lock and conditional exchange claim |
 | `networth-serve.service` | `GET /snapshot`, bound to the **tailnet interface only**, `Restart=always` | **read-only** |
 
-**One long-running writer — which is a narrower claim than "one writer", and rev
-15 made the wider one.** *(Rev 16, from review. Rev 13 claimed "one writer" while
-§8.4 had a webhook receiver writing inline in the read-only serving process; rev
-14 resolved that with a third unit; rev 15 deleted the receiver and restored the
-sentence — but deleting the receiver never made the claim true, because the
-receiver was never the only other writer. The correction is not to the mechanism,
-it is to a guarantee this design asserted twice without checking.)*
+Calendar timers use `Persistent=true`, `AccuracySec=1s`, and a boot activation.
+Link starts scanning immediately at boot, independently of all other services.
+A slow request cannot queue an unrelated flow behind it. The lifecycle worker owns
+recovery, terminal distinctions and reaping; the scheduler never infers expiry.
+Production completion handles only already-persisted requests; task 08 owns the
+owner-run mint/release gate. No daemon job creates a Link URL.
+There is no blanket exchange-process deadline: forcibly killing credential
+persistence could strand a returned token. DNS, trickling responses and slow
+capture remain outside a proven five-minute wall-clock bound; `RUNTIME.md`
+records this limit explicitly. No inbound webhook service is introduced.
 
-`networth-sync.service` is the only *unit* that writes. It is not the only
-**process** that writes, and the others are ordinary, expected, and mostly run
-while it is running:
+The service roles above are independent writers, serialized only during short
+SQLite transactions. Additional command writers are ordinary and expected:
 
 | Writer | Writes | When |
 |---|---|---|
-| `networth-sync.service` | almost everything | every 5 min, unattended |
+| sync / publication / archive / Link services | cycle, envelope, archive and Link state respectively | independent schedules above |
 | `networth pair` / `networth revoke` | `pairing`, `published_envelope` (§6.3.1) | owner, interactive |
 | `link.sh`'s remote half | `item`, `TokenStore` (§14a) | owner, interactive |
 | `networth backup record-pull` | `backup_archive` | **unattended, from the Mac, on the Mac's schedule** |

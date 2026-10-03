@@ -1,0 +1,26 @@
+[Unit]
+Description=Networth link
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=networth
+Group=networth
+Environment=HOME=/var/lib/networth
+EnvironmentFile=/etc/networth/networth.env
+WorkingDirectory=/var/lib/networth
+ExecStart=/usr/local/bin/networth daemon link
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/networth /etc/networth
+Restart=always
+RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target
