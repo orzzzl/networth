@@ -169,8 +169,73 @@ class SinkWriteFailed(SinkError):
     """
 
 
+class ArtifactReadFailure(Enum):
+    """*Why* an artifact did not yield its fields — the part a caller may branch on.
+
+    :func:`read_artifact` has one failure type and three very different facts behind
+    it, and PR #136's review found :func:`networth.link_crash.classify` reading all
+    three as proven credential loss. Only :attr:`NOT_AN_ARTIFACT` proves anything
+    about the credential; the other two are statements about *this attempt*.
+
+    This exists so the cause travels as a value. Deciding it by matching the
+    exception's prose would make every message in :func:`read_artifact` load-bearing
+    for a different module's control flow, and the review that asked for this said
+    so explicitly: *"do not infer the cause by parsing exception prose."*
+    """
+
+    #: The bytes could not be read at all — ``EACCES``, ``EIO``, a vanished mount.
+    #: Says **nothing** about the content: the same file read again after the access
+    #: problem is fixed may hand over the credential, which is measured rather than
+    #: argued (see ``tests/test_link_crash.py``, the denial/restore pair).
+    ACCESS_FAILED = "the artifact's bytes could not be read"
+
+    #: The bytes were read and did not authenticate under the key we were given.
+    #: **Three causes are not separated here, and cannot be**: a well-formed but
+    #: wrong 32-byte key, a torn write, and a file that is not one of `03a`'s
+    #: envelopes at all all fail the same tag comparison. A wrong key is the
+    #: owner's mistake and is recoverable; a torn write is not; nothing on this
+    #: disk tells them apart, so the honest answer names the ambiguity instead of
+    #: resolving it.
+    UNAUTHENTICATED = "the artifact did not authenticate under this key"
+
+    #: The envelope opened **and authenticated** under this key, so the plaintext
+    #: is exactly what was sealed by someone holding it — and it is not a usable
+    #: artifact: another schema (a `03a` backup archive shares this envelope), a
+    #: missing required field, or no fence. This one *is* proven, and it is the
+    #: only cause for which :attr:`~networth.link_crash.CrashState.CREDENTIAL_LOST`
+    #: is an honest verdict.
+    NOT_AN_ARTIFACT = "the artifact opened under this key and is not a usable artifact"
+
+
 class ArtifactUnreadable(SinkError):
-    """A sealed artifact is not this schema, or will not open under this key."""
+    """A sealed artifact is not this schema, or will not open under this key.
+
+    ``cause`` is required and has no default, for the reason every other required
+    field in this module has none: a default would be a guess at the one thing the
+    caller is about to act on, and the wrong guess here is the F1 defect itself.
+    """
+
+    def __init__(self, message: str, *, cause: ArtifactReadFailure) -> None:
+        super().__init__(message)
+        self.cause = cause
+
+
+def read_failure_cause(exc: BaseException) -> ArtifactReadFailure:
+    """What a failed :func:`read_artifact` proves, for any exception it can raise.
+
+    Two callers act on this — :meth:`EmergencyArtifactSink._describe_existing` and
+    :func:`networth.link_crash.classify` — and F1 was *both of them agreeing on the
+    same wrong verdict*. One function so they cannot drift apart, rather than the
+    same three-way branch written twice.
+
+    A bare :class:`OSError` maps to :attr:`ArtifactReadFailure.ACCESS_FAILED`.
+    :func:`read_artifact` already wraps its own read failures that way, so this is
+    the belt for a reader that someday does not — and it fails toward *unknown*,
+    never toward loss, which is the direction the whole finding is about.
+    """
+    if isinstance(exc, ArtifactUnreadable):
+        return exc.cause
+    return ArtifactReadFailure.ACCESS_FAILED
 
 
 class SinkKind(Enum):
@@ -580,10 +645,16 @@ class EmergencyArtifactSink:
             # refusal, moved to the side of the irreversible step where it is free.
             # Any directory entry counts, not just a file that opens: a symlink whose
             # target is absent is still a name `O_EXCL` will refuse to create.
-            raise SinkNotWritable(
-                f"an artifact already exists at {self._path}; it will not be "
-                "overwritten. Move it aside — it may hold an earlier recovery"
-            )
+            #
+            # **Which refusal, though, is `07b` criterion 4** (see `link_crash`). This
+            # used to be a single message ending *"Move it aside — it may hold an
+            # earlier recovery"*, and that advice is followed by a re-run. On an
+            # artifact that opens, the re-run exchanges a second time — measured as
+            # **ACCEPTED** with the first credential still healthy (`06a` (ii)), with
+            # the Item count unmeasured — after moving aside the only copy of the
+            # credential it was describing. So the one place that can tell these apart
+            # for free now does.
+            raise SinkNotWritable(self._describe_existing())
         _prove_durable(self._path.parent, what="emergency artifact directory")
 
         try:
@@ -624,6 +695,78 @@ class EmergencyArtifactSink:
         # loader can raise — mode, encoding, length — and re-reading would move them
         # to the far side of the exchange, which is the mistake criterion 1 names.
         self._key = key
+
+    def _describe_existing(self) -> str:
+        """Why the path is occupied, in the terms the owner has to act on.
+
+        *"This file holds your credential"*, *"this file will never give it to
+        you"* and *"we could not look"* imply different next actions, and the
+        third must not be rounded to either. It reads the artifact with this
+        module's own :func:`read_artifact` rather than through
+        :mod:`networth.link_crash`, which imports this one; the record half of
+        that classifier is not needed to answer a question about this path.
+
+        **The "will never give it to you" branch used to swallow two more
+        answers** — PR #136 review finding F1. A wrong escrowed key and a
+        transient ``EACCES`` both arrive as :class:`ArtifactUnreadable`, and both
+        were answered *"holds no usable credential … treat the lifetime slot as
+        spent"*, which is the most expensive sentence in this module to get wrong:
+        the owner is told the only surviving credential is gone while the file is
+        still sitting there holding it. Branching on
+        :class:`ArtifactReadFailure` is what separates the proof from the attempt.
+
+        Loading the key here is a second load in the refusing case only, and that
+        case does not go on to exchange anything, so it cannot move a failure to
+        the far side of the irreversible step — the hazard the held key exists to
+        avoid.
+        """
+        try:
+            key = crypto.load_backup_key(self._key_file)
+        except crypto.BackupKeyError as exc:
+            return (
+                f"an artifact already exists at {self._path} and the escrowed backup key "
+                f"could not be loaded to see what it holds ({exc}), so whether your "
+                "credential is in it is unknown. Do not exchange again until you have "
+                "opened it: a second exchange is accepted on the wire and may cost a "
+                "lifetime Item"
+            )
+        try:
+            read_artifact(self._path, key_bytes=key)
+        except (ArtifactUnreadable, OSError) as exc:
+            cause = read_failure_cause(exc)
+            if cause is ArtifactReadFailure.ACCESS_FAILED:
+                return (
+                    f"an artifact already exists at {self._path} and could not be read to "
+                    f"see what it holds ({exc}), so whether your credential is in it is "
+                    "unknown. Fix the access problem and look before concluding anything: "
+                    "do not exchange again and do not move or delete this file"
+                )
+            if cause is ArtifactReadFailure.UNAUTHENTICATED:
+                return (
+                    f"an artifact already exists at {self._path} and did not authenticate "
+                    f"under {self._key_file} ({exc}), so whether your credential is in it "
+                    "is unknown. A wrong backup key and a torn write fail identically "
+                    "here. Do not exchange again and do not move or delete this file; "
+                    "check you are using the escrowed 03a key before concluding anything. "
+                    "Only if the key is certainly the right one is the credential gone — "
+                    "and then the lifetime slot is spent, so quote the request_id from the "
+                    "crashed run's transcript rather than exchanging again blind"
+                )
+            return (
+                f"an artifact already exists at {self._path} and holds no usable "
+                f"credential ({exc}). It opened under the escrowed key, so that is "
+                "settled rather than suspected. It will not be overwritten. The exchange "
+                "it was writing may already have happened — so treat the lifetime slot "
+                "as spent and quote the request_id from that run's transcript rather "
+                "than exchanging again blind"
+            )
+        return (
+            f"an artifact already exists at {self._path} and it opens under the "
+            "escrowed backup key with the credential and the fence intact. DO NOT "
+            "EXCHANGE again and do not move this file: your recovery already "
+            "succeeded and this is the only copy of what it recovered. Restore it "
+            "onto the replacement host instead"
+        )
 
     def prepare_for(self, flow_id: str) -> None:
         """:meth:`prepare`. This kind's flow-specific refusal is already in it.
@@ -717,31 +860,43 @@ def read_artifact(path: Path, *, key_bytes: bytes) -> dict[str, object]:
     try:
         envelope = path.read_bytes()
     except OSError as exc:
-        raise ArtifactUnreadable(f"cannot read the artifact at {path}: {exc.strerror}") from None
+        raise ArtifactUnreadable(
+            f"cannot read the artifact at {path}: {exc.strerror}",
+            cause=ArtifactReadFailure.ACCESS_FAILED,
+        ) from None
     try:
         plaintext = crypto.open_sealed(envelope, key_bytes)
     except crypto.AuthenticationError as exc:
         raise ArtifactUnreadable(
-            f"the artifact at {path} did not authenticate under the escrowed backup key: {exc}"
+            f"the artifact at {path} did not authenticate under the escrowed backup key: {exc}",
+            cause=ArtifactReadFailure.UNAUTHENTICATED,
         ) from None
     try:
         payload = json.loads(plaintext)
     except ValueError:
-        raise ArtifactUnreadable(f"the artifact at {path} opened but is not JSON") from None
+        raise ArtifactUnreadable(
+            f"the artifact at {path} opened but is not JSON",
+            cause=ArtifactReadFailure.NOT_AN_ARTIFACT,
+        ) from None
     if not isinstance(payload, dict):
-        raise ArtifactUnreadable(f"the artifact at {path} opened but is not an object")
+        raise ArtifactUnreadable(
+            f"the artifact at {path} opened but is not an object",
+            cause=ArtifactReadFailure.NOT_AN_ARTIFACT,
+        )
     # The envelope is `03a`'s, shared with backup archives, so the schema check is what
     # distinguishes the two. Refused on the name rather than on a missing field later.
     if payload.get("schema") != ARTIFACT_SCHEMA:
         raise ArtifactUnreadable(
             f"the file at {path} opened under the backup key but is not a "
-            f"{ARTIFACT_SCHEMA} artifact"
+            f"{ARTIFACT_SCHEMA} artifact",
+            cause=ArtifactReadFailure.NOT_AN_ARTIFACT,
         )
     missing = [field for field in ("flow_id", "item_id", "access_token") if not payload.get(field)]
     if missing:
         raise ArtifactUnreadable(
             f"the artifact at {path} is missing {', '.join(missing)}; a partial "
-            "artifact is not a recovery"
+            "artifact is not a recovery",
+            cause=ArtifactReadFailure.NOT_AN_ARTIFACT,
         )
     for optional in ("link_session_id", "request_id"):
         if optional not in payload:
@@ -749,7 +904,8 @@ def read_artifact(path: Path, *, key_bytes: bytes) -> dict[str, object]:
             # writer, and the two must not be read as the same thing (issue #14: the
             # support id is the fallback when a credential is lost).
             raise ArtifactUnreadable(
-                f"the artifact at {path} does not record {optional}, even as null"
+                f"the artifact at {path} does not record {optional}, even as null",
+                cause=ArtifactReadFailure.NOT_AN_ARTIFACT,
             )
     # Criterion 6, on the reading side. Validated here rather than only where it is
     # used, because every reader of an artifact — the commit's own read-back included —
@@ -761,7 +917,10 @@ def read_artifact(path: Path, *, key_bytes: bytes) -> dict[str, object]:
     try:
         FenceAttestation.from_record(payload.get("fence"))
     except FenceRecordInvalid as exc:
-        raise ArtifactUnreadable(f"the artifact at {path} is not fenced: {exc}") from None
+        raise ArtifactUnreadable(
+            f"the artifact at {path} is not fenced: {exc}",
+            cause=ArtifactReadFailure.NOT_AN_ARTIFACT,
+        ) from None
     return payload
 
 
