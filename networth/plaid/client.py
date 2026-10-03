@@ -618,11 +618,72 @@ class InvestmentRecords:
         )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class AccountDescriptor:
+    """What ``/accounts/get`` says an account *is* — never what it holds.
+
+    :class:`BalanceRecord` is the other half of the same response and carries
+    none of this: it exists to value an account the database already knows, and
+    it is matched to that row by ``account_id``. Nothing produced the row. This
+    is the type the row is created from, once, when an Item is first linked
+    (:mod:`networth.account_discovery`), so it carries the identity and the
+    category and deliberately no figure.
+
+    ``currency`` is ``None`` when Plaid reports no ISO code for the account —
+    an unofficial currency, or a balance it could not denominate. That is an
+    answer, not a malformed record, so it is represented rather than raised:
+    one such account must not hide every other account behind the same login.
+
+    Account identity and names are omitted from ``repr``. An account's name at
+    the owner's institution is exactly the institution-specific detail that
+    must never reach a log (``AGENTS.md`` rule 0).
+    """
+
+    account_id: str
+    name: str
+    official_name: str | None
+    mask: str | None
+    type: str
+    subtype: str | None
+    currency: str | None
+
+    def __post_init__(self) -> None:
+        for field in ("account_id", "name", "type"):
+            value = getattr(self, field)
+            if not isinstance(value, str) or not value or value != value.strip():
+                raise ValueError(f"{field} must be non-empty with no surrounding whitespace")
+        for field in ("official_name", "mask", "subtype"):
+            value = getattr(self, field)
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValueError(f"{field} must be non-empty text or None")
+        if self.currency is not None and (
+            not isinstance(self.currency, str) or re.fullmatch(r"[A-Z]{3}", self.currency) is None
+        ):
+            raise ValueError("currency must be a three-letter uppercase code or None")
+
+    def __repr__(self) -> str:
+        return (
+            "AccountDescriptor(account_id=<redacted>, name=<redacted>, "
+            f"type={self.type!r}, subtype={self.subtype!r}, currency={self.currency!r})"
+        )
+
+
 def _required_text(record: Any, field: str, *, step: str) -> str:
     value = getattr(record, field, _MISSING)
     value = getattr(value, "value", value)
     if not isinstance(value, str) or not value:
         raise PlaidCallError(f"{step} returned a record with no usable {field}")
+    return value
+
+
+def _optional_text(record: Any, field: str, *, step: str) -> str | None:
+    """A nullable text field: absent, null and empty are all "not supplied"."""
+    value = getattr(record, field, _MISSING)
+    value = getattr(value, "value", value)
+    if value is _MISSING or value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise PlaidCallError(f"{step} returned a {field} that is not text")
     return value
 
 
@@ -681,6 +742,40 @@ def _balance_records(response: Any, *, step: str) -> tuple[BalanceRecord, ...]:
                     last_updated_datetime=_optional_instant(
                         balances, "last_updated_datetime", step=step
                     ),
+                )
+            )
+        except ValueError:
+            raise PlaidCallError(f"{step} returned an unusable account record") from None
+    return tuple(converted)
+
+
+#: What an account is called when its institution supplied only whitespace.
+_UNNAMED_ACCOUNT = "Account"
+
+
+def _account_descriptors(response: Any, *, step: str) -> tuple[AccountDescriptor, ...]:
+    converted: list[AccountDescriptor] = []
+    for account in _response_records(response, "accounts", step=step):
+        # Read without `_money`: a descriptor needs no figure, and an account
+        # whose balance is null is still an account that exists.
+        balances = getattr(account, "balances", None)
+        official_name = _optional_text(account, "official_name", step=step)
+        try:
+            converted.append(
+                AccountDescriptor(
+                    account_id=_required_text(account, "account_id", step=step),
+                    # An institution's own padding is not a malformed record, and
+                    # a name that is only padding must not hide the account.
+                    name=(
+                        _required_text(account, "name", step=step).strip()
+                        or (official_name or "").strip()
+                        or _UNNAMED_ACCOUNT
+                    ),
+                    official_name=official_name,
+                    mask=_optional_text(account, "mask", step=step),
+                    type=_required_text(account, "type", step=step),
+                    subtype=_optional_text(account, "subtype", step=step),
+                    currency=_optional_text(balances, "iso_currency_code", step=step),
                 )
             )
         except ValueError:
@@ -1301,6 +1396,24 @@ class PlaidClient:
             AccountsGetRequest(access_token=access_token),
         )
         return _balance_records(response, step=step)
+
+    def list_accounts(self, access_token: str) -> tuple[AccountDescriptor, ...]:
+        """``/accounts/get``, read for what each account is rather than what it holds.
+
+        The same free, cached endpoint as :meth:`fetch_cached_balances`, and a
+        different question: that method values accounts the database already
+        has, and this one is how the database comes to have them. It makes no
+        request of the institution, so it is safe on a just-linked Item whose
+        first extraction may still be running.
+        """
+
+        step = "accounts/get"
+        response = self._call(
+            step,
+            self._api.accounts_get,
+            AccountsGetRequest(access_token=access_token),
+        )
+        return _account_descriptors(response, step=step)
 
     def fetch_holdings(self, access_token: str) -> InvestmentRecords:
         """Fetch investment totals and their institution-price clock evidence."""

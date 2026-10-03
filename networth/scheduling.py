@@ -39,7 +39,7 @@ def _timestamp(value: object) -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class FullSyncDue:
-    """The two independent reasons a full sync is due, with their evidence age."""
+    """The independent reasons a full sync is due, with their evidence age."""
 
     checked_at: datetime
     market_ready_at: datetime
@@ -47,10 +47,11 @@ class FullSyncDue:
     last_successful_finish: datetime | None
     market_due: bool
     elapsed_due: bool
+    new_account_due: bool = False
 
     @property
     def due(self) -> bool:
-        return self.market_due or self.elapsed_due
+        return self.market_due or self.elapsed_due or self.new_account_due
 
 
 class FullSyncSchedule:
@@ -66,6 +67,17 @@ class FullSyncSchedule:
     threshold even when its completion crosses it. The elapsed rule uses the
     latest successful *finish*, exactly the 20h completion clock in section 13.
     These maxima need not come from the same row if runs finish out of order.
+
+    A third reason exists because the first two are both satisfied by a run that
+    fetched *nothing*. A daemon with no linked Item completes an empty full sync
+    and is then not due for up to 20 hours; an account linked ten minutes later
+    would wait out that whole interval with no observation, and the owner would
+    be looking at a total that does not contain the account he just added. A
+    successful run that **started before a syncable account was created cannot
+    have fetched it**, so such an account makes the sync due. It stops being due
+    as soon as a successful run starts after it — whether or not that account
+    itself fetched cleanly, which is the per-Item retry policy's question, not
+    this one's.
     """
 
     def __init__(
@@ -111,4 +123,30 @@ class FullSyncSchedule:
             last_successful_finish=last_finish,
             market_due=last_start is None or last_start < market_ready,
             elapsed_due=last_finish is None or at - last_finish > FULL_SYNC_INTERVAL,
+            new_account_due=self._has_account_newer_than(last_start),
         )
+
+    def _has_account_newer_than(self, last_start: datetime | None) -> bool:
+        """Whether a syncable account was created after the last successful start.
+
+        The filter is ``AccountRepository.syncable()``'s, because the question is
+        about the accounts a full sync would fetch. An unparseable ``created_at``
+        is ignored rather than raised: the conservative reading would make every
+        activation due, and what that buys is a provider call every five minutes
+        for as long as one malformed row exists.
+        """
+        if last_start is None:
+            return False  # already due on both other grounds; nothing to add
+        for (raw,) in self._connection.execute(
+            "SELECT created_at FROM account WHERE item_id IS NOT NULL "
+            "AND plaid_account_id IS NOT NULL "
+            "AND freshness_policy IN ('SYNCED_HOLDINGS', 'SYNCED_BALANCE') "
+            "AND reconciliation_state <> 'ARCHIVED' AND archived_at IS NULL"
+        ):
+            try:
+                created = _timestamp(raw)
+            except ScheduleStateError:
+                continue
+            if created > last_start:
+                return True
+        return False

@@ -1782,6 +1782,7 @@ item(                                  -- one per institution LOGIN
   last_error_code, last_error_message,
   consent_expiration_time,
   replaces_item_id,                    -- set when this Item replaced a REVOKED one (§8.5)
+  accounts_discovered_at,              -- when its account list was read (§13); NULL = not yet
   created_at)
 
 account(
@@ -3563,7 +3564,8 @@ The timer fires every 5 minutes and the worker asks the database what is due:
 | Job | Due when |
 |---|---|
 | health poll | never polled or ≥60 min since the last poll (task 10's inclusive boundary) |
-| full sync | **either** no successful full sync since the most recent market close + 1h, **or** >20h since the last successful full sync — whichever comes first (see below) |
+| account discovery | a linked Item whose account list has never been read (`accounts_discovered_at IS NULL`) and that can answer (`HEALTHY` or `DEGRADED`). Runs **before** the full sync, once per Item (see below) |
+| full sync | **either** no successful full sync since the most recent market close + 1h, **or** >20h since the last successful full sync, **or** a syncable account created after the last successful full sync *started* — whichever comes first (see below) |
 | quote refresh | any `MANUAL_QTY_LIVE_PRICE` price older than the last close |
 | publish | a snapshot exists newer than the last successful `publication` (§6.4) |
 | build archive | >24h since the last archive was **built** — §14a. This job is entirely local: it snapshots the database, packs the token material and encrypts, into a directory on this host. It has no destination and cannot fail for a reason involving another machine |
@@ -3643,6 +3645,29 @@ it. The 20h predicate uses the latest successful **finish**, including on weeken
 and holidays, and is strict (`>20h`). Failed and interrupted attempts advance
 neither clock. `FullSyncSchedule` reads committed rows without consuming due work;
 it does not dispatch calls, enforce retry backoff, or establish a Link deadline.
+
+**Account discovery, and the third full-sync reason it needs** *(added with task
+`08`)*. Link finalization commits an `item` row and stops; until this revision
+nothing wrote an `account` row, so every later stage — sync, snapshot, publish —
+was fed by a table only its own test fixtures filled. Discovery reads
+`/accounts/get` once per Item and records the accounts v0 models: USD
+`investment` accounts as `SYNCED_HOLDINGS` and USD `depository` accounts as
+`SYNCED_BALANCE`, both `sign = +1`. Liability types and non-USD accounts are
+**not created** (§1: v0 is assets only; multi-currency is a non-goal) and are
+counted in the run's result rather than passed over. A new account is
+`CONFIRMED` on arrival exactly when nothing could be double-counted — the Item
+replaces no other and no archived account exists — and `NEW` otherwise, so §8.5
+is unchanged for the replacement case it was written for.
+
+The first two full-sync predicates are both satisfied by a run that fetched
+**nothing**: a daemon with no linked Item completes an empty full sync and is
+then not due for up to 20 hours, and an account linked ten minutes later would
+wait that long for its first observation. A successful run that started before a
+syncable account existed cannot have fetched it, so such an account makes the
+sync due; the reason ends when a successful run starts after it. An unparseable
+`account.created_at` is ignored by this predicate rather than treated as due —
+the conservative reading would cost a provider call every five minutes for as
+long as one malformed row exists.
 
 **`ScheduleStateError` means due.** Malformed, non-UTC, reversed or future
 success clocks raise this fixed diagnostic without exposing stored row content.

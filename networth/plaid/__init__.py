@@ -1,6 +1,7 @@
 """Plaid access: the client wrapper and the one error taxonomy (section 8.2)."""
 
 from networth.plaid.client import (
+    AccountDescriptor,
     BalanceRecord,
     HoldingRecord,
     InvestmentRecords,
@@ -26,6 +27,7 @@ from networth.plaid.errors import (
 )
 
 __all__ = [
+    "AccountDescriptor",
     "BalanceRecord",
     "HEALTHY",
     "Classification",
