@@ -245,3 +245,31 @@ def test_the_owner_is_told_what_the_fence_costs_him_before_he_is_asked(
     assert "powered off" in result.stdout
     # And that nothing is presented as a check: the fence is his attestation.
     assert "nothing here pings anything" in result.stdout
+
+
+def test_the_owner_is_told_the_clock_before_he_is_asked_for_anything(
+    tmp_path: Path,
+) -> None:
+    """`07b`'s seventh criterion, asserted on the transcript for the fence's reason.
+
+    *"The owner-facing text states **30 minutes**, and the script is pre-staged as one
+    command — this is a minutes procedure, not a six-hour one."*
+
+    The number was already in this file when this test was written — in a **source
+    comment**, explaining why `--exchange` is not a choice — and `DESIGN.md` states it
+    in a dozen places including §19 step 5. Neither is the owner-facing text this
+    criterion is about: a comment is read by nobody, and the runbook is read *before*
+    the emergency. The place rev 17's error (*"You have six hours, not thirty
+    minutes"* — backwards) would still reach him is the terminal he is looking at with
+    the clock already running, and until this test that terminal said nothing about it.
+
+    The second assertion is the half that changes what he does. "30 minutes" alone
+    reads as thirty minutes from now; the window opened when Link finished, which was
+    before he went looking for this script, so some of it is already spent.
+    """
+    result = run(FLOW_ID, *SINK, tmp_path=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "30 minutes" in result.stdout
+    assert "from when Link finished" in result.stdout
+    assert "minutes procedure" in result.stdout

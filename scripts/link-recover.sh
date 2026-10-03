@@ -117,6 +117,7 @@ uv run --quiet networth verify-this-mac ||
 printf 'host          %s (measurement (iv): the VPS takes no part in either call)\n' "$(hostname)"
 printf 'flow          %s\n' "$flow"
 printf 'recovery dir  %s\n' "${NETWORTH_LINK_RECOVERY_DIR:-$HOME/agents/secrets/networth-link-recovery}"
+printf 'clock         30 minutes, and it runs from when Link finished rather than from now — this is a minutes procedure. Plaid keeps the session record for six hours; the public_token inside it does not last that long. If this run fails, re-run it straight away\n'
 printf 'prompts       the fence (type the name of the host you powered off), then client_id and the sandbox secret, on this terminal; the link token comes from the record\n'
 printf 'fence         that host is also your Tailscale exit node: powering it off takes your VPN exit with it, and nothing here pings anything\n\n'
 
