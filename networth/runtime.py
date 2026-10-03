@@ -12,6 +12,7 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from networth.account_discovery import AccountDiscovery, DiscoveryResult
 from networth.backup.archive import BackupBuilder
 from networth.backup.config import load_backup_config
 from networth.backup.crypto import load_backup_key
@@ -63,6 +64,9 @@ def open_runtime_database(path: Path) -> sqlite3.Connection:
 def sync(db: sqlite3.Connection, client: PlaidClient, tokens: TokenStore, lock: Path) -> bool:
     """A failed job cannot prevent the other due jobs from being attempted."""
     jobs = (
+        # First: a just-linked Item has no account rows until this runs, and the
+        # full cycle below fetches only accounts that exist.
+        AccountDiscovery(db, client, tokens, lock_path=lock).run_due,
         HealthDispatcher(db, client, tokens, lock_path=lock).run_due,
         FullCycleDispatcher(
             db, client, tokens, RuntimeQuotes(), balance_mode=BalanceMode.CACHED, lock_path=lock
@@ -70,9 +74,11 @@ def sync(db: sqlite3.Connection, client: PlaidClient, tokens: TokenStore, lock: 
         QuoteCycleDispatcher(db, RuntimeQuotes(), lock_path=lock).run_due,
     )
     ok = True
-    for name, job in zip(("health", "full", "quotes"), jobs, strict=True):
+    for name, job in zip(("accounts", "health", "full", "quotes"), jobs, strict=True):
         try:
             result = job()
+            if isinstance(result, DiscoveryResult) and not result.ok:
+                ok = False
             if isinstance(result, DispatchResult) and result.ok is False:
                 ok = False
             if isinstance(result, PollBatchResult) and result.failure_types:

@@ -14,23 +14,27 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from networth import runtime
 from networth.account_discovery import AccountDiscovery, DiscoveryResult
 from networth.filelock import LockUnavailable, exclusive_file_lock
 from networth.full_cycle import FullCycleDispatcher
 from networth.payload import open_payload
 from networth.plaid import AccountDescriptor, BalanceRecord, HoldingRecord, InvestmentRecords
-from networth.plaid.client import PlaidCallError, PlaidClient
+from networth.plaid.client import ItemStatus, PlaidCallError, PlaidClient
 from networth.plaid.environment import PlaidCredentials, PlaidEnvironment
+from networth.plaid.errors import ItemState
 from networth.publisher import Publisher
 from networth.scheduling import FullSyncSchedule
 from networth.storage import migrate
 from networth.store import Store
 from networth.sync import BalanceMode
+from networth.tokenstore import TokenStore
 from tests.fake_plaid import FakeSandboxApi
+from tests.test_item_health import item_status
 from tests.test_manual_quotes import Quotes
 from tests.test_sync import FakeTokens, add_account, add_item
 
@@ -68,6 +72,10 @@ class Client:
     def _asked(self, name: str, token: str) -> None:
         assert not self._db.in_transaction, "provider calls must precede every write"
         self.calls.append((name, token))
+
+    def item_get(self, access_token: str) -> ItemStatus:
+        self._asked("item_get", access_token)
+        return item_status(access_token.removeprefix("material-"), ItemState.HEALTHY)
 
     def list_accounts(self, access_token: str) -> tuple[AccountDescriptor, ...]:
         self._asked("list_accounts", access_token)
@@ -591,3 +599,69 @@ def test_a_linked_item_with_no_account_rows_ends_as_a_published_total(
     assert payload["total"]["value_minor"] == 123_475
     assert payload["total"]["account_count"] == 2
     assert len(payload["accounts"]) == 2
+
+
+def test_one_runtime_sync_activation_takes_a_new_item_from_no_accounts_to_a_snapshot(
+    db: sqlite3.Connection, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same chain through the job the installed unit runs, in one activation.
+
+    ``networth-sync.service`` is ``runtime.sync``. If discovery were not its first
+    job, the full cycle in the same activation would find nothing to fetch, mark
+    itself satisfied, and the accounts would wait for the next one.
+    """
+    add_item(db, "one", investments_update=READY)
+    db.execute("UPDATE item SET status = 'DEGRADED'")
+    db.commit()
+    client = Client(db)
+    client.accounts["material-one"] = (
+        descriptor("brokerage"),
+        descriptor("cash", type="depository"),
+    )
+    client.balances = {"account-brokerage": Decimal("10.00"), "account-cash": Decimal("2.50")}
+
+    ok = runtime.sync(
+        db, cast(PlaidClient, client), cast(TokenStore, FakeTokens()), tmp_path / "sync.lock"
+    )
+
+    assert ok
+    assert capsys.readouterr().out.splitlines() == [
+        "accounts: completed",
+        "health: completed",
+        "full: completed",
+        "quotes: completed",
+    ]
+    assert [call[0] for call in client.calls] == [
+        "list_accounts",
+        "item_get",
+        "fetch_cached_balances",
+        "fetch_holdings",
+    ]
+    assert db.execute("SELECT count(*) FROM account").fetchone() == (2,)
+    assert db.execute(
+        "SELECT total_net_worth_minor FROM snapshot ORDER BY id DESC LIMIT 1"
+    ).fetchone() == (1_250,)
+
+
+def test_a_failed_discovery_fails_the_activation_without_stopping_the_other_jobs(
+    db: sqlite3.Connection, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    add_item(db, "one")
+    db.commit()
+    client = Client(db)
+    client.accounts["material-one"] = RuntimeError("synthetic-private-provider-detail")
+
+    ok = runtime.sync(
+        db, cast(PlaidClient, client), cast(TokenStore, FakeTokens()), tmp_path / "sync.lock"
+    )
+
+    out = capsys.readouterr()
+    assert not ok
+    assert out.out.splitlines() == [
+        "accounts: completed",
+        "health: completed",
+        "full: completed",
+        "quotes: completed",
+    ]
+    assert "synthetic-private-provider-detail" not in out.out + out.err
+    assert db.execute("SELECT accounts_discovered_at FROM item").fetchone() == (None,)
