@@ -7,7 +7,7 @@ merged in PR #122. Full-sync dispatch and per-Item retry admission merged in PR 
 dispatch and worker transaction guards merged in PR #125. Manual equity quote
 collection/persistence merged in PR #128; stored cycle alert assembly/dispatch
 merged in PR #130; full-cycle completion merged in PR #131. The source-price
-quote-due planner is the next review slice. Quote-only cycles, executable wiring,
+quote-due planner merged in PR #133. Quote-only dispatch is in review; executable wiring,
 remaining scheduler implementation and live acceptance
 remain owed.
 Task 16 remains WIP. Tasks 08 and 03a-live remain blocked on its live acceptance.
@@ -464,7 +464,7 @@ outage therefore cannot erase the failed Item's backoff. An alert/input error ca
 still roll back that completion and its retry outcome, just like another final
 transaction failure; no partial completion is committed. All-deferred or not-due
 activations create no run or snapshot, but still reassess stored alerts under the
-same lock. Quote-only refresh remains a separate, unimplemented job.
+same lock. Quote-only refresh is the separate dispatcher described below.
 
 `FullSyncDispatcher` remains the Plaid-only component seam; the future scheduled
 full-cycle executable must choose `FullCycleDispatcher`. Neither is currently
@@ -482,7 +482,7 @@ Publisher encrypt/decrypt check confirms the committed manual-inclusive total,
 its source age and the share-count alert. These are component integration checks,
 not executable scheduling or live acceptance. Task16/08/03a-live remain open.
 
-## Quote refresh due planner (next review slice)
+## Quote refresh due planner (merged #133)
 
 `QuoteRefreshSchedule` reads the same active, included manual-equity accounts as
 `ManualQuoteWorker`, including NEW accounts. An absent observation, unknown source
@@ -511,3 +511,29 @@ a quote-only snapshot, publication/archive scheduling, executable wiring, Link
 latency, units and live acceptance remain owed. PR131's two review notes are also
 pinned: completion-clock refusal names its own error, and a rival writer makes
 idle-path validation before writer admission observable.
+
+## Quote-only dispatch (in review)
+
+`QuoteCycleDispatcher` admits work through `QuoteRefreshSchedule` under the
+canonical sync lock. It creates a durable unfinished `OTHER` run before quote
+collection, which holds no SQLite transaction. Completion commits manual
+observations, carried linked observations, success, snapshot and alerts in one
+short write transaction. Three BUSY attempts reuse the collected quote plan;
+restart recollects. Invalid stored price clocks propagate their fixed refusal
+before run creation, leaving work pending.
+
+Linked values come from the latest committed observations read inside the final
+write transaction. Their figures, source clocks and fetch times remain unchanged;
+the new observation time records the carry, and `is_carried_forward=True` makes
+the snapshot incomplete. Account fetch summaries and Item retry state stay intact.
+Missing or future linked evidence refuses completion. NEW linked accounts need
+no carried value because the snapshot excludes them; manual-static revisions
+continue to be selected by Snapshotter. Manual edits during collection still
+refuse the entire plan through the reviewed ManualQuoteWorker boundary.
+
+A quote-only success never satisfies the full-sync clock. A successful response
+with an old price remains due, potentially calling again each tick. Idle quote
+admission does not take a writer lock or evaluate alerts; the runtime must retain
+its independent AlertDispatcher activation before publication, including when
+this job is idle or fails. Publication follows the completed transaction and
+cannot undo it. No executable or live installation is introduced by this slice.
