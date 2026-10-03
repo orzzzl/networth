@@ -44,6 +44,10 @@ _EXIT = {
     link_crash.CrashState.NOTHING_HERE: 0,
     link_crash.CrashState.CREDENTIAL_LOST: 1,
     link_crash.CrashState.EXCHANGE_UNDECIDABLE: 1,
+    # 2 and not 1: an artifact nobody could open is an unestablished verdict, not an
+    # owed-and-readable one. It shares the status with `CANNOT_TELL` because both
+    # mean "ask again after fixing something", which is what a caller branches on.
+    link_crash.CrashState.ARTIFACT_UNVERIFIED: 2,
     link_crash.CrashState.CANNOT_TELL: 2,
 }
 
@@ -61,11 +65,23 @@ _NEXT = {
         "nothing for you to type here. This is not a step you are missing."
     ),
     link_crash.CrashState.CREDENTIAL_LOST: (
-        "This artifact will not give up a credential. Treat the lifetime Item slot as "
-        "spent: a second exchange of the same public_token was measured as ACCEPTED, so "
-        "re-running is not a free retry. Quote the request_id printed by the run that "
-        "crashed into a Plaid support ticket (issue #14) — that transcript is the only "
-        "place it exists, because this host writes it inside the artifact and nowhere else."
+        "This artifact opened under the key you supplied and will not give up a "
+        "credential, so that is settled rather than suspected. Treat the lifetime Item "
+        "slot as spent: a second exchange of the same public_token was measured as "
+        "ACCEPTED, so re-running is not a free retry. Quote the request_id printed by "
+        "the run that crashed into a Plaid support ticket (issue #14) — that transcript "
+        "is the only place it exists, because this host writes it inside the artifact "
+        "and nowhere else."
+    ),
+    link_crash.CrashState.ARTIFACT_UNVERIFIED: (
+        "An artifact is here and this run could not open it, which is NOT the same as "
+        "it being empty. A wrong backup key, a torn write, and a file that is not one "
+        "of these artifacts all fail identically, and nothing on this disk tells them "
+        "apart. So: do NOT exchange again, and do NOT move or delete this file. Check "
+        "that --backup-key is the escrowed 03a key for this machine and that the file "
+        "is readable, then ask again. Only once you are certain the key is right is the "
+        "credential gone — and then the lifetime Item slot is spent, so quote the "
+        "request_id from the crashed run's transcript rather than exchanging again blind."
     ),
     link_crash.CrashState.EXCHANGE_UNDECIDABLE: (
         "Local evidence is exhausted: this host records no exchange attempt, so a run "
@@ -81,6 +97,16 @@ _NEXT = {
         "The evidence could not be read, which is not the same as there being none. Fix "
         "the access problem named above and ask again; do not exchange in the meantime."
     ),
+}
+
+
+#: The three answers :attr:`~networth.link_crash.Classification.record_present` has.
+#: A table rather than a conditional expression so a third outcome cannot be folded
+#: into whichever of the other two is the `else` branch — which is how N1 happened.
+_RECORD_LINE = {
+    True: "present",
+    False: "absent",
+    None: "could not be established",
 }
 
 
@@ -142,12 +168,22 @@ def run(args: argparse.Namespace) -> int:
     print(f"flow          {args.flow}")
     print(f"recovery dir  {directory}")
     print(f"backup key    {key_note}")
-    print(f"record        {'present' if found.record_present else 'absent'}")
+    # Three outcomes printed as three, which is review finding N1: `record_present`
+    # is `None` when the directory could not be read, and `'present' if ... else
+    # 'absent'` turned that into the factual claim "absent" — under the one state
+    # whose whole meaning is that nothing was established.
+    print(f"record        {_RECORD_LINE[found.record_present]}")
     print()
     print(f"state         {found.state.name}")
     print(f"              {found.state.value}")
     print(f"evidence      {found.detail}")
     print(f"credential    {'DURABLE' if found.credential_is_durable else 'not proven durable'}")
+    # Unchanged, deliberately: `rerun_may_exchange_again` is where "only a *known*
+    # absence may say no record remains" lives, so N1's second false claim is fixed
+    # by the property and this branch keeps printing whatever it decides. Re-deciding
+    # it here would be two places encoding one rule — the shape of F1 itself, where
+    # the classifier and the occupied-path advice agreed on the same wrong verdict.
+    # (Mutation testing found this: weakening the property left this line green.)
     print(
         "re-run risk   "
         + (

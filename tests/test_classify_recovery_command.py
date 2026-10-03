@@ -111,17 +111,78 @@ def test_a_durable_credential_exits_zero_and_says_do_not_exchange(
     assert "restore-link-artifact" not in out
 
 
-def test_a_torn_artifact_exits_one_and_points_at_the_transcript(
+def test_a_torn_artifact_is_unverified_and_points_at_the_transcript(
     tmp_path: Path, key_file: Path, recovery_directory: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """This asserted `CREDENTIAL_LOST` and exit 1 until PR #136's review (F1).
+
+    Nothing about the input changed; what changed is that a file that will not
+    *open* no longer licenses a claim about what is in it, because the identical
+    refusal fires for a wrong escrowed key. Exit 2 joins `CANNOT_TELL`: the
+    verdict was not established, so the useful shell answer is "ask again after
+    fixing something", not "there is something owed and readable".
+
+    The transcript pointer stays, because it is still the owner's fallback if the
+    key does turn out to be right.
+    """
     artifact = tmp_path / "recovery.artifact"
     artifact.write_bytes(b"torn")
+
+    assert _run(artifact, backup_key=key_file) == 2
+
+    out = capsys.readouterr().out
+    assert "ARTIFACT_UNVERIFIED" in out
+    assert "request_id" in out
+    assert "do not exchange again" in out.lower()
+    assert "do not move or delete this file" in out.lower()
+    # The claim it is not entitled to make about a file it could not open.
+    assert "CREDENTIAL_LOST" not in out
+
+
+def test_but_an_artifact_that_opens_and_is_not_one_is_credential_lost(
+    tmp_path: Path, key_file: Path, recovery_directory: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The control for the test above, and the reason F1's fix is not a deletion.
+
+    A `03a` backup archive shares this envelope, so a file sealed under the
+    escrowed key that is not this schema *opens* — and that is the evidence which
+    makes "will not give up a credential" a settled fact. Without this pair,
+    routing every unreadable artifact to `ARTIFACT_UNVERIFIED` would look
+    identical to removing `CREDENTIAL_LOST` from the CLI altogether.
+    """
+    artifact = tmp_path / "recovery.artifact"
+    key_bytes = crypto.load_backup_key(key_file)
+    artifact.write_bytes(crypto.seal(b'{"schema": "networth.backup-archive.1"}', key_bytes))
 
     assert _run(artifact, backup_key=key_file) == 1
 
     out = capsys.readouterr().out
     assert "CREDENTIAL_LOST" in out
     assert "request_id" in out
+    assert "ARTIFACT_UNVERIFIED" not in out
+
+
+def test_an_unreadable_record_directory_prints_unknown_not_absent(
+    tmp_path: Path, key_file: Path, recovery_directory: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #136 review finding N1, at the two lines that printed the false claims.
+
+    `CANNOT_TELL` carried `record_present=False`, so the verb printed *"record
+    absent"* and *"no record remains to exchange from"* as facts under the one
+    state whose entire meaning is that nothing was established — and the second
+    of those is the sentence a second exchange follows.
+    """
+    recovery_directory.chmod(0o000)
+    try:
+        assert _run(tmp_path / "absent.artifact", backup_key=key_file) == 2
+    finally:
+        recovery_directory.chmod(0o700)
+
+    out = capsys.readouterr().out
+    assert "record        could not be established" in out
+    assert "record        absent" not in out
+    assert "no record remains to exchange from" not in out
+    assert "a re-run could exchange a second time" in out
 
 
 def test_no_artifact_is_undecidable_rather_than_clean(

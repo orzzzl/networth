@@ -34,8 +34,23 @@ they collapse is *not* where `06a` (iii) found its collapse:
 
 * **during** and **after** the write are distinguishable, unlike the VPS flow's
   first two boundaries. The artifact is the evidence and openability under the
-  escrowed key is a durable property of it, so the two land in
-  :attr:`CrashState.CREDENTIAL_LOST` and :attr:`CrashState.CREDENTIAL_DURABLE`.
+  escrowed key is a durable property of it, so **after** the write is
+  :attr:`CrashState.CREDENTIAL_DURABLE` — a proof, since the credential is read
+  back out.
+
+  **During** the write is weaker than this module first claimed, and PR #136's
+  review (F1) is what measured the difference. A torn envelope fails its tag
+  comparison, and so does a well-formed but *wrong* 32-byte backup key, and so
+  does a file that is not one of `03a`'s envelopes at all: one comparison, three
+  causes, **and nothing on this disk separates them.** So it lands in
+  :attr:`CrashState.ARTIFACT_UNVERIFIED` and not in
+  :attr:`CrashState.CREDENTIAL_LOST`. Calling it loss was not a pessimistic
+  rounding of an unknown — it was the *expensive* rounding: the owner acts on
+  "this will never give up a credential" by giving up on the file, and the
+  reproduction restored access and the correct key afterwards and got
+  :attr:`CrashState.CREDENTIAL_DURABLE` back out of the identical bytes.
+  :attr:`CrashState.CREDENTIAL_LOST` now requires that the envelope *opened*,
+  which is the only evidence that proves the content rather than the attempt.
 * **before** the write collapses with *before the exchange*, and that pair is
   irreducible here. Both leave the recovery record present and no artifact, and
   **the Mac keeps no attempt log** — where the VPS can reach `STRANDED_KNOWN`
@@ -72,7 +87,12 @@ from enum import Enum
 from pathlib import Path
 
 from networth import link_recovery
-from networth.link_sink import ArtifactUnreadable, read_artifact
+from networth.link_sink import (
+    ArtifactReadFailure,
+    ArtifactUnreadable,
+    read_artifact,
+    read_failure_cause,
+)
 
 
 class CrashState(Enum):
@@ -89,12 +109,32 @@ class CrashState(Enum):
     #: record was retired afterwards.
     CREDENTIAL_DURABLE = "the credential is durable in the artifact"
 
-    #: Something is at the artifact path and it does not yield a usable
-    #: credential — a torn write that fails authentication, or a file that is not
-    #: one of these artifacts at all. **The two are not separated**, because the
-    #: owner's next action is identical: this file will not produce the
-    #: credential, and the exchange may already have happened.
+    #: Something is at the artifact path, it **opened and authenticated** under the
+    #: escrowed key, and what came out is not a usable credential for this flow: a
+    #: different schema (a `03a` backup archive shares this envelope), a missing
+    #: required field, no fence, or another flow's recovery. This file will not
+    #: produce the credential and the exchange may already have happened.
+    #:
+    #: **Authentication having succeeded is what makes this a proof**, and that is
+    #: the whole of PR #136's F1 correction. A file that will not *open* lands in
+    #: :attr:`ARTIFACT_UNVERIFIED` instead, because a wrong key fails exactly like
+    #: a torn write and the owner's next action differs.
     CREDENTIAL_LOST = "an artifact is present and holds no usable credential"
+
+    #: Something is at the artifact path and we could not get far enough to say
+    #: what it holds — the bytes would not read, or they would not authenticate
+    #: under the key we were handed.
+    #:
+    #: **This state exists because its absence was a bug.** F1: ``classify`` read
+    #: every failure of :func:`~networth.link_sink.read_artifact` as
+    #: :attr:`CREDENTIAL_LOST`, so a well-formed but *wrong* 32-byte backup key, and
+    #: a transient ``EACCES`` on the artifact, each told the owner that the only
+    #: surviving credential would never be recoverable — while the file sat there
+    #: still holding it, which the reproduction proves by restoring access and the
+    #: correct key and getting :attr:`CREDENTIAL_DURABLE` back out of the *same
+    #: bytes*. Retain the artifact; verify the key and the access; only then is
+    #: there anything to conclude.
+    ARTIFACT_UNVERIFIED = "an artifact is present and could not be verified either way"
 
     #: No artifact, and the recovery record is still here. Either nothing has run
     #: yet or a run died after the exchange response and before the write, and
@@ -124,7 +164,13 @@ class Classification:
 
     state: CrashState
     detail: str
-    record_present: bool
+    #: ``True``/``False``/``None`` for present / absent / **could not be
+    #: established**. Tri-state because PR #136's review found the third collapsed
+    #: into the second (N1): an ``lstat`` failure on the recovery directory set
+    #: this ``False``, and the CLI then printed *"record absent"* and *"no record
+    #: remains to exchange from"* as facts, under the one state whose entire
+    #: meaning is that nothing was established.
+    record_present: bool | None
 
     @property
     def credential_is_durable(self) -> bool:
@@ -138,9 +184,13 @@ class Classification:
         True for every state that still holds a record, including
         :attr:`CrashState.CREDENTIAL_DURABLE` — the credential being safe does
         not make a re-run safe, and that is the confusion the old refusal
-        message created. False only where no record remains to exchange from.
+        message created. **False only where a record is known to be absent**, so
+        an unestablished presence answers True: *may* is the honest modality for
+        an unknown, and it is also the side that does not invite a second
+        exchange. Read :attr:`record_present` directly to tell the two Trues
+        apart.
         """
-        return self.record_present
+        return self.record_present is not False
 
 
 def classify(
@@ -165,7 +215,9 @@ def classify(
         return Classification(
             state=CrashState.CANNOT_TELL,
             detail="cannot tell whether a recovery record is present",
-            record_present=False,
+            # `None`, not `False` — N1. Reporting an unestablished presence as an
+            # absence is how "we could not look" became "there is nothing to look at".
+            record_present=None,
         )
 
     artifact_present = _entry_exists(artifact_path)
@@ -206,10 +258,31 @@ def classify(
     try:
         payload = read_artifact(artifact_path, key_bytes=key_bytes)
     except (ArtifactUnreadable, OSError) as exc:
+        cause = read_failure_cause(exc)
+        if cause is ArtifactReadFailure.ACCESS_FAILED:
+            return Classification(
+                state=CrashState.CANNOT_TELL,
+                detail=(
+                    f"an artifact is present at {artifact_path} and its bytes could not "
+                    f"be read, so nothing about its contents was established: {exc}"
+                ),
+                record_present=record_present,
+            )
+        if cause is ArtifactReadFailure.UNAUTHENTICATED:
+            return Classification(
+                state=CrashState.ARTIFACT_UNVERIFIED,
+                detail=(
+                    f"an artifact is present at {artifact_path} and did not authenticate "
+                    f"under the key supplied, which a wrong backup key, a torn write and "
+                    f"a file that is not one of these envelopes all do identically: {exc}"
+                ),
+                record_present=record_present,
+            )
         return Classification(
             state=CrashState.CREDENTIAL_LOST,
             detail=(
-                f"an artifact is present at {artifact_path} and does not yield a credential: {exc}"
+                f"an artifact is present at {artifact_path}, opened and authenticated "
+                f"under the key supplied, and does not yield a credential: {exc}"
             ),
             record_present=record_present,
         )
