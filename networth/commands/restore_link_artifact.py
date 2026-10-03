@@ -37,11 +37,20 @@ import sqlite3
 import sys
 from contextlib import closing
 from pathlib import Path
+from typing import TextIO
 
 from networth.backup import crypto
 from networth.config import ConfigError
+from networth.link_duplicate import DuplicateOutcome, DuplicateVerdict
 from networth.link_pairing import PairingError, PairingResult
-from networth.link_sink import INCOMPLETE_RECOVERY, SinkError, pair_from_artifact, restore
+from networth.link_sink import (
+    DUPLICATE_EXCHANGE,
+    INCOMPLETE_RECOVERY,
+    DuplicateExchange,
+    SinkError,
+    pair_from_artifact,
+    restore,
+)
 from networth.plaid.environment import paths_for, selected_environment
 
 SUMMARY = "Restore a sealed link-recovery artifact into this host's TokenStore (07b)."
@@ -71,6 +80,32 @@ _NEXT = {
         "The credential is durable and the accounting is disputed -- a row exists and "
         "disagrees with this recovery. Read the reason above before touching anything; "
         "do NOT exchange again, the one-time token is spent. KEEP the artifact."
+    ),
+}
+
+#: What to do next when this host already holds a credential for the flow — `07b`
+#: criterion 7's three outcomes. Only the first of these is the case the old refusal
+#: assumed, and it is also the only one where the artifact is genuinely redundant.
+_AFTER_DUPLICATE = {
+    DuplicateOutcome.SAME_ITEM: (
+        "The exchange is already done and both credentials are for the same Item, so "
+        "one lifetime slot is spent and nothing is missing. This was measured by "
+        "comparing the Item identities, not assumed from the collision."
+    ),
+    DuplicateOutcome.DISTINCT_ITEMS: (
+        "Two exchanges of this flow returned DIFFERENT Items, so a second lifetime "
+        "slot is gone (F2a: it never comes back). Do NOT delete or move either "
+        "credential -- each is the only copy for its own Item, and the artifact is "
+        "also the only record that the second slot was spent. Making the second Item "
+        "usable means a link_result row of its own with its own secret_ref, which is "
+        "07a's job and not this verb's."
+    ),
+    DuplicateOutcome.UNRESOLVED: (
+        "An exchange is recorded here whose Item identity could not be established, "
+        "so whether this flow cost one lifetime slot or two is NOT knowable from this "
+        "host. Nothing may be deleted and nothing may be exchanged again. Resolve the "
+        "identity first -- the exchange request_id in the artifact is what Plaid "
+        "support can trace."
     ),
 }
 
@@ -186,6 +221,21 @@ def _pair_only(args: argparse.Namespace, connection: sqlite3.Connection) -> int:
     return 0 if pairing.paired else INCOMPLETE_RECOVERY
 
 
+def _print_duplicate(verdict: DuplicateVerdict, *, stream: TextIO) -> None:
+    """Criterion 7's verdict, in the transcript, wherever it was reached from.
+
+    One function for both paths on purpose: the collision that refuses and the
+    distinct-Items case that does **not** collide are the same finding about the same
+    flow, and an operator who sees it printed one way on one path and another way on
+    the other has to work out whether they are the same thing.
+    """
+    print(f"duplicate     {verdict.outcome.name}", file=stream)
+    print(f"              {verdict.detail}", file=stream)
+    slots = "NOT KNOWABLE HERE" if verdict.slots is None else str(verdict.slots)
+    print(f"slots spent   {slots}", file=stream)
+    print(f"keep          {', '.join(verdict.keep)}", file=stream)
+
+
 def _restore(
     args: argparse.Namespace, token_store: Path, *, connection: sqlite3.Connection | None
 ) -> int:
@@ -196,6 +246,16 @@ def _restore(
             token_store_directory=token_store,
             connection=connection,
         )
+    except DuplicateExchange as exc:
+        # Ahead of the handler below, and it must stay ahead: that one ends with "this
+        # verb can be re-run once the reason above is fixed", and here "the reason" is
+        # a credential already in the store. Fixing it means moving that credential
+        # aside -- which is the instruction `link_crash` exists because `prepare` used
+        # to give about the artifact, arriving one file later.
+        _print_duplicate(exc.verdict, stream=sys.stderr)
+        print(file=sys.stderr)
+        print(_AFTER_DUPLICATE[exc.verdict.outcome], file=sys.stderr)
+        return DUPLICATE_EXCHANGE
     except (SinkError, PairingError, crypto.BackupKeyError, sqlite3.Error) as exc:
         # Every one of these redacts itself, which is why printing `exc` is safe --
         # a property of those modules, not something this handler checked. Nothing
@@ -213,6 +273,11 @@ def _restore(
     print(f"credential    {', '.join(outcome.receipt.durable)}")
     print(f"              at {outcome.receipt.destination}")
     print(f"pairing lives {outcome.receipt.pairing.value}")
+    # Only when there is a second exchange to reconcile. Printing "SAME_ITEM, 1 slot"
+    # after every ordinary restore would train the owner past the one line on this
+    # screen that means a lifetime slot is gone.
+    if outcome.duplicate.duplicate:
+        _print_duplicate(outcome.duplicate, stream=sys.stdout)
     if outcome.pairing is None:
         print("flow pairing  NOT APPLIED -- no database was consulted")
     else:
@@ -225,4 +290,11 @@ def _restore(
     # `None` has no result to look up, and inventing a fifth entry for "we did not
     # look" would put an answer about the database next to four answers from it.
     print(_NEXT[outcome.pairing.result] if outcome.pairing is not None else _FINISH_LATER)
+    if outcome.duplicate.duplicate:
+        # After the pairing instruction, not instead of it: the pairing answer is about
+        # this Item's row and this one is about how many Items there are. `_NEXT`
+        # [REFUSED] is the text this shape usually lands on, and it says the accounting
+        # is disputed without saying what it costs or what must survive.
+        print()
+        print(_AFTER_DUPLICATE[outcome.duplicate.outcome])
     return 0 if outcome.complete else INCOMPLETE_RECOVERY

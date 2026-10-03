@@ -108,6 +108,11 @@ from typing import Final, Protocol
 
 from networth.backup import crypto
 from networth.filelock import LockUnavailable, exclusive_file_lock
+from networth.link_duplicate import (
+    DuplicateVerdict,
+    classify_duplicate,
+    gather_duplicate_evidence,
+)
 from networth.link_fence import FenceAttestation, FenceRecordInvalid
 from networth.link_pairing import PairingOutcome, PairingRefused, apply_pairing
 from networth.tokenstore import (
@@ -165,6 +170,15 @@ FLOW_PAIRING_FIELD: Final = "flow_pairing"
 #: reading exit 3 must get the same meaning from both. Two copies of the number is how
 #: they come to mean different things.
 INCOMPLETE_RECOVERY: Final = 3
+
+#: Exit status for *"this host already holds a credential for this flow"* — `07b`
+#: criterion 7. Its own code rather than ``2`` because ``2``'s instruction in these
+#: verbs is *nothing happened, fix the reason and run it again*, and here the reason
+#: is a credential that must not be moved; and not :data:`INCOMPLETE_RECOVERY`
+#: either, because that one says the credential reached this host's ``TokenStore``
+#: and on this path it did not. Lives beside that constant for its reason: an
+#: operator reading an exit code must get one meaning for it.
+DUPLICATE_EXCHANGE: Final = 4
 
 _PROBE_PLAINTEXT: Final = b"networth link-sink durability probe; holds no material\n"
 
@@ -262,6 +276,33 @@ def read_failure_cause(exc: BaseException) -> ArtifactReadFailure:
     if isinstance(exc, ArtifactUnreadable):
         return exc.cause
     return ArtifactReadFailure.ACCESS_FAILED
+
+
+class DuplicateExchange(SinkNotWritable):
+    """This host already holds a credential for this flow: `07b` criterion 7.
+
+    A :class:`SinkNotWritable` because that is exactly what it is — the destination
+    will not take this write, and nothing has been consumed by finding out — and a
+    subclass because *what the operator must do next depends on the Item
+    identities*, which a plain refusal has nowhere to put. :attr:`verdict` carries
+    them.
+
+    It replaces :meth:`ReplacementHostSink.prepare_for`'s refusal **on the restore
+    path only**, where both identities are in hand: one sealed in the artifact just
+    opened, one on the ``SecretRecord`` just read. That refusal ended *"if that
+    material is the recovery you are repeating, the exchange is already done"* — a
+    same-Item claim made without comparing the Items, which in the distinct-Items
+    case tells the owner the artifact is redundant when it is the only copy of the
+    other Item's credential. ``prepare_for`` keeps its own wording for the
+    pre-exchange caller, which genuinely has no identity to compare yet.
+    """
+
+    def __init__(self, verdict: DuplicateVerdict) -> None:
+        super().__init__(
+            f"{verdict.detail}. KEEP: {', '.join(verdict.keep)}. Nothing was written and "
+            "nothing may be exchanged again -- the one-time token is spent"
+        )
+        self.verdict = verdict
 
 
 class SinkKind(Enum):
@@ -966,10 +1007,19 @@ class RestoreOutcome:
     ``pairing`` is ``None`` only when no database was given at all — a restore onto a
     host whose database has not been restored yet, which is a real order of events
     and not a misuse.
+
+    ``duplicate`` is criterion 7's verdict about this flow, always computed and
+    reported rather than only raised. A restore can reach the *distinct Items* case
+    without any collision to refuse — the other exchange's credential lives under
+    ``access_token.<result_id>`` on `07a`'s path, so nothing in the ``TokenStore``
+    stands in this one's way — and then the only thing that says a second lifetime
+    slot is gone is this field. :func:`networth.link_pairing.apply_pairing` refuses
+    that shape and its message names criterion 7; it does not name the count.
     """
 
     receipt: SinkReceipt
     pairing: PairingOutcome | None
+    duplicate: DuplicateVerdict
 
     @property
     def complete(self) -> bool:
@@ -1014,6 +1064,16 @@ def restore(
     invite a re-run that cannot help. It is reported as owed, with the refusal's own
     words, and the caller decides.
 
+    **Criterion 7 is decided here too, and before anything is written.** This is the
+    host the *"old VPS comes back"* case lands on, and it is the only place both
+    returned Item identities exist at once: one sealed in the artifact, one on the
+    ``SecretRecord`` of whatever this host already holds. A collision refuses with
+    :class:`DuplicateExchange` instead of ``prepare_for``'s identity-free wording; a
+    *distinct Items* case with no collision — the other credential filed under
+    ``access_token.<result_id>`` on `07a`'s path — proceeds and is reported in
+    :attr:`RestoreOutcome.duplicate`, because nothing else would say the second
+    lifetime slot is gone.
+
     The fence attestation travels the same way and is read back into the item rather
     than re-asked for. Re-prompting on the replacement host would be a *second*
     attestation about a moment that has passed — the exchange it fenced already
@@ -1031,6 +1091,25 @@ def restore(
         request_id=None if payload["request_id"] is None else str(payload["request_id"]),
         fence=FenceAttestation.from_record(payload["fence"]),
     )
+    # Criterion 7, *before* the sink is asked for anything. `prepare_for` would
+    # refuse a collision on its own and correctly, but it refuses with neither Item
+    # identity — and both are available right here, one from the artifact above and
+    # one from the record the refusal reads. Gathering first costs two reads and is
+    # the only place they are ever both in hand.
+    duplicate = classify_duplicate(
+        flow_id=item.flow_id,
+        recovered_item_id=item.item_id,
+        recovered_where=f"the recovery artifact at {path}",
+        evidence=gather_duplicate_evidence(
+            flow_id=item.flow_id,
+            recovered_token=item.access_token,
+            token_store_directory=token_store_directory,
+            connection=connection,
+        ),
+    )
+    if duplicate.second_credential_here:
+        raise DuplicateExchange(duplicate)
+
     sink = ReplacementHostSink(token_store_directory)
     sink.prepare_for(item.flow_id)
     receipt = sink.commit(item, now=datetime.now().astimezone())
@@ -1070,7 +1149,7 @@ def restore(
         # *lives*, and the artifact holds it either way.
         pairing=Pairing.IN_ARTIFACT,
     )
-    return RestoreOutcome(receipt=credential, pairing=pairing)
+    return RestoreOutcome(receipt=credential, pairing=pairing, duplicate=duplicate)
 
 
 def pair_from_artifact(

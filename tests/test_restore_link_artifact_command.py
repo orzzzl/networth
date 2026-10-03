@@ -21,6 +21,7 @@ from networth.backup import crypto
 from networth.cli import main
 from networth.link_fence import ATTESTATION, FENCED_INSTANCE, FenceAttestation
 from networth.link_sink import (
+    DUPLICATE_EXCHANGE,
     INCOMPLETE_RECOVERY,
     EmergencyArtifactSink,
     RecoveredItem,
@@ -415,3 +416,40 @@ def test_the_artifact_is_validated_as_fenced_before_anything_is_paired(
         ).fetchone() == (None,)
     finally:
         connection.close()
+
+
+def test_a_distinct_item_duplicate_is_refused_and_the_transcript_says_what_to_keep(
+    host: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`07b` criterion 7 through the verb, in the shape that costs a lifetime slot.
+
+    The old VPS came back and its exchange returned a **different** Item, so its
+    credential is already under ``access_token.<flow_id>`` here. The old refusal for
+    this said *"the exchange is already done"* and then *"this verb can be re-run
+    once the reason above is fixed"* — and "the reason" is a credential that is the
+    only copy for its own Item. Both halves are asserted: the classification, and the
+    absence of the instruction that would destroy it.
+    """
+    key = key_file(host)
+    artifact = sealed(host, key)
+    db_path, tokens = paths(host)
+    database(db_path)
+    other_token = "access-sandbox-" + secrets.token_hex(16)
+    TokenStore(tokens).put(
+        SecretKind.ACCESS_TOKEN, FLOW_ID, other_token, item_id="item-0000000000000002"
+    )
+
+    code = main(["restore-link-artifact", "--artifact", str(artifact), "--backup-key", str(key)])
+
+    assert code == DUPLICATE_EXCHANGE
+    err = capsys.readouterr().err
+    assert "duplicate     DISTINCT_ITEMS" in err
+    assert "slots spent   2" in err
+    assert str(artifact) in err  # the artifact is named as a thing to keep
+    assert "re-run" not in err
+    # The other host's credential was not touched, which is the whole point of
+    # refusing rather than "fixing the reason".
+    assert (
+        TokenStore(tokens).get(secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW_ID)).reveal()
+        == other_token
+    )

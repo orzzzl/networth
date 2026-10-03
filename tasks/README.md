@@ -93,7 +93,7 @@ that row. He caught it, not us.)
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **DONE** (#104, #109; acceptance recorded 2026-09-24) |
-| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | **WIP** (the durable sink, its pre-exchange proof and the incomplete-receipt guard merged #129; the fence, crash classification and the `item_id` → `link_flow` write-back are in review as the #135 → #136 → #137 stack, with the 30-minute owner text on top of it. Owed: the Sandbox rehearsal (5), the losing branch on returned Item identity (7) and its three synthetic shapes (8), and `NETWORTH_ENV=production` acceptance. **Ticked below: 3, 4, 6, 9.** 1, 2 and 10 are substantially met by #129 and stay unticked — 10 because its prompt is `06a`'s and unchanged; 1 and 2 because each was owed one thing that only this stack closes, and *what* was owed is recorded here so it is not derived a third time. **1**: the artifact branch had no *reachable* restore path — `link_sink.restore()` had no production caller on `main`, and the one place it was named was a comment in `complete_hosted_link.py` asserting that it had one — which `restore-link-artifact` (#137) now is. **2**: the substance held on the only sink this task can reach (the artifact persists all four fields and reads them back through the key; the replacement-host sink is *refused* from this CLI), but `restore()` reported it wrong, passing that sink's `owed` straight through beneath a comment claiming it computed a union — fixed in #137. **Both look tickable once the stack lands; left for the reviewer** rather than ticked by a PR whose diff does not implement them. 1's replacement-host half stays refused until a verified far-side destination exists, which is the criterion's "either", not a gap) |
+| 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | **WIP** (the durable sink, its pre-exchange proof and the incomplete-receipt guard merged #129; the fence, crash classification and the `item_id` → `link_flow` write-back are in review as the #135 → #136 → #137 stack, with the 30-minute owner text and the duplicate-exchange branch on top of it. **The only acceptance box still owed work is the Sandbox rehearsal (5)**, which cannot run from `zelengs-macbook-air-2` — `/etc/networth` does not exist there and the rehearsal is a live run against the owner's VPS and Plaid Sandbox, so it wants his authorisation rather than an unattended start. `NETWORTH_ENV=production` acceptance is no longer owed: #137 added `test_production_is_not_refused_because_it_is_the_whole_scenario`, and `restore-link-artifact` is deliberately the one verb that does **not** gate on Production, because gating it would refuse the entire scenario `07b` is about. **Ticked below: 3, 4, 6, 7, 8, 9.** 7 and 8 landed together in #139 because they are one piece of work — 7 is the branch, 8 is its three shapes — and `link_pairing.py` had been shipping two refusals naming criterion 7 while nothing implemented it. 1, 2 and 10 are substantially met by #129 and stay unticked — 10 because its prompt is `06a`'s and unchanged; 1 and 2 because each was owed one thing that only this stack closes, and *what* was owed is recorded here so it is not derived a third time. **1**: the artifact branch had no *reachable* restore path — `link_sink.restore()` had no production caller on `main`, and the one place it was named was a comment in `complete_hosted_link.py` asserting that it had one — which `restore-link-artifact` (#137) now is. **2**: the substance held on the only sink this task can reach (the artifact persists all four fields and reads them back through the key; the replacement-host sink is *refused* from this CLI), but `restore()` reported it wrong, passing that sink's `owed` straight through beneath a comment claiming it computed a union — fixed in #137. **Both look tickable once the stack lands; left for the reviewer** rather than ticked by a PR whose diff does not implement them. 1's replacement-host half stays refused until a verified far-side destination exists, which is the criterion's "either", not a gap) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
 | 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | BLOCKED |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
@@ -1737,7 +1737,7 @@ capture is issue **#14**.
       that fails a ping can still be mid-`/link/token/get`. State plainly in the
       owner-facing text that this host is also his exit node (§15.1), so powering it off is
       a real decision and not a formality.
-- [ ] **The losing branch is classified from a measurement, not a guess — and the
+- [x] **The losing branch is classified from a measurement, not a guess — and the
       measurement came back the other way, so read this whole bullet before writing the
       branch.** This read: *"the `public_token` is single-use, so Plaid — not our database —
       is what actually enforces at-most-once on the wire. If both hosts reach the API, one
@@ -1780,7 +1780,43 @@ capture is issue **#14**.
       exchange that is free and one that silently spends a lifetime slot look identical
       from here. *(Sandbox only; Production is not measured and cannot be without spending
       a slot.)*
-- [ ] **The uncertain case is tested: the old VPS comes back after recovery exchanged.**
+
+      *Measured 2026-09-30 (`networth/link_duplicate.py`, `networth/link_sink.py`).* The branch
+      is keyed on returned Item identity and on nothing else, and **the place it lands is
+      `restore()` on the recovered host** — the one point where both identities exist at once:
+      one sealed in the artifact, one on the `SecretRecord` of whatever this host already holds.
+      Three outcomes, and the slot count is `len(identities)` rather than a constant, so the
+      same code path answers 1, 2 and 3 from the same arithmetic and `None` where the number is
+      not knowable.
+
+      **What was wrong rather than missing, and it is the same shape as criterion 4's.** The
+      collision was reported by `ReplacementHostSink.prepare_for` as *"already holds an access
+      token for flow X; it will not be overwritten. **If that material is the recovery you are
+      repeating, the exchange is already done**"* — a same-Item assertion made without comparing
+      the Items, with both of them in hand. Told the exchange is already done, the owner
+      concludes the artifact is redundant; in the distinct-Items case it is the only copy of the
+      other Item's credential **and** the only record that a second slot is gone. The verb then
+      invited exactly that: *"this verb can be re-run once the reason above is fixed"*, where
+      "the reason" is a credential that must not be moved. `link_crash` exists because
+      `prepare` said the same thing about the artifact, so this is the second instance of one
+      sentence in one file family.
+
+      **`TokenStore` never silently preferring one credential is structural, not policy**:
+      `put` publishes with `os.link`, so it raises rather than overwrites. Nothing here relaxes
+      it and nothing here invents a second name to file a duplicate under — a second credential
+      for one flow belongs to `07a`'s `link_result` row. In the distinct-Items case both
+      credentials are *already* retained, one in the store and one in the artifact; what was
+      missing was saying so, and saying what it cost.
+
+      **The discriminator is the material, not the identity — found by a test going red.**
+      A restore that already ran leaves its own credential under the very name a second run
+      collides with, naming the very Item this recovery returned, so on identity alone it is
+      indistinguishable from the old VPS having exchanged and got the same Item. It is not a
+      second exchange and no slot is in question, and `prepare_for`'s clause is *correct* for
+      it. Plaid issues a new `access_token` per exchange (which is how `06a` (ii) saw the first
+      one still HEALTHY beside an accepted duplicate), so equal material is one exchange seen
+      twice. Equal material with distinct Items cannot happen: one token names one Item.
+- [x] **The uncertain case is tested: the old VPS comes back after recovery exchanged.**
       Assert the outcome is classified honestly and that `TokenStore` never silently
       prefers one credential over another. **The Item count asserted must follow the
       identity the responses returned, not a fixed number.** This bullet used to require
@@ -1791,6 +1827,32 @@ capture is issue **#14**.
       entry, one slot), **distinct Items** (both retained, two slots), **unknown
       identity** (explicit unresolved, nothing discarded) — which needs no live exchange
       and no new owner action.
+
+      *Measured 2026-09-30 (`tests/test_link_duplicate.py`, 18 tests).* Every shape is
+      asserted at **two altitudes** — the verdict the branch reaches, and what
+      `read_item_budget` says about the same database — because the interesting claim is how
+      they differ, and **one of the two disagreements is the finding itself**: in the
+      distinct-Items case the budget counts **one**, because the recovered Item's credential is
+      in the artifact and this host's database has no row for it at all. It understates by
+      exactly the slot this shape exists to notice. That is not a defect in `26a` — there is
+      not even a nameless row to see — and it is why the verdict carries its own count and why
+      `keep` names the artifact. Once the second Item is recorded the arithmetic agrees (2),
+      which is what makes it a gap in the evidence rather than in the module. In the
+      unknown-identity shape **both layers decline to produce a number**: the verdict's `slots`
+      is `None` and `read_item_budget` raises *"EXCHANGED but names no Item"*.
+
+      *"Nothing discarded"* is asserted by **value**, not by existence: both credentials are
+      read back and compared to what was written, since a refusal that wrote first and failed
+      second leaves a file that still exists and still parses. `TokenStore.put` is separately
+      pinned to raise `SecretRefExists` rather than overwrite.
+
+      The control matters more than usual here, because three of the four outcomes are
+      negative and a classifier that answered UNRESOLVED to everything would satisfy all
+      three: the ordinary recovery — VPS dead **before** exchanging, row
+      `SUCCESS_PENDING_EXCHANGE`, store empty — reports *no duplicate*, one slot, `WRITTEN`,
+      complete. `TOKEN_EXPIRED` is likewise pinned as **not** a second exchange (reading it as
+      one would make `apply_pairing`'s deliberate write onto that row unreachable), and every
+      state that *is* one is pinned from the other side by parametrising over the tuple.
 - [x] The owner-facing text states **30 minutes**, and the script is pre-staged as one
       command — this is a minutes procedure, not a six-hour one.
       **The second half held from the start and the first half did not**, which is why
