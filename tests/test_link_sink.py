@@ -18,16 +18,20 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from networth.backup import crypto
 from networth.link_fence import ATTESTATION, FENCED_INSTANCE, FenceAttestation
+from networth.link_pairing import PairingResult, apply_pairing
 from networth.link_sink import (
     ARTIFACT_SCHEMA,
     FENCE_FIELD,
+    FLOW_PAIRING_FIELD,
     REQUIRED_FIELDS,
     ArtifactUnreadable,
     EmergencyArtifactSink,
@@ -37,8 +41,10 @@ from networth.link_sink import (
     SinkKind,
     SinkNotWritable,
     SinkWriteFailed,
+    pair_from_artifact,
     restore,
 )
+from networth.storage import migrate
 from networth.tokenstore import Secret, SecretKind, TokenStore, secret_ref_for
 
 NOW = datetime(2026, 9, 29, 4, 30, tzinfo=UTC)
@@ -52,6 +58,11 @@ ITEM_ID = "item-0000000000000000"
 #: A *minted* flow id: `secret_ref_for` takes 32 lowercase hex and nothing else,
 #: because the ref encodes it. A readable stand-in like `flow-0001` is rejected.
 FLOW_ID = "1f0c9a2b3d4e5f60718293a4b5c6d7e8"
+#: A `link_result` identity, distinct from every flow id here on purpose: the
+#: write-back picks its destination by `result_id`, and a constant that happened to
+#: equal a flow id would let that lookup be wrong and still pass.
+RESULT_ID = "4b5c6d7e8f90a1b2c3d4e5f607182930"
+STAMP = "2026-09-29T04:00:00Z"
 OTHER_FLOW_ID = "9a8b7c6d5e4f30211203a4b5c6d7e8f9"
 #: Criterion 6's attestation, as the verb would hand it over: confirmed a few minutes
 #: before the exchange, which is the only ordering the artifact can later show.
@@ -467,7 +478,12 @@ class TestTheArtifactIsAnArtifactAndNotJustBytes:
         unfenced.write_bytes(crypto.seal(json.dumps(_payload_without("fence")).encode(), key))
 
         with pytest.raises(ArtifactUnreadable, match="not fenced"):
-            restore(unfenced, key_file=key_file, token_store_directory=tmp_path / "tokens")
+            restore(
+                unfenced,
+                key_file=key_file,
+                token_store_directory=tmp_path / "tokens",
+                connection=None,
+            )
 
     def test_and_the_control_restores_when_the_same_payload_carries_one(
         self, tmp_path: Path, key_file: Path
@@ -478,9 +494,17 @@ class TestTheArtifactIsAnArtifactAndNotJustBytes:
         fenced = tmp_path / "fenced.sealed"
         fenced.write_bytes(crypto.seal(json.dumps(_payload_without()).encode(), key))
 
-        receipt = restore(fenced, key_file=key_file, token_store_directory=tmp_path / "tokens")
+        outcome = restore(
+            fenced,
+            key_file=key_file,
+            token_store_directory=tmp_path / "tokens",
+            connection=None,
+        )
 
-        assert receipt.complete
+        # The credential half, not `complete` — criterion 3's write-back needs a
+        # database this control deliberately does not have, and a control for the
+        # *fence* reader must not start failing over an unrelated criterion.
+        assert outcome.receipt.durable == (*REQUIRED_FIELDS, FENCE_FIELD)
 
     @pytest.mark.parametrize(
         "broken",
@@ -508,7 +532,12 @@ class TestTheArtifactIsAnArtifactAndNotJustBytes:
         artifact.write_bytes(crypto.seal(json.dumps(payload).encode(), key))
 
         with pytest.raises(ArtifactUnreadable, match="not fenced"):
-            restore(artifact, key_file=key_file, token_store_directory=tmp_path / "tokens")
+            restore(
+                artifact,
+                key_file=key_file,
+                token_store_directory=tmp_path / "tokens",
+                connection=None,
+            )
 
     def test_a_backup_archive_is_not_mistaken_for_one(self, tmp_path: Path, key_file: Path) -> None:
         # The envelope is shared with `03a`'s archives, so the schema name is what
@@ -519,7 +548,12 @@ class TestTheArtifactIsAnArtifactAndNotJustBytes:
         impostor.write_bytes(crypto.seal(json.dumps({"schema": "something.else"}).encode(), key))
 
         with pytest.raises(ArtifactUnreadable, match=ARTIFACT_SCHEMA):
-            restore(impostor, key_file=key_file, token_store_directory=tmp_path / "tokens")
+            restore(
+                impostor,
+                key_file=key_file,
+                token_store_directory=tmp_path / "tokens",
+                connection=None,
+            )
 
     def test_a_missing_optional_field_is_not_the_same_as_a_null_one(
         self, tmp_path: Path, key_file: Path
@@ -545,7 +579,12 @@ class TestTheArtifactIsAnArtifactAndNotJustBytes:
         )
 
         with pytest.raises(ArtifactUnreadable, match="request_id"):
-            restore(truncated, key_file=key_file, token_store_directory=tmp_path / "tokens")
+            restore(
+                truncated,
+                key_file=key_file,
+                token_store_directory=tmp_path / "tokens",
+                connection=None,
+            )
 
     def test_another_key_cannot_open_it(self, tmp_path: Path, key_file: Path) -> None:
         artifact = tmp_path / "artifact.sealed"
@@ -558,7 +597,9 @@ class TestTheArtifactIsAnArtifactAndNotJustBytes:
         other.chmod(0o600)
 
         with pytest.raises(ArtifactUnreadable):
-            restore(artifact, key_file=other, token_store_directory=tmp_path / "tokens")
+            restore(
+                artifact, key_file=other, token_store_directory=tmp_path / "tokens", connection=None
+            )
 
 
 class TestTheRestorePathExists:
@@ -573,7 +614,9 @@ class TestTheRestorePathExists:
         sink.commit(item(), now=NOW)
 
         tokens = tmp_path / "tokens"
-        receipt = restore(artifact, key_file=key_file, token_store_directory=tokens)
+        outcome = restore(
+            artifact, key_file=key_file, token_store_directory=tokens, connection=None
+        )
 
         store = TokenStore(tokens)
         reference = secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW_ID)
@@ -581,7 +624,7 @@ class TestTheRestorePathExists:
         assert store.record(reference).item_id == ITEM_ID
         # The pairing came out of the artifact, which is criterion 3's destination
         # for this branch — not the flow row the replacement-host sink reports.
-        assert receipt.pairing is Pairing.IN_ARTIFACT
+        assert outcome.receipt.pairing is Pairing.IN_ARTIFACT
 
     def test_a_restore_owes_nothing_it_is_already_carrying(
         self, tmp_path: Path, key_file: Path
@@ -599,11 +642,20 @@ class TestTheRestorePathExists:
         sink.prepare()
         sink.commit(item(), now=NOW)
 
-        receipt = restore(artifact, key_file=key_file, token_store_directory=tmp_path / "tokens")
+        outcome = restore(
+            artifact,
+            key_file=key_file,
+            token_store_directory=tmp_path / "tokens",
+            connection=None,
+        )
 
-        assert receipt.durable == (*REQUIRED_FIELDS, FENCE_FIELD)
-        assert receipt.owed == ()
-        assert receipt.complete
+        assert outcome.receipt.durable == (*REQUIRED_FIELDS, FENCE_FIELD)
+        # **Exactly** criterion 3's field, which is what makes this an assertion about
+        # the union rather than about emptiness: the fence and the two support ids are
+        # in the artifact this call opened, so none of them may appear here, while the
+        # flow pairing has nowhere to land without a database and must.
+        assert outcome.receipt.owed == (FLOW_PAIRING_FIELD,)
+        assert not outcome.complete
 
     def test_a_restore_that_would_overwrite_is_refused(
         self, tmp_path: Path, key_file: Path
@@ -617,7 +669,227 @@ class TestTheRestorePathExists:
         TokenStore(tokens).put(SecretKind.ACCESS_TOKEN, FLOW_ID, "an-earlier-token")
 
         with pytest.raises(SinkNotWritable, match="already holds"):
-            restore(artifact, key_file=key_file, token_store_directory=tokens)
+            restore(artifact, key_file=key_file, token_store_directory=tokens, connection=None)
+
+
+class TestTheRestoreAppliesTheFlowPairing:
+    """Criterion 3's second destination: *"applied during restore"*.
+
+    The restore is where both of the write-back's inputs exist at once — the
+    ``item_id`` arrives sealed beside the credential, and the ``link_flow`` row it
+    names lives in this host's database. Neither ``commit`` can do it, which is why
+    the pairing travels in the artifact at all.
+    """
+
+    def sealed(self, tmp_path: Path, key_file: Path) -> Path:
+        artifact = tmp_path / "artifact.sealed"
+        sink = EmergencyArtifactSink(artifact, key_file=key_file)
+        sink.prepare()
+        sink.commit(item(), now=NOW)
+        return artifact
+
+    def database(self, tmp_path: Path, *, state: str | None = "SUCCESS_PENDING_EXCHANGE") -> Any:
+        """A replacement host's database, restored from backup.
+
+        ``state=None`` is the shape this emergency usually has: the newest archive
+        predates the Link, so the success row the recovery would name was never in
+        it.
+        """
+        connection = sqlite3.connect(tmp_path / "replacement.sqlite")
+        migrate(connection)
+        connection.execute(
+            "INSERT INTO link_request(flow_id, minted_at, hosted_url_expires_at, state) "
+            "VALUES (?, ?, ?, 'URL_MINTED')",
+            (FLOW_ID, STAMP, STAMP),
+        )
+        if state is not None:
+            connection.execute(
+                "INSERT INTO link_result(result_id, flow_id, token_digest, state) "
+                "VALUES (?, ?, 'synthetic-digest', ?)",
+                (RESULT_ID, FLOW_ID, state),
+            )
+        connection.commit()
+        return connection
+
+    def test_the_recovered_item_reaches_the_flow_row_and_nothing_stays_owed(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        artifact = self.sealed(tmp_path, key_file)
+        connection = self.database(tmp_path)
+
+        outcome = restore(
+            artifact,
+            key_file=key_file,
+            token_store_directory=tmp_path / "tokens",
+            connection=connection,
+        )
+
+        assert outcome.pairing is not None
+        assert outcome.pairing.result is PairingResult.WRITTEN
+        assert outcome.receipt.owed == ()
+        assert outcome.complete
+        assert connection.execute(
+            "SELECT item_id FROM link_result WHERE result_id = ?", (RESULT_ID,)
+        ).fetchone() == (ITEM_ID,)
+        connection.close()
+
+    def test_a_database_older_than_the_link_leaves_the_pairing_owed(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        artifact = self.sealed(tmp_path, key_file)
+        connection = self.database(tmp_path, state=None)
+
+        outcome = restore(
+            artifact,
+            key_file=key_file,
+            token_store_directory=tmp_path / "tokens",
+            connection=connection,
+        )
+
+        assert outcome.pairing is not None
+        assert outcome.pairing.result is PairingResult.NO_ROW
+        assert outcome.receipt.owed == (FLOW_PAIRING_FIELD,)
+        assert not outcome.complete
+        # The credential is the half that must never be in doubt: a pairing that had
+        # nowhere to go does not make the restore a failure, and the token is spent.
+        assert (
+            TokenStore(tmp_path / "tokens")
+            .get(secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW_ID))
+            .reveal()
+            == ACCESS_TOKEN
+        )
+        connection.close()
+
+    def test_a_refusal_is_reported_rather_than_raised_over_a_durable_credential(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        """The order criterion 3's write-back is applied in, asserted as behaviour.
+
+        A row that reached ``EXCHANGED`` without an Item name makes the write-back
+        refuse. Raising here would present a recovery whose credential is durable as
+        a failure and invite a re-run, and a re-run exchanges a token that is already
+        spent — `06a` (ii) measured that second exchange as **ACCEPTED**. So the
+        refusal becomes an owed field carrying its own words.
+        """
+        artifact = self.sealed(tmp_path, key_file)
+        connection = self.database(tmp_path, state="EXCHANGED")
+
+        outcome = restore(
+            artifact,
+            key_file=key_file,
+            token_store_directory=tmp_path / "tokens",
+            connection=connection,
+        )
+
+        assert outcome.pairing is not None
+        assert outcome.pairing.result is PairingResult.REFUSED
+        assert "criterion 7" in outcome.pairing.detail
+        assert outcome.receipt.owed == (FLOW_PAIRING_FIELD,)
+        assert not outcome.complete
+        assert (
+            TokenStore(tmp_path / "tokens")
+            .get(secret_ref_for(SecretKind.ACCESS_TOKEN, FLOW_ID))
+            .reveal()
+            == ACCESS_TOKEN
+        )
+        assert connection.execute(
+            "SELECT item_id FROM link_result WHERE result_id = ?", (RESULT_ID,)
+        ).fetchone() == (None,)
+        connection.close()
+
+    def test_restoring_the_same_artifact_twice_is_still_complete(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        """The second run's ``TokenStore`` refusal comes first, and that is correct.
+
+        The credential is already there, so ``prepare_for`` refuses before anything
+        is written — which means an operator who re-runs a restore to *finish the
+        pairing* cannot get there this way. Asserted so the limitation is recorded
+        rather than discovered during criterion 5's rehearsal: finishing an owed
+        pairing needs the write-back on its own, not another restore.
+        """
+        artifact = self.sealed(tmp_path, key_file)
+        connection = self.database(tmp_path)
+        restore(
+            artifact,
+            key_file=key_file,
+            token_store_directory=tmp_path / "tokens",
+            connection=connection,
+        )
+
+        with pytest.raises(SinkNotWritable, match="already holds"):
+            restore(
+                artifact,
+                key_file=key_file,
+                token_store_directory=tmp_path / "tokens",
+                connection=connection,
+            )
+
+        assert apply_pairing(connection, flow_id=FLOW_ID, item_id=ITEM_ID).result is (
+            PairingResult.ALREADY_PAIRED
+        )
+        connection.close()
+
+    def test_the_pairing_can_be_applied_alone_because_the_restore_cannot_repeat(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        """What the previous test's limitation makes necessary.
+
+        ``pair_from_artifact`` reads the artifact for its two identifiers and touches
+        no credential, which is the only way an owed pairing can be finished once the
+        credential is already stored.
+        """
+        artifact = self.sealed(tmp_path, key_file)
+        connection = self.database(tmp_path)
+        restore(
+            artifact,
+            key_file=key_file,
+            token_store_directory=tmp_path / "tokens",
+            connection=None,
+        )
+
+        outcome = pair_from_artifact(artifact, key_file=key_file, connection=connection)
+
+        assert outcome.result is PairingResult.WRITTEN
+        assert connection.execute(
+            "SELECT item_id FROM link_result WHERE result_id = ?", (RESULT_ID,)
+        ).fetchone() == (ITEM_ID,)
+        connection.close()
+
+    def test_applying_the_pairing_alone_still_requires_a_fenced_artifact(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        """Criterion 6 is not weaker just because no credential moves.
+
+        It reads through :func:`read_artifact`, so an unfenced file cannot be a source
+        of accounting either — the same refusal, one column over.
+        """
+        key = crypto.load_backup_key(key_file)
+        unfenced = tmp_path / "unfenced.sealed"
+        unfenced.write_bytes(crypto.seal(json.dumps(_payload_without("fence")).encode(), key))
+        connection = self.database(tmp_path)
+
+        with pytest.raises(ArtifactUnreadable, match="not fenced"):
+            pair_from_artifact(unfenced, key_file=key_file, connection=connection)
+
+        connection.close()
+
+    def test_the_connection_argument_cannot_be_left_off(
+        self, tmp_path: Path, key_file: Path
+    ) -> None:
+        """A structural guard, and mutation testing cannot see it.
+
+        Removing the keyword-only parameter leaves every call site valid, so no
+        behavioural test goes red — while a caller that omitted it would silently get
+        the credential-only restore this criterion exists to end. The type is the
+        guard; this is the test that the type is still there.
+        """
+        artifact = self.sealed(tmp_path, key_file)
+
+        with pytest.raises(TypeError, match="connection"):
+            restore(  # type: ignore[call-arg]
+                artifact, key_file=key_file, token_store_directory=tmp_path / "tokens"
+            )
 
 
 class TestNothingPrintsMaterial:
