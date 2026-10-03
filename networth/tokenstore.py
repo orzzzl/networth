@@ -51,6 +51,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -243,6 +244,32 @@ def parse_secret_ref(secret_ref: str) -> tuple[SecretKind, str]:
     if match is None:
         raise InvalidSecretRef("not a well-formed secret_ref")
     return SecretKind(match.group("kind")), match.group("flow_id")
+
+
+def inspect_presence(directory: Path, secret_ref: str) -> dict[str, str]:
+    """Inspect both predictable names without reading material or creating a store.
+
+    PRESENT is file presence, never proof of usable credentials. Access errors,
+    symlinks and non-regular files are UNKNOWN, not evidence of absence.
+    """
+    parse_secret_ref(secret_ref)
+    result: dict[str, str] = {}
+    for label, name in (
+        ("published", f"{secret_ref}{_SUFFIX}"),
+        ("pending", f".{secret_ref}{_PENDING_SUFFIX}"),
+    ):
+        try:
+            root = directory.lstat()
+            if not stat.S_ISDIR(root.st_mode):
+                result[label] = "UNKNOWN"
+                continue
+            mode = (directory / name).lstat().st_mode
+            result[label] = "PRESENT" if stat.S_ISREG(mode) else "UNKNOWN"
+        except FileNotFoundError:
+            result[label] = "ABSENT"
+        except OSError:
+            result[label] = "UNKNOWN"
+    return result
 
 
 class TokenStore:

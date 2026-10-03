@@ -115,6 +115,12 @@ def _statements(script: str, *, name: str) -> Iterator[str]:
         raise MigrationError(f"migration {name!r} ends with an incomplete SQL statement")
 
 
+def require_current_schema(connection: sqlite3.Connection) -> None:
+    """Validate a reader's schema without migrating or changing journal mode."""
+    if _schema_version(connection) != _load_migrations()[-1].version:
+        raise MigrationError("read commands require the current schema; migrate separately")
+
+
 def migrate(connection: sqlite3.Connection) -> tuple[int, ...]:
     """Advance ``connection`` to the newest packaged schema.
 
