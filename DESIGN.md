@@ -3707,8 +3707,20 @@ successful Plaid reads rather than consume the full-cycle due clock prematurely.
 A failed Plaid plan persists its observations/retries and alerts with `ok=0`,
 without requesting manual prices or creating a snapshot. Idle/deferred activations
 still evaluate alerts. The future executable must select this full-cycle runner,
-not the Plaid-only component. Quote-only refresh, independent publication/archive
-scheduling, executable wiring and live acceptance remain owed by task 16.
+not the Plaid-only component. Quote-only refresh is described below; independent
+publication/archive scheduling, executable wiring and live acceptance remain owed.
+
+`QuoteCycleDispatcher` now composes the source-price due planner with manual
+valuation, snapshot creation and alert evaluation. It records an `OTHER` run,
+collects without a transaction, then atomically commits its results. Existing
+linked values are carried with their original source/fetch clocks and an explicit
+carry flag; their account fetch summaries and Item retry state do not advance.
+Missing/future linked evidence refuses completion. The resulting snapshot is
+incomplete when it carries values, and quote success cannot satisfy full-sync
+clocks. An unchanged old quote stays due. Idle admission is read-only; the future
+runtime must still invoke independent alert evaluation before publication even
+when this job is idle or fails. Publication/archive scheduling, executable wiring
+and live acceptance remain owed.
 
 **Why the full sync has two predicates and not one.** *(From review. Rev 3 made
 a sync due only after a new market close, which quietly redefined the product:
