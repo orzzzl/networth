@@ -1,0 +1,23 @@
+[Unit]
+Description=Networth sync
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=networth
+Group=networth
+Environment=HOME=/var/lib/networth
+EnvironmentFile=/etc/networth/networth.env
+WorkingDirectory=/var/lib/networth
+ExecStart=/usr/local/bin/networth daemon sync
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/networth /etc/networth
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

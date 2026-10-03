@@ -109,7 +109,7 @@ that row. He caught it, not us.)
 | 13 | Manual assets: property revision log + share counts | 04 | **claude** | codex | **DONE** (#40, 2026-09-05) |
 | 14 | Snapshotter + net-worth computation | 12, 13 | **codex** | claude | **DONE** (#69, 2026-09-10) |
 | 15 | Alerts: payload-carried delivery | 11 | **claude** (reassigned 2026-09-09) | codex | **DONE** (#61, 2026-09-09) |
-| 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | **WIP** (capture/transport/due planner/worker boundary merged #118/#120/#121/#122; full-sync dispatch/retry admission merged #124; health dispatch and worker guards merged #125; manual quote cycle inputs merged #128; cycle alert dispatch merged #130; full-cycle completion and quote-due planner merged #131/#133; quote-only dispatch in review; publication/archive scheduling, runtime wiring and live acceptance remain owed) |
+| 16 | systemd units + timer + due-ness engine + catch-up + **live install** | 10, 12, 14, 15, 07a, 20, 28 | **codex** | claude | **WIP** (runtime composition, independent publication/archive timers, Link supervisor and installer implemented; live deployment and full Link latency acceptance tracked in RUNTIME.md) |
 | 27 | Periodic nudge to re-confirm a manual share count | 13, 15 | **claude** | codex | **DONE** (#65, 2026-09-09) |
 
 ### Phase 4 — getting the number onto the phone
@@ -117,7 +117,7 @@ that row. He caught it, not us.)
 | # | Task | Deps | Assignee | Reviewer | Status |
 |---|---|---|---|---|---|
 | 17 | `NetWorthQuery` read layer | 14 | **codex** | claude | **DONE** (#71, 2026-09-14) |
-| 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | **READY** |
+| 18 | CLI: `show` / `history` / `doctor` | 17 | **codex** | claude | **DONE** (#141) |
 | 19 | Payload schema + `Publisher` (encrypt) | 15, 17, 26a | **codex** | claude | **DONE** (#74, 2026-09-15) |
 | 20 | The daemon's one HTTP route + freshness monitoring | 19, 28 | **codex** | claude | **DONE** (#79, 2026-09-16) |
 | 19a | Pairing: `networth pair` / `revoke` + app secure storage | 19, 20 | **codex** | claude | **DONE** (#82, 2026-09-16) |

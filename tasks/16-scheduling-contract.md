@@ -1,5 +1,12 @@
 # Task 16: Link scheduling and archive capture decision
 
+**2026-10-03 runtime update:** `RUNTIME.md` and DESIGN section 13 describe the
+implemented service roles. Publication and archive jobs have independent timers;
+the Link supervisor scans every 30 seconds and gives each flow its own process.
+The historical three-role proposal below is superseded by those five roles.
+Production completion remains task08-gated; the five-minute wall-clock acceptance
+is not claimed by this deployment. No review gate remains under the owner directive.
+
 Status: A approved and merged in PR #115; capture-boundary implementation
 merged in PR #118; socket timeout/no-retry policy merged in PR #120.
 Stored-state full-sync planning merged in PR #121 and worker collection/persistence
