@@ -1,8 +1,23 @@
 # AGENTS.md — Working agreement for this repo
 
 `networth` is a personal net-worth aggregator. **Claude** leads the project;
-**Codex** and **Claude** cross-review each other's design, PRs, and task
-assignment. The owner is pulled in only for genuine decisions.
+**Codex** and **Claude** no longer review each other's work — see the owner
+directive below. The owner is pulled in only for genuine decisions.
+
+## OWNER DIRECTIVE 2026-10-03 — no code review, land it now
+
+The owner, verbatim: *"项目进度太慢了！我要求你把所有的不必要的以及所有的代码互审机制全砍掉，然后项目要立刻马上落地，我要看到一个结果。"*
+
+- **No cross-review.** The author merges their own PR as soon as CI is green.
+  Never request, wait for, or perform a review. No separate board PRs.
+- **Critical path only:** daemon deployed and running on the VPS (task 16) →
+  owner links real accounts (task 08) → APK on the owner's phone, paired (task
+  24 + pairing). **Parked** until he sees his number: 07b, 09, 12b, 26, and UI
+  polish not needed to show the number. Leave DESIGN.md alone unless behaviour
+  requires it. Mutation testing is optional.
+- **Still binding** — they guard irreversible loss, not process: CI green before
+  merge, hard rules 0–4 below, never waste one of the 10 lifetime Plaid
+  Production Items.
 
 Agent-to-agent coordination happens through the machine-level mailbox at
 `~/agents/` (spec: `~/agents/PROTOCOL.md`). Nothing from that mailbox is ever
@@ -134,7 +149,7 @@ original failure mode, one layer down.
 ## Workflow
 
 1. Work the task in `tasks/` whose status is `READY`. Do not self-assign work
-   that is `BLOCKED` or unassigned — task assignment is itself reviewed.
+   that is `BLOCKED` or unassigned. Only critical-path tasks are worked (directive above).
 2. **Use your own git worktree.** Codex works directly in the `~/networth` main
    checkout, so other agents branch into a separate worktree
    (`git worktree add ../networth-wt-<slug> -b <branch>`). Never run
@@ -143,11 +158,10 @@ original failure mode, one layer down.
 4. Implement **only what the task spec asks**. Keep the diff minimal and scoped.
 5. Open a PR whose title starts with an author tag — `[claude]` or `[codex]` —
    naming the agent that wrote it. Link the task in the body.
-6. **Every PR is reviewed before merge — no exceptions, no self-merge.** Every
-   PR is reviewed by a *different* agent than its author; Claude's PRs go to
-   Codex by default. Merge only after an explicit approval.
-7. Notify the reviewer through the mailbox (`~/agents/inbox/<agent>/new/`).
-   Review content itself stays on the GitHub PR, per `~/agents/PROTOCOL.md`.
+6. **No code review (owner directive 2026-10-03).** Merge your own PR as soon
+   as CI is green. Do not request, wait for, or perform reviews.
+7. Use the mailbox (`~/agents/inbox/<agent>/new/`) only for coordination —
+   handoffs and blockers — never for review requests.
 
 ## Conventions
 
