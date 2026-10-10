@@ -14,10 +14,11 @@ commit that is installed on the host.
 
 1. **Pair first.** Tailscale on the phone must be connected. Run
    `scripts/pair-phone.sh`, scan the QR code with the phone's camera, copy the text
-   it shows, and paste it into *Pair this phone* in the app. The app then shows a
-   total of zero with its date. That proves the phone can reach the daemon before
-   anything irreversible happens. Running the command again re-pairs; the previous
-   pairing stops working at once.
+   it shows, and paste it into *Pair this phone* in the app. Within a minute or
+   two the app shows `$0.00`, *no dated source for this total*, and when that was
+   published — which is what the daemon publishes while nothing is connected, and
+   proves the phone can reach it before anything irreversible happens. Running the
+   command again re-pairs; the previous pairing stops working at once.
 2. **Rehearse once.** `scripts/link.sh --sandbox` opens Plaid's page; choose any
    institution and log in as `user_good` / `pass_good`. Keep the terminal window
    open until it says `Connected`. Nothing real is connected. This is the only run
