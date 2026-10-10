@@ -18,6 +18,15 @@ is run by agents.
 (``networth-link.service``) is the only thing that polls the provider or
 exchanges a token. A status read that could poll would put a second, unlocked
 caller in front of a 30-minute exchange window.
+
+**Two things it reports exist because a healthy-looking host was not one.**
+``polls`` counts the successful polls on record for a flow: the driver shows no
+URL until that number moves, because ``systemctl is-active`` stayed green on a
+host whose worker could not start. And a request waiting for closure is counted
+apart from material the host could not attribute. Every *released* request gets a
+``COVERAGE_UNPROVEN`` observation when its page expires, finished or not; it is
+the ordinary end of a Link, and reporting it as stray material told the owner to
+stop over a connection that had worked.
 """
 
 from __future__ import annotations
@@ -62,6 +71,21 @@ _PENDING = (
     "SELECT count(*) FROM link_request WHERE material_reaped_at IS NULL "
     "OR EXISTS (SELECT 1 FROM link_result r WHERE r.flow_id = link_request.flow_id "
     "AND r.state = 'EXCHANGING')"
+)
+
+#: What a flow's page leaves behind at expiry, and what else can be unresolved.
+_UNRESOLVED = "SELECT count(*) FROM link_success_observation WHERE resolved_at IS NULL "
+_COVERAGE = "AND reason = 'COVERAGE_UNPROVEN'"
+_NOT_COVERAGE = "AND reason <> 'COVERAGE_UNPROVEN'"
+
+#: The first instant at which a released, still-open request expires and the
+#: budget read starts refusing. A request already carrying its coverage
+#: observation is excluded: it is refusing now, or an agent has answered it.
+_MINT_WINDOW_ENDS = (
+    "SELECT min(hosted_url_expires_at) FROM link_request "
+    "WHERE url_release_authorized_at IS NOT NULL AND polling_closed_at IS NULL "
+    "AND NOT EXISTS (SELECT 1 FROM link_success_observation AS o "
+    "WHERE o.flow_id = link_request.flow_id AND o.reason = 'COVERAGE_UNPROVEN')"
 )
 
 #: Local Item rows bought by this flow: an exchanged result names the Item.
@@ -122,6 +146,13 @@ def _flow(db: sqlite3.Connection, flow_id: str, now: datetime) -> dict[str, obje
         and datetime.fromisoformat(last_poll_at) >= expires,
         "poll_failing": poll_error is not None,
         "closed": closed_at is not None,
+        # The mint makes the first of these itself, so only a later one says the
+        # service is watching this request.
+        "polls": _count(
+            db,
+            "SELECT count(*) FROM link_poll_history WHERE flow_id = ? AND outcome = 'OBSERVED'",
+            flow_id,
+        ),
         "sessions": _count(db, "SELECT count(*) FROM link_session WHERE flow_id = ?", flow_id),
         "results": results,
         "holds": _count(
@@ -129,12 +160,8 @@ def _flow(db: sqlite3.Connection, flow_id: str, now: datetime) -> dict[str, obje
             "SELECT count(*) FROM link_material_hold WHERE flow_id = ? AND resolved_at IS NULL",
             flow_id,
         ),
-        "unidentified": _count(
-            db,
-            "SELECT count(*) FROM link_success_observation "
-            "WHERE flow_id = ? AND resolved_at IS NULL",
-            flow_id,
-        ),
+        "awaiting_closure": _count(db, _UNRESOLVED + _COVERAGE + " AND flow_id = ?", flow_id) > 0,
+        "unidentified": _count(db, _UNRESOLVED + _NOT_COVERAGE + " AND flow_id = ?", flow_id),
         "items": _count(db, f"SELECT count(*) FROM {items}", flow_id),
         "items_discovered": _count(
             db,
@@ -172,6 +199,12 @@ def collect(
             "environment": environment.value,
             "budget": _budget(db),
             "pending_requests": _count(db, _PENDING),
+            # Why a budget is UNAVAILABLE, as far as counts can say: requests an
+            # agent has yet to close, and anything else nobody has answered for.
+            "awaiting_closure": _count(db, _UNRESOLVED + _COVERAGE),
+            "unattributed": _count(db, _UNRESOLVED + _NOT_COVERAGE)
+            + _count(db, "SELECT count(*) FROM link_material_hold WHERE resolved_at IS NULL"),
+            "mint_window_ends_at": db.execute(_MINT_WINDOW_ENDS).fetchone()[0],
             "items": _count(db, "SELECT count(*) FROM item"),
             "paired": _count(db, "SELECT count(*) FROM pairing WHERE state = 'ACTIVE'") == 1,
             # True only when what the phone would fetch is the newest snapshot.

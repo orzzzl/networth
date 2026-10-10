@@ -35,7 +35,10 @@ from networth.owner_link import (
     EXIT_OK,
     EXIT_REFUSED,
     EXIT_UNFINISHED,
+    PROVE_POLLING_FOR,
     REQUIRED_UNITS,
+    STALL_AFTER,
+    WATCH_FOR,
     RemoteFailure,
     judge,
     report_status,
@@ -85,6 +88,23 @@ class Console:
         return "\n".join(self.lines)
 
 
+class Clock:
+    """A clock only the driver's own sleeps move, so a test reads elapsed time exactly."""
+
+    def __init__(self) -> None:
+        self.start = self.now = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
+
+    @property
+    def elapsed(self) -> timedelta:
+        return self.now - self.start
+
+
 def budget(remaining: int = 10) -> dict[str, Any]:
     return {
         "state": "AVAILABLE",
@@ -105,9 +125,11 @@ def flow_status(**overrides: Any) -> dict[str, Any]:
         "polled_after_expiry": False,
         "poll_failing": False,
         "closed": False,
+        "polls": 1,
         "sessions": 0,
         "results": dict.fromkeys(link_status.RESULT_STATES, 0),
         "holds": 0,
+        "awaiting_closure": False,
         "unidentified": 0,
         "items": 0,
         "items_discovered": 0,
@@ -126,6 +148,9 @@ def status(flow: dict[str, Any] | None = None, **overrides: Any) -> dict[str, An
         "environment": "production",
         "budget": budget(),
         "pending_requests": 0,
+        "awaiting_closure": 0,
+        "unattributed": 0,
+        "mint_window_ends_at": None,
         "items": 0,
         "paired": False,
         "published_latest": False,
@@ -157,13 +182,36 @@ class ScriptedHost:
         self.authorize_lines: list[str] | Exception = [ACK + FLOW]
         self.material: list[str] = []
         self.pass_fails = False
+        #: What makes the request's poll count move before the URL is released:
+        #: "service" (it moves by itself), "pass" (only a worker pass run by the
+        #: driver moves it) or None (nothing does).
+        self.poller: str | None = "service"
+        self._polls = 1  # the mint's own
+        #: What every status read returns once ``flows`` is used up.
+        self.steady: dict[str, Any] | None = None
+
+    def _before_release(self) -> dict[str, Any]:
+        """A status read made between the mint and the release: the polling proof."""
+        answer = status(flow_status(released=False, polls=self._polls))
+        if self.poller == "service":
+            self._polls += 1
+        return answer
 
     def verb(
         self, name: str, *arguments: str, material: str = "", stated: bool = True
     ) -> list[str]:
         self.calls.append(" ".join([name, *arguments]))
         if name == "link-status":
-            answer: Any = self.preflight if not arguments else self.flows.pop(0)
+            answer: Any
+            if not arguments:
+                answer = self.preflight
+            elif "link-status" in self.calls and "link-authorize" not in self.calls:
+                # After a preflight and before the release: the polling proof.
+                answer = self._before_release()
+            elif not self.flows and self.steady is not None:
+                answer = self.steady
+            else:
+                answer = self.flows.pop(0)
             if isinstance(answer, Exception):
                 raise answer
             return ["noise the driver must skip", link_status.to_wire(answer)]
@@ -177,9 +225,12 @@ class ScriptedHost:
                 raise self.authorize_lines
             return self.authorize_lines
         if name == "daemon":
-            assert not stated, "codex's daemon verb takes no --environment"
-            if self.pass_fails:
-                raise RemoteFailure("a pass that found nothing yet")
+            assert not stated, "the daemon verb takes no --environment"
+            if arguments[0] == "link-flow":
+                if self.poller == "pass":
+                    self._polls += 1
+                if self.pass_fails:
+                    raise RemoteFailure("a pass that recorded a failure")
             return []
         if name == "backup":
             return []
@@ -319,7 +370,8 @@ def test_the_url_is_shown_only_after_the_copy_is_on_disk_and_the_host_acknowledg
 
     assert exit_code == EXIT_OK
     assert canaried == [["units", "link-status"]], "the backup check precedes the mint"
-    assert host.calls == ["units", "link-status", "link-mint", "link-authorize"]
+    proof = f"link-status --flow {FLOW}"
+    assert host.calls == ["units", "link-status", "link-mint", proof, proof, "link-authorize"]
     ((url, copy_existed, calls_when_opened),) = opened
     assert url == URL and copy_existed and calls_when_opened[-1] == "link-authorize"
     # What the host was sent is the record this Mac holds, holder and all.
@@ -358,7 +410,7 @@ def test_a_failure_anywhere_before_the_acknowledgement_shows_no_url(
     assert opened == []
     assert URL not in console.text and LINK_TOKEN not in console.text
     assert "Nothing can have been spent" in console.text
-    assert "link-status --flow" not in " ".join(host.calls), "it must not start watching"
+    assert host.calls[-1] in {"link-mint", "link-authorize"}, "it must not start watching"
 
 
 def test_a_copy_that_cannot_be_written_stops_before_the_host_is_told(tmp_path: Path) -> None:
@@ -378,7 +430,8 @@ def test_resume_shows_an_existing_flows_page_again_without_minting(tmp_path: Pat
     again = Console(CONFIRMATION)
 
     assert link(host, again, tmp_path, watch=False, resume=FLOW) == EXIT_OK
-    assert host.calls == ["units", "link-status", "link-authorize"]
+    proof = f"link-status --flow {FLOW}"
+    assert host.calls == ["units", "link-status", proof, proof, "link-authorize"]
     assert again.text.count(URL) == 1
 
 
@@ -475,11 +528,13 @@ def test_a_login_finished_at_the_last_second_is_still_linked(tmp_path: Path) -> 
     late = flow_status(
         url_expired=True, polled_after_expiry=True, results={"EXCHANGED": 1}, items=1
     )
-    host.flows = [status(flow_status(url_expired=True)), status(late), status(late)]
-    clock = iter(datetime(2026, 10, 3, tzinfo=UTC) + timedelta(minutes=m) for m in range(0, 99, 3))
+    host.flows = [status(flow_status(url_expired=True))]
+    host.steady = status(late)
+    clock = Clock()
 
-    assert link(host, console, tmp_path, clock=lambda: next(clock)) == EXIT_OK
+    assert link(host, console, tmp_path, clock=clock, sleep=clock.sleep) == EXIT_OK
     assert "Connected." in console.text
+    assert "Its account list has not been read yet" in console.text
 
 
 def test_losing_the_host_is_not_reported_as_a_failed_link(tmp_path: Path) -> None:
@@ -492,14 +547,89 @@ def test_losing_the_host_is_not_reported_as_a_failed_link(tmp_path: Path) -> Non
     assert "failed" not in console.text.lower()
 
 
-def test_the_driver_gives_up_watching_quietly_when_nothing_ever_happens(tmp_path: Path) -> None:
-    host, console = ScriptedHost(), Console(CONFIRMATION)
-    host.flows = [status(flow_status())] * 3
-    start = datetime(2026, 10, 3, tzinfo=UTC)
-    clock = iter([start, start, start + timedelta(minutes=39), start + timedelta(minutes=41)])
+def test_an_expired_page_nothing_has_checked_since_is_never_called_unfinished(
+    tmp_path: Path,
+) -> None:
+    """With no poll after expiry, "no login was seen" is a guess about a spent slot."""
+    host, console, clock = ScriptedHost(), Console(CONFIRMATION), Clock()
+    host.steady = status(flow_status(url_expired=True))
 
-    assert link(host, console, tmp_path, clock=lambda: next(clock)) == EXIT_UNFINISHED
-    assert len(host.flows) == 1
+    exit_code = link(host, console, tmp_path, clock=clock, sleep=clock.sleep)
+
+    assert exit_code == EXIT_NEEDS_ATTENTION
+    assert clock.elapsed >= WATCH_FOR
+    assert "cannot say whether a login finished" in console.text
+    assert "no finished login was seen" not in console.text
+    assert "Do not run this again" in console.text and FLOW in console.lines[-1]
+
+
+# --- the host must be seen polling, before the URL and while it is open ----------
+
+
+@pytest.mark.parametrize("poller", [None, "pass"], ids=["nothing-polls", "only-a-pass-would"])
+def test_no_url_is_shown_until_the_hosts_service_polls_the_new_request(
+    tmp_path: Path, poller: str | None
+) -> None:
+    """`is-active` was green on a host whose worker could not start. This is not."""
+    host, console, clock = ScriptedHost(), Console(CONFIRMATION), Clock()
+    host.poller = poller
+    opened: list[str] = []
+
+    exit_code = link(
+        host, console, tmp_path, clock=clock, sleep=clock.sleep, open_url=opened.append
+    )
+
+    assert exit_code == EXIT_NEEDS_ATTENTION
+    assert opened == [] and URL not in console.text
+    assert "link-authorize" not in host.calls, "an unreleased request closes itself at expiry"
+    # In Production the proof has to come from the service: a pass run by the
+    # driver here would move the count and prove nothing about what catches
+    # a login after this window is closed.
+    assert not any(call.startswith("daemon") for call in host.calls)
+    assert clock.elapsed >= PROVE_POLLING_FOR
+    assert "Nothing can have been spent" in console.text
+    assert "Running this again will not help" in console.text and FLOW in console.lines[-1]
+
+
+def test_the_mints_own_poll_does_not_count_as_the_service_polling(tmp_path: Path) -> None:
+    host, console, clock = ScriptedHost(), Console(CONFIRMATION), Clock()
+    host.poller = None
+    host._polls = 7  # however many are already on record, the count has to move
+
+    assert link(host, console, tmp_path, clock=clock, sleep=clock.sleep) == EXIT_NEEDS_ATTENTION
+    assert URL not in console.text
+
+
+def test_while_the_service_keeps_polling_production_never_runs_the_pass_itself(
+    tmp_path: Path,
+) -> None:
+    host, console, clock = ScriptedHost(), Console(CONFIRMATION), Clock()
+    waiting = [status(flow_status(polls=n)) for n in range(2, 40)]  # one new poll per read
+    done = status(flow_status(polls=40, results={"EXCHANGED": 1}, items=1, items_discovered=1))
+    host.flows = [*waiting, done, done]
+
+    assert link(host, console, tmp_path, clock=clock, sleep=clock.sleep) == EXIT_OK
+    assert clock.elapsed > STALL_AFTER
+    assert not any(call.startswith("daemon") for call in host.calls)
+    assert "gone quiet" not in console.text
+
+
+def test_a_service_that_goes_quiet_with_a_page_open_is_covered_by_this_window(
+    tmp_path: Path,
+) -> None:
+    """The token must not expire because the one process meant to catch it stopped."""
+    host, console, clock = ScriptedHost(), Console(CONFIRMATION), Clock()
+    quiet = status(flow_status(polls=2))
+    done = status(flow_status(polls=3, results={"EXCHANGED": 1}, items=1, items_discovered=1))
+    host.flows.extend([quiet] * 12 + [done, done])
+
+    assert link(host, console, tmp_path, clock=clock, sleep=clock.sleep) == EXIT_OK
+    passes = [i for i, call in enumerate(host.calls) if call.startswith("daemon link-flow")]
+    watched = [i for i, call in enumerate(host.calls) if call == "link-authorize"][0]
+    reads_before_first_pass = host.calls[watched : passes[0]].count(f"link-status --flow {FLOW}")
+    assert reads_before_first_pass * 10 >= STALL_AFTER.total_seconds()
+    assert console.text.count("gone quiet") == 1
+    assert "Connected." in console.text
 
 
 # --- sandbox is the same path with the Production-only steps left out ----------
@@ -510,15 +640,28 @@ def test_the_sandbox_rehearsal_asks_for_nothing_and_drives_the_worker_itself(
 ) -> None:
     host, console = ScriptedHost(), Console(tty=False)
     host.pass_fails = True
+    host.poller = "pass"  # Sandbox has no service: only a pass moves the count
     host.preflight = status(environment="sandbox")
     done = flow_status(results={"EXCHANGED": 1}, items=1, items_discovered=1)
     host.flows = [status(flow_status()), status(done), status(done)]
 
     assert link(host, console, tmp_path, environment=SANDBOX) == EXIT_OK
-    assert "units" not in host.calls and "start-sync" not in host.calls
     assert console.prompts == []
-    assert host.calls.count(f"daemon link-flow --flow {FLOW}") == 2
+    read, run_pass = f"link-status --flow {FLOW}", f"daemon link-flow --flow {FLOW}"
+    assert host.calls == [
+        "daemon init",  # nothing installs a Sandbox database
+        "link-status",
+        "link-mint",
+        *(read, run_pass, read),  # the proof, driven here because nothing else will
+        "link-authorize",
+        *(run_pass, read, run_pass, read),
+        "daemon sync",  # and no timer fetches a Sandbox Item
+        read,
+    ]
     assert "no account of a kind this version counts" in console.text
+    assert "pair-phone" not in console.text, "pairing is Production's; Sandbox shares its key file"
+    assert "user_good / pass_good" in console.text and "Keep this window open" in console.text
+    assert "the host keeps working" not in console.text, "no service completes a Sandbox flow"
 
 
 # --- one-shot status ----------------------------------------------------------
@@ -529,10 +672,19 @@ def test_the_sandbox_rehearsal_asks_for_nothing_and_drives_the_worker_itself(
     [
         (flow_status(), EXIT_UNFINISHED, "No finished login has been seen yet"),
         (flow_status(results={"EXCHANGING": 1}), EXIT_UNFINISHED, "is exchanging it"),
-        (flow_status(closed=True), EXIT_UNFINISHED, "page expired"),
+        (
+            flow_status(url_expired=True, polled_after_expiry=True, awaiting_closure=True),
+            EXIT_UNFINISHED,
+            "tell the agents to close this flow",
+        ),
+        (
+            flow_status(request="URL_EXPIRED", closed=True, released=False),
+            EXIT_UNFINISHED,
+            "expired unused and is closed. Nothing was spent",
+        ),
         (flow_status(results={"TOKEN_EXPIRED": 1}), EXIT_NEEDS_ATTENTION, "STOP"),
     ],
-    ids=["waiting", "exchanging", "unfinished", "attention"],
+    ids=["waiting", "exchanging", "expired-released", "expired-unreleased", "attention"],
 )
 def test_status_says_where_a_flow_stands_without_touching_it(
     flow: dict[str, Any], code: int, phrase: str
@@ -552,6 +704,72 @@ def test_judge_ranks_bad_news_above_a_success_beside_it() -> None:
     assert judge(flow_status(results={"EXCHANGED": 2})).state == "LINKED"
     assert judge(flow_status(request="URL_EXPIRED")).state == "UNFINISHED"
     assert judge(flow_status(url_expired=True)).state == "WAITING"
+
+
+def test_a_request_waiting_for_closure_is_not_reported_as_stray_material() -> None:
+    """Every released request carries the observation once its page expires."""
+    expired = {"url_expired": True, "polled_after_expiry": True, "awaiting_closure": True}
+    assert judge(flow_status(**expired, results={"EXCHANGED": 1})).state == "LINKED"
+    assert judge(flow_status(**expired)) == judge(
+        flow_status(url_expired=True, polled_after_expiry=True)
+    )
+    assert judge(flow_status(**expired, unidentified=1)).state == "ATTENTION"
+
+
+def test_status_of_a_linked_flow_reports_it_without_starting_anything(tmp_path: Path) -> None:
+    host, console = ScriptedHost(), Console()
+    done = flow_status(
+        results={"EXCHANGED": 1}, items=1, items_discovered=1, accounts=2, accounts_in_snapshot=2
+    )
+    host.flows = [status(done), status(done, paired=True, published_latest=True)]
+
+    assert report_status(host, console, FLOW, environment=PRODUCTION) == EXIT_OK
+    assert host.calls == [f"link-status --flow {FLOW}"] * 2
+    assert "2 account(s) recorded; 2 already in the total." in console.text
+    assert "the next time the app is opened" in console.text
+
+
+@pytest.mark.parametrize(
+    ("overrides", "phrase", "absent"),
+    [
+        ({"awaiting_closure": 1}, "agents have not closed it out yet", "stored Link evidence"),
+        ({"awaiting_closure": 1, "unattributed": 1}, "stored Link evidence", "closed it out"),
+        ({}, "stored Link evidence", "closed it out"),
+    ],
+    ids=["awaiting-closure", "closure-and-stray-material", "unexplained"],
+)
+def test_a_refused_count_says_which_kind_of_refusal_it_is(
+    tmp_path: Path, overrides: dict[str, Any], phrase: str, absent: str
+) -> None:
+    host, console = ScriptedHost(), Console(CONFIRMATION)
+    host.preflight = status(budget={"state": "UNAVAILABLE"}, **overrides)
+
+    assert link(host, console, tmp_path) == EXIT_REFUSED
+    assert phrase in console.text and absent not in console.text
+    assert "Nothing was minted" in console.text and "link-mint" not in host.calls
+
+
+def test_the_owner_is_told_until_when_another_institution_can_be_connected(
+    tmp_path: Path,
+) -> None:
+    host, console, clock = ScriptedHost(), Console(CONFIRMATION), Clock()
+    done = flow_status(
+        results={"EXCHANGED": 1}, items=1, items_discovered=1, accounts=1, accounts_in_snapshot=1
+    )
+    closes = clock() + timedelta(minutes=25)
+    host.flows = [status(done), status(done, mint_window_ends_at=closes.isoformat())]
+
+    assert link(host, console, tmp_path, clock=clock, sleep=clock.sleep) == EXIT_OK
+    assert f"run this again before {closes.astimezone():%H:%M}" in console.text
+
+    host, console = ScriptedHost(), Console(CONFIRMATION)
+    host.flows = [
+        status(done),
+        status(done, budget={"state": "UNAVAILABLE"}, awaiting_closure=1),
+    ]
+    assert link(host, console, tmp_path / "second") == EXIT_OK
+    assert "run this again before" not in console.text
+    assert "once the agents have closed this one out" in console.text
 
 
 # --- the host verbs ------------------------------------------------------------
@@ -760,6 +978,143 @@ def test_link_status_carries_states_and_counts_and_no_identity(host_paths: Any) 
     assert link_status.from_wire(unknown[0])["flow"] == {"known": False}
 
 
+# --- what the real lifecycle reports, read by the real judge --------------------
+#
+# The scripted statuses above are this file's own idea of what a host says. These
+# run the installed verbs and the lifecycle worker and hand the driver whatever
+# comes back, because the first version of `judge` was written against statuses
+# the host never produces: it called every expired request stray material.
+
+
+def host_status(flow: str | None = None) -> dict[str, Any]:
+    arguments = () if flow is None else ("--flow", flow)
+    code, lines = verb("link-status", "--environment", "production", *arguments)
+    assert code == 0
+    return link_status.from_wire(lines[0])
+
+
+def mint_on_host(tmp_path: Path, *, release: bool) -> str:
+    _, minted = verb("link-mint", "--environment", "production")
+    mint = MintResult.from_wire(minted[0])
+    if release:
+        now = datetime.now(UTC)
+        record = link_recovery.store_and_verify(
+            tmp_path / "recovery",
+            mint.as_record(now=now, automatic=True),
+            holder=REQUIRED_HOLDER,
+            now=now,
+        )
+        material = record.to_json()
+        assert verb("link-authorize", "--environment", "production", material=material)[0] == 0
+    return mint.flow_id
+
+
+def service_pass(flow: str) -> int:
+    """One scan of `networth daemon link`, for one pending flow."""
+    return runtime.run(argparse.Namespace(job="link-flow", flow=flow, country_code=None))
+
+
+def expire_page(paths: Any, flow: str) -> None:
+    past = (datetime.now(UTC) - timedelta(seconds=5)).isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(paths.database) as db:
+        db.execute(
+            "UPDATE link_request SET hosted_url_expires_at = ? WHERE flow_id = ?", (past, flow)
+        )
+
+
+def test_the_poll_count_tells_the_mints_own_poll_from_a_later_one(
+    host_paths: Any, tmp_path: Path
+) -> None:
+    _, provider = host_paths
+    flow = mint_on_host(tmp_path, release=False)
+    assert host_status(flow)["flow"]["polls"] == 1, "the mint polls once itself"
+
+    assert service_pass(flow) == 0
+    assert host_status(flow)["flow"]["polls"] == 2
+
+    def unreachable(_: str) -> LinkSessionPoll:
+        raise OSError("synthetic outage")
+
+    provider.link_token_get = unreachable
+    service_pass(flow)
+    after = host_status(flow)["flow"]
+    assert after["polls"] == 2 and after["poll_failing"], "a failed poll is not a poll"
+
+
+def test_an_abandoned_page_ends_unfinished_and_holds_the_next_mint_for_an_agent(
+    host_paths: Any, tmp_path: Path
+) -> None:
+    paths, provider = host_paths
+    flow = mint_on_host(tmp_path, release=True)
+    with sqlite3.connect(paths.database) as db:
+        (expires,) = db.execute("SELECT hosted_url_expires_at FROM link_request").fetchone()
+    assert host_status()["mint_window_ends_at"] == expires
+
+    expire_page(paths, flow)
+    service_pass(flow)
+
+    document = host_status(flow)
+    assert document["flow"]["awaiting_closure"] is True
+    assert document["flow"]["unidentified"] == 0 and document["flow"]["holds"] == 0
+    assert judge(document["flow"]) == judge(flow_status(url_expired=True, polled_after_expiry=True))
+    assert judge(document["flow"]).state == "UNFINISHED"
+    assert document["budget"] == {"state": "UNAVAILABLE"}
+    assert (document["awaiting_closure"], document["unattributed"]) == (1, 0)
+    assert document["mint_window_ends_at"] is None, "it is refusing now, not later"
+
+    # And the owner, running the command again, is told which refusal this is.
+    console = Console(CONFIRMATION)
+    exit_code = run_link(
+        InstalledHost(provider),
+        console,
+        environment=PRODUCTION,
+        directory=tmp_path / "recovery",
+        verify_holder=lambda: REQUIRED_HOLDER,
+    )
+    assert exit_code == EXIT_REFUSED and provider.mints == 1
+    assert "agents have not closed it out yet" in console.text
+
+
+def test_a_finished_link_is_still_linked_after_its_page_expires(
+    host_paths: Any, tmp_path: Path
+) -> None:
+    paths, provider = host_paths
+    flow = mint_on_host(tmp_path, release=True)
+    now = datetime.now(UTC)
+    provider.poll = LinkSessionPoll(
+        LinkSessionShape.ITEM_ADDED,
+        (LinkSessionRecord("synthetic-session", now, now, ("synthetic-public",), 1),),
+    )
+    assert service_pass(flow) == 0
+    assert judge(host_status(flow)["flow"]).state == "LINKED"
+
+    expire_page(paths, flow)
+    service_pass(flow)
+
+    document = host_status(flow)
+    assert document["flow"]["awaiting_closure"] is True
+    assert judge(document["flow"]).state == "LINKED"
+    assert document["budget"] == {"state": "UNAVAILABLE"}
+
+
+def test_a_request_that_was_never_released_closes_itself_and_costs_nothing(
+    host_paths: Any, tmp_path: Path
+) -> None:
+    """What a refused polling proof leaves behind: nothing an agent has to clear."""
+    paths, _ = host_paths
+    flow = mint_on_host(tmp_path, release=False)
+    assert host_status()["mint_window_ends_at"] is None
+
+    expire_page(paths, flow)
+    assert service_pass(flow) == 0
+
+    document = host_status(flow)
+    verdict = judge(document["flow"])
+    assert (verdict.state, verdict.detail) == ("UNFINISHED", "closed")
+    assert document["flow"]["awaiting_closure"] is False
+    assert document["budget"]["state"] == "AVAILABLE" and document["pending_requests"] == 0
+
+
 # --- the whole path, once ------------------------------------------------------
 
 
@@ -769,11 +1124,15 @@ class InstalledHost:
     def __init__(self, provider: Provider) -> None:
         self.provider = provider
         self.calls: list[str] = []
+        self.service_passes = 0
+        self.service_passes_at_release: int | None = None
 
     def verb(
         self, name: str, *arguments: str, material: str = "", stated: bool = True
     ) -> list[str]:
         self.calls.append(name)
+        if name == "link-authorize":
+            self.service_passes_at_release = self.service_passes
         argv = [name, *(["--environment", "production"] if stated else []), *arguments]
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
@@ -798,18 +1157,22 @@ def test_the_owner_links_one_institution_and_its_accounts_reach_the_total(
     console = Console(CONFIRMATION)
     seen: dict[str, Any] = {}
 
-    def the_owner_logs_in_and_the_link_service_runs(_: float) -> None:
-        """What happens on the other two machines while the driver sleeps once."""
-        if "flow" in seen:
+    def the_other_two_machines(_: float) -> None:
+        """What the host's link service and the owner do while the driver sleeps."""
+        flows = [p.stem for p in (tmp_path / "recovery").glob("*.json")]
+        if not flows:
             return
-        (seen["flow"],) = [p.stem for p in (tmp_path / "recovery").glob("*.json")]
-        now = datetime.now(UTC)
-        provider.poll = LinkSessionPoll(
-            LinkSessionShape.ITEM_ADDED,
-            (LinkSessionRecord("synthetic-session", now, now, ("synthetic-public",), 1),),
-        )
-        job = argparse.Namespace(job="link-flow", flow=seen["flow"], country_code=None)
+        if URL in console.text and "logged_in" not in seen:
+            seen["logged_in"] = True
+            now = datetime.now(UTC)
+            provider.poll = LinkSessionPoll(
+                LinkSessionShape.ITEM_ADDED,
+                (LinkSessionRecord("synthetic-session", now, now, ("synthetic-public",), 1),),
+            )
+        # One scan of `networth daemon link`: a pass for the pending flow.
+        job = argparse.Namespace(job="link-flow", flow=flows[0], country_code=None)
         assert runtime.run(job) == 0
+        host.service_passes += 1
 
     def canary() -> None:
         seen["mints_at_canary"] = provider.mints
@@ -825,13 +1188,17 @@ def test_the_owner_links_one_institution_and_its_accounts_reach_the_total(
         verify_holder=lambda: REQUIRED_HOLDER,
         canary=canary,
         protect=protect,
-        sleep=the_owner_logs_in_and_the_link_service_runs,
+        sleep=the_other_two_machines,
     )
 
     assert exit_code == EXIT_OK, console.text
     assert seen["mints_at_canary"] == 0 and seen["exchanged_at_protect"] is True
     assert provider.mints == 1 and provider.calls.count("exchange") == 1
-    assert host.calls[:3] == ["link-status", "link-mint", "link-authorize"]
+    # The release waited for a poll the service made, not the one the mint made.
+    released = host.calls.index("link-authorize")
+    assert host.calls[:2] == ["link-status", "link-mint"]
+    assert set(host.calls[2:released]) == {"link-status"}
+    assert host.service_passes_at_release == 1
     assert "daemon" not in host.calls, "production leaves the exchange to the service"
 
     # The owner saw the URL once, the cost before it, and the result after it.
