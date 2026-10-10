@@ -1073,6 +1073,7 @@ def test_an_abandoned_page_ends_unfinished_and_holds_the_next_mint_for_an_agent(
     )
     assert exit_code == EXIT_REFUSED and provider.mints == 1
     assert "agents have not closed it out yet" in console.text
+    assert not any(character.isdigit() for character in console.text), "a refusal, not a number"
 
 
 def test_a_finished_link_is_still_linked_after_its_page_expires(
