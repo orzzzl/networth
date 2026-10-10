@@ -95,7 +95,7 @@ that row. He caught it, not us.)
 | 07a | Automatic `public_token` retrieval + `link_flow` state machine | 03, 05, 05a, 06a | **codex** | claude | **DONE** (#104, #109; acceptance recorded 2026-09-24) |
 | 07b | `scripts/link-recover.sh` — lost-VPS exchange with a durable sink | 05a, 07a, 03a, 00b-escrow | **claude** | codex | **WIP** (the durable sink, its pre-exchange proof and the incomplete-receipt guard merged #129; the fence in review. Owed: crash classification (4), the Sandbox rehearsal (5), the losing branch on returned Item identity (7) and its three synthetic shapes (8), the `item_id` → `link_flow` write-back (3, needs `07a`'s table), 30-minute owner text (9), and `NETWORTH_ENV=production` acceptance. **Only criterion 6 is ticked below**: 1 and 10 are substantially met by #129 but 1's replacement-host half is *refused* from the CLI until a verified far-side destination exists, and 2 finishes only with 3) |
 | 26a | Item budget **core** — the remaining-slot count | 04 | **claude** | codex | **DONE** (#54, 2026-09-08) |
-| 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | **WIP** (started 2026-10-03 under the owner's critical-path directive, ahead of `07b` and `03a-live`, which that directive parks. **Landed: account discovery** — the step between a finalized Link and the first sync, which no row owned: nothing wrote an `account` row, so a linked Item had nothing to fetch. **Owed: the Production mint driver itself.** Every Link verb on `main` still refuses anything but Sandbox) |
+| 08 | `scripts/link.sh` — owner-run Production Link | 04, 06, 06a, 07a, 07b, 03a-live, 16, 26a | **claude** (script) / **owner** (runs it — *he types real bank credentials and MFA into Plaid Link; do not "helpfully" automate this*) | codex | **WIP — built, and waiting for the owner to run it** (started 2026-10-03 under the owner's critical-path directive, ahead of `07b` and `03a-live`, which that directive parks. Landed: account discovery (#144), then the driver — `scripts/link.sh` → `networth owner-link` on the Mac, `link-mint` / `link-authorize` / `link-status` on the host, and `scripts/pair-phone.sh`. **Run for real in Sandbox against the installed host up to the page URL, and no further**: a *completed* session needs a person in a browser, so the exchange, account discovery and first sync have met real Plaid data on this host only through `06a`'s older verbs. `LINKING.md` is the owner's procedure and starts with that rehearsal. Unticked below: the `07b` box, which the directive parks) |
 | 09 | `scripts/relink.sh` — Link update mode | 08 | **claude** | codex | BLOCKED (08) |
 | 12b | Replacement-Item reconcile flow | 04, 09 | **claude** | codex | BLOCKED (09) |
 
@@ -126,7 +126,7 @@ that row. He caught it, not us.)
 | 22 | Dual-staleness UI + alert surface + downgrade handling | 21, 19a | **claude** | codex | **WIP** (merged: #92 five facts + predicate, #97 copy row, #98 §6.1 envelope, #99 transport, #100 monotonic clock, #101 transport↔envelope join, #102 alert surface, #103 stack promotion, #107 the held copy. Owed: the adapter that joins them, then the `main.dart` acceptance path and the I6 refusal it makes reachable — plus the per-account surface, which is blocked on a field the host does not have; see the acceptance list. **Nothing in this row is reachable from `main.dart` yet**: the shipped wiring is still `FixtureSnapshotSource`, which is what the adapter and the wiring change) |
 | 23 | History curve, incomplete snapshots visually distinct | 21 | **claude** | codex | **DONE** (#83, 2026-09-22) |
 | 23a | Record the history the curve draws: app-private, durable, across pairing rotation | 20, 23 | **claude** | codex | **DONE** (#89, 2026-09-22) |
-| 24 | Release signing + APK delivery | 20, 21, 21a, 22, 23a | **claude** | codex | BLOCKED |
+| 24 | Release signing + APK delivery | 20, 21, 21a, 22, 23a | **claude** | codex | **WIP** (`networth-0.2.0-build2.apk` is on the owner's Desktop since 2026-10-03, built from `main` plus the `0.2.0+2` bump. **Debug-signed, by the owner's 2026-10-03 directive** — this row's own "must not" is overridden for v0, and the cost it names stands: the first release-signed build will need one uninstall. Paired through the visible UI and read over the real transport on an emulator with synthetic data; **not yet on the owner's phone**, which is where the MagicDNS name in a real pairing is first resolved) |
 | 26 | Remaining-slot **surfacing** — `doctor` and the app agree | 26a, 18, 19, 22 | **claude** | codex | BLOCKED |
 
 ### Phase 5 — operations
@@ -1817,15 +1817,17 @@ Mac. **Agents never run it.**
 
 **Acceptance:**
 
-- [ ] **Confirm institution and login *before* Link completes.** The slot is spent when
+- [x] **Confirm institution and login *before* Link completes.** The slot is spent when
       Link succeeds (**F2a**), so a confirmation prompt before the *exchange* asks a
-      question whose answer can no longer change anything.
-- [ ] **A canary through the real backup path first** — build a probe archive on the VPS,
+      question whose answer can no longer change anything. *(The typed `LINK`
+      confirmation comes before the mint, at a terminal, and Production refuses without
+      one — which is also what stops an agent session from minting.)*
+- [x] **A canary through the real backup path first** — build a probe archive on the VPS,
       pull it, decrypt it, delete it — and **refuse to mint a link token if any of it
       fails**. A full disk, an unreadable key or a missing destination directory all answer
       a reachability ping and all fail a real backup. The canary runs over the
       **restricted key and its dispatcher**, or it proves a route no backup takes.
-- [ ] The owner-facing text states the **30-minute** deadline (issue #3). Six hours is
+- [x] The owner-facing text states the **30-minute** deadline (issue #3). Six hours is
       session-data retention and is diagnostics only. **`06a` has now measured, and it did
       not measure otherwise: 30 minutes stays operative.** A session left >5h was still
       *retrievable* and its exchange was **refused** (HTTP 400), so the late-exchange
@@ -1834,21 +1836,34 @@ Mac. **Agents never run it.**
       successful retrieval says nothing about whether the token can still be exchanged —
       so the deadline he is shown must be the **exchange** one and must not be softened by
       the fact that the session is still visible.
-- [ ] **The completion worker is triggered through task `16`'s durable wake-up, never with
+- [x] **The completion worker is triggered through task `16`'s durable wake-up, never with
       a bare `systemctl start` on the shared sync unit** (issue #17). A plain `start`
       against an already-active service is silently discarded, and the service it targets
       also does health polling, full sync, quote refresh, publication and archive building —
       any one of which can be mid-flight when Link completes. The trigger this script uses
       must be one `16` guarantees survives an active run, and the script asserts the wake-up
-      was **recorded**, not merely issued.
+      was **recorded**, not merely issued. *(Met differently from how this was written, and
+      more strictly. `16`'s link service needs no trigger: it admits a request from the
+      stored row within 30 seconds. So the script issues nothing and instead refuses to show
+      the URL until the request's count of successful polls has moved past the one the mint
+      made — the wake-up observed as acted on, for this request. That check exists because
+      `systemctl is-active` was green on 2026-10-10 on a host whose worker died at import;
+      #145 fixed the worker and the check stays. The `systemctl start --no-block
+      networth-sync.service` after an exchange only brings the first fetch forward; discarded
+      or failed, the five-minute timer does it.)*
 - [ ] **`07b` is on disk, rehearsed, and its durable sink is verified before the link token
       is minted** (issue #13). The lost-VPS window opens the instant Link succeeds; a
       recovery script that first runs during the emergency is not a recovery path.
-- [ ] **Reports remaining slots before asking for confirmation, by calling `26a`** — not by
+      ***Not met, knowingly:** the owner's 2026-10-03 directive parks `07b`. What is in place
+      is the half this script owns — the second copy of the recovery record is written,
+      `fsync`ed and read back on `zelengs-macbook-air-2` before the URL is shown. What is not
+      is a rehearsed recovery: if the host is lost between a finished login and its exchange,
+      normally well under a minute, getting that Item back is `07b`'s unrehearsed path.*
+- [x] **Reports remaining slots before asking for confirmation, by calling `26a`** — not by
       counting Items itself. The single-source rule (`26a`) applies to its first consumer
       most of all: a second derivation written here is the one that runs while a lifetime
       slot is about to be spent.
-- [ ] **A refused count is reported as a refusal — never as a number, never as a
+- [x] **A refused count is reported as a refusal — never as a number, never as a
       traceback.** `26a` (#54) raises `ItemBudgetError` instead of returning a count its
       stored rows cannot support — an `EXCHANGED` `link_flow` row naming no Item while
       `item` rows exist is one such condition, and it is not the only one. Both reflexes are
@@ -1858,6 +1873,16 @@ Mac. **Agents never run it.**
       — the same refusal as the canary above — and surfaces the condition `26a` reported,
       which names what to inspect, rather than an "unknown error". Tested against a fixture
       database that triggers the refusal: no link token is minted, and no count is printed.
+
+**What follows every Link, and it is not optional** *(added when the driver landed; no box
+above says it)*. A released request cannot close itself. Thirty minutes after its mint the
+lifecycle records `COVERAGE_UNPROVEN` on it — finished or abandoned alike — and from then
+on `26a` refuses to count, so **the next mint is refused until an agent runs the closure
+procedure in `RUNTIME.md`**, and `install-runtime.sh --upgrade-if-idle` refuses for as long
+as the request is unreaped. So: several institutions can be connected back to back only
+inside the thirty minutes after the *first* mint, the script says until when, and after
+that the owner waits for an agent. An unreleased request (a refused polling check) is the
+exception: it closes itself at expiry and costs nothing.
 
 **Must not:**
 

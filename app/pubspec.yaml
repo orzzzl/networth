@@ -3,7 +3,7 @@ description: "Read-only net-worth display: every total carries its age."
 publish_to: 'none'
 # DESIGN.md section 17: a feature batch bumps the minor version and the `+N`
 # build number always increments, before any APK is handed over.
-version: 0.1.0+1
+version: 0.2.0+2
 
 environment:
   sdk: ^3.12.0
