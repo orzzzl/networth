@@ -47,6 +47,23 @@ python3 -m venv "$release/venv"
   --require-hashes --no-deps -r "$release/src/requirements-build.txt"
 "$release/venv/bin/pip" install --quiet --disable-pip-version-check --no-cache-dir \
   --require-hashes --no-deps --no-build-isolation -r "$release/src/requirements-runtime.txt"
+# Exercise the supervisor's child environment before stopping services. The
+# application is source-only; the wrapper's sys.path is not inherited.
+runuser -u networth -- env HOME=/var/lib/networth NETWORTH_ENV=production \
+  "$release/venv/bin/python" - "$release/src" <<'PY'
+import subprocess
+import sys
+sys.path.insert(0, sys.argv[1])
+from networth.runtime import link_worker_environment
+result = subprocess.run(
+    [sys.executable, "-m", "networth", "--help"],
+    cwd="/var/lib/networth", env=link_worker_environment(),
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+)
+if result.returncode:
+    raise SystemExit("Link child import preflight failed; existing runtime preserved.")
+print("Link child import preflight: PASS")
+PY
 config=$(mktemp)
 trap 'rm -f "$config"' EXIT
 cat > "$config" <<'EOF'

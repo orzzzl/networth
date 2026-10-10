@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 import sqlite3
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -38,6 +40,50 @@ NOW = datetime(2026, 9, 24, 12, tzinfo=UTC)
 LINK = "synthetic-link-lifecycle"
 URL = "https://synthetic.invalid/link-lifecycle"
 AUDIT = "a" * 32
+
+
+@pytest.mark.parametrize("environment", ["sandbox", "production"])
+def test_cleanup_commands_preserve_evidence_gates_in_each_environment(
+    setup: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    from networth.commands import abandon_link_request, close_link_request
+
+    db, store, client, mint = setup
+    release(setup, tmp_path)
+    client.poll = LinkSessionPoll(
+        LinkSessionShape.ITEM_ADDED,
+        (LinkSessionRecord("synthetic-success", NOW, NOW, ("synthetic-public-lifecycle",), 1),),
+    )
+    assert run(setup).worker.finalized == 1
+    access_ref = db.execute("SELECT secret_ref FROM link_result").fetchone()[0]
+    paths = SimpleNamespace(database=tmp_path / "db.sqlite", items=tmp_path / "tokens")
+    monkeypatch.setenv("NETWORTH_ENV", environment)
+
+    def selected_paths(selected: Any) -> Any:
+        assert selected.value == environment
+        return paths
+
+    monkeypatch.setattr(abandon_link_request, "paths_for", selected_paths)
+    monkeypatch.setattr(close_link_request, "paths_for", selected_paths)
+    args = argparse.Namespace(flow=mint.flow_id, audit_id=AUDIT, confirm_reviewed=True)
+    assert abandon_link_request.run(args) == 0
+    assert db.execute("SELECT abandon_requested_at FROM link_request").fetchone()[0]
+    assert db.execute("SELECT material_reaped_at FROM link_request").fetchone() == (None,)
+    client.poll = LinkSessionPoll(LinkSessionShape.SESSIONS_ABSENT, ())
+    run(setup, NOW + timedelta(hours=8))
+    assert close_link_request.run(args) == 2  # unadjudicated coverage
+    assert store.get("link-token." + mint.flow_id).reveal() == LINK
+    resolve(db)
+    args.confirm_reviewed = False
+    assert close_link_request.run(args) == 2  # explicit evidence confirmation still required
+    assert store.get("link-token." + mint.flow_id).reveal() == LINK
+    args.confirm_reviewed = True
+    assert close_link_request.run(args) == 0
+    assert db.execute("SELECT material_reaped_at FROM link_request").fetchone()[0]
+    assert store.get(access_ref).reveal() == "synthetic-access-lifecycle"
+    assert read_item_budget(db).remaining == 9
+    with pytest.raises(UnknownSecretRef):
+        store.get("link-token." + mint.flow_id)
 
 
 class Client:

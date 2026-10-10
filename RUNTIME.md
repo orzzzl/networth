@@ -35,6 +35,10 @@ the service user's home, `/var/lib/networth/networth-data/networth.db`.
   and coherent-capture locks remain authoritative.
 - Link scans every 30 seconds and immediately at boot. Each pending flow has its
   own child process; a slow flow does not delay a second flow's admission.
+  Children receive the running release's source directory in `PYTHONPATH`; the
+  installer's preflight tests this import outside the checkout before downtime.
+  Failed child exits are reported without identifiers and excluded from the
+  active count once observed. An active unit alone does not prove polling works.
   The lifecycle worker handles response-based transitions, uncertain exchanges,
   recovery and the diagnostics-window reaper. No blind exchange retries.
 - Serving binds only the node's current Tailscale address and retries startup
@@ -52,6 +56,53 @@ The oneshot services normally show `inactive (dead)` after successful completion
 check `Result=success` and `ExecMainStatus=0`, alongside the active timers. The
 Link and serving services must be active. Do not infer daemon health from units
 merely being installed. Also inspect `tailscale funnel status` after installation.
+
+## Close a Production Link request after expiry
+
+An operator performs this after each owner Link, using private evidence. This is
+request/slot evidence adjudication, not code review. Never infer zero additional
+slots from empty polls, or repeat Link to repair a request. Abandon only records
+intent; it does not revoke the URL, close polling or reclaim a lifetime Item.
+
+1. Wait until the recorded `hosted_url_expires_at` has passed and the service has
+   completed a successful poll at or after that instant. Retain the private flow
+   ID, `COVERAGE_UNPROVEN` observation ID and evidence audit UUID. Resolve any
+   unfinished session, pending/uncertain exchange, polling error or material hold
+   through its existing recovery procedure before proceeding.
+2. Stop admission and let existing children finish with
+   `sudo systemctl stop networth-link.service`. The unit's `KillMode=mixed` and
+   infinite stop timeout let children finish without forced termination. Confirm
+   the unit is inactive and its cgroup is empty; do not adjudicate while a child
+   or another operator is still polling. If stop waits, investigate the worker;
+   never kill a possibly returned credential to force closure.
+3. On `tokyo-exit`, record the evidence-derived count of **additional** spent
+   slots beyond known Items/results and other adjudications. With polling still
+   stopped, run these commands as the service user (substitute private values;
+   never paste their output or evidence into git):
+
+   ```sh
+   sudo runuser -u networth -- env HOME=/var/lib/networth NETWORTH_ENV=production \
+     /usr/local/bin/networth adjudicate-link-observation \
+     --observation <observation-id> --additional-slots <evidenced-count> \
+     --audit-id <audit-uuid> --confirm-reviewed
+   sudo runuser -u networth -- env HOME=/var/lib/networth NETWORTH_ENV=production \
+     /usr/local/bin/networth close-link-request --flow <flow-id> \
+     --audit-id <audit-uuid> --confirm-reviewed
+   ```
+
+   Do not guess the count. Every unresolved observation must be adjudicated;
+   closure still refuses incomplete child/poll evidence and material holds.
+   Optional abandonment uses the same environment and
+   `networth abandon-link-request --flow <flow-id>`; it does not bypass these gates.
+4. Confirm closure reports material reaped. If it reports false, retain the
+   request until every diagnostic retention deadline has passed; the lifecycle
+   reaper retries later. Access-token material is preserved. Verify the private
+   request row has `polling_closed_at` and `material_reaped_at`, and no result is
+   `EXCHANGING`, before expecting an idle upgrade to pass.
+5. Restart `sudo systemctl start networth-link.service` after completion or any
+   refusal, so other pending requests continue polling. Check the worker journal
+   and stored poll history; new evidence can reopen a budget hold and requires
+   fresh adjudication. A refused closure is not permission to remint.
 
 ## Remaining acceptance boundaries
 

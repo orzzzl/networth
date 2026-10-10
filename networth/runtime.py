@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import subprocess
 import sys
@@ -158,6 +159,28 @@ def pending_flows(db: sqlite3.Connection) -> list[str]:
     ]
 
 
+def link_worker_environment() -> dict[str, str]:
+    """Children must import the same release as the wrapper-started parent."""
+    environment = os.environ.copy()
+    # The installed wrapper changes sys.path only in the parent. Dependencies
+    # live in the venv, but the application itself lives in this source tree.
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent)
+    return environment
+
+
+def _running_children(
+    children: dict[str, subprocess.Popen[bytes]],
+) -> dict[str, subprocess.Popen[bytes]]:
+    running = {}
+    for flow, child in children.items():
+        status = child.poll()
+        if status is None:
+            running[flow] = child
+        elif status != 0:
+            print("link: worker exited unsuccessfully; inspect stored diagnostics", flush=True)
+    return running
+
+
 def link_loop(database: Path, countries: Sequence[str]) -> None:
     """Each flow owns a process; slow requests cannot queue unrelated requests.
 
@@ -170,13 +193,14 @@ def link_loop(database: Path, countries: Sequence[str]) -> None:
         while True:
             with closing(open_runtime_database(database)) as db:
                 flows = pending_flows(db)
-            children = {flow: child for flow, child in children.items() if child.poll() is None}
+            children = _running_children(children)
             for flow in flows:
                 if flow not in children:
                     args = [sys.executable, "-m", "networth", "daemon", "link-flow", "--flow", flow]
                     for country in countries:
                         args.extend(("--country-code", country))
-                    children[flow] = subprocess.Popen(args)
+                    children[flow] = subprocess.Popen(args, env=link_worker_environment())
+            children = _running_children(children)
             print(f"link: scan complete; active workers={len(children)}", flush=True)
             time.sleep(LINK_SCAN_SECONDS)
     finally:
