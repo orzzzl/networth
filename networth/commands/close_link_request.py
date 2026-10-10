@@ -9,11 +9,11 @@ from contextlib import closing
 from datetime import UTC, datetime
 
 from networth.link_lifecycle import adjudicate_closure
-from networth.plaid.environment import PlaidEnvironment, paths_for, selected_environment
+from networth.plaid.environment import paths_for, selected_environment
 from networth.storage import migrate
 from networth.tokenstore import TokenStore
 
-SUMMARY = "Close an expired Sandbox request after explicit coverage and child review."
+SUMMARY = "Close an expired request after explicit coverage and child review."
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -25,8 +25,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def run(args: argparse.Namespace) -> int:
     try:
         env = selected_environment()
-        if env is not PlaidEnvironment.SANDBOX:
-            raise ValueError
         paths = paths_for(env)
         with closing(sqlite3.connect(paths.database.as_uri() + "?mode=rw", uri=True)) as db:
             migrate(db)

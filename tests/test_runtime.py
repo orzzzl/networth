@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -173,7 +174,7 @@ def test_link_supervisor_does_not_queue_second_flow_behind_running_first(
         pass
 
     class Child:
-        def __init__(self, command: list[str]) -> None:
+        def __init__(self, command: list[str], *, env: dict[str, str]) -> None:
             spawned.append(command)
 
         def poll(self) -> None:
@@ -197,3 +198,72 @@ def test_link_supervisor_does_not_queue_second_flow_behind_running_first(
         assert spawned[0][spawned[0].index("--flow") + 1] == "a" * 32
         assert spawned[1][spawned[1].index("--flow") + 1] == "b" * 32
     assert scans == 2
+
+
+@pytest.mark.parametrize("exit_status", [None, 1])
+def test_wrapper_child_imports_without_site_packages_and_counts_only_live_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    exit_status: int | None,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setenv("NETWORTH_ENV", "production")
+    monkeypatch.setattr(runtime, "pending_flows", lambda _: ["a" * 32])
+    real_run = subprocess.run
+    spawned = 0
+
+    class StopLoop(BaseException):
+        pass
+
+    class Child:
+        def __init__(self, command: list[str], *, env: dict[str, str]) -> None:
+            nonlocal spawned
+            spawned += 1
+            assert command == [
+                sys.executable,
+                "-m",
+                "networth",
+                "daemon",
+                "link-flow",
+                "--flow",
+                "a" * 32,
+                "--country-code",
+                "US",
+            ]
+            assert env["NETWORTH_ENV"] == "production"
+            # -S hides the editable installation that masked the deployed defect.
+            # Run before replacing Popen, using the actual child's environment.
+            with monkeypatch.context() as probe:
+                probe.setattr(subprocess, "Popen", original_popen)
+                result = real_run(
+                    [command[0], "-S", "-c", "import networth; print(networth.__file__)"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            assert result.returncode == 0, result.stderr
+            assert Path(result.stdout.strip()).resolve() == (
+                Path(runtime.__file__).resolve().parent / "__init__.py"
+            )
+
+        def poll(self) -> int | None:
+            return exit_status
+
+        def wait(self) -> int:
+            return 0
+
+    def stop(_: float) -> None:
+        raise StopLoop
+
+    original_popen = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", Child)
+    monkeypatch.setattr(time, "sleep", stop)
+    with pytest.raises(StopLoop):
+        runtime.link_loop(tmp_path / "db", ("US",))
+    assert spawned == 1
+    output = capsys.readouterr().out
+    assert f"active workers={1 if exit_status is None else 0}" in output
+    assert ("worker exited unsuccessfully" in output) == (exit_status == 1)
