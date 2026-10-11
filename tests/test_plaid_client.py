@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -882,6 +882,108 @@ def test_holdings_fetch_returns_account_totals_and_clock_evidence() -> None:
     )
     assert "acct-1" not in repr(investments)
     assert "1000.0" not in repr(investments)
+
+
+def _holdings_reply_from_the_sdk() -> Any:
+    """A holdings reply as the SDK builds one from the bytes Plaid sends.
+
+    Every other reply in this file is a hand-built stand-in, and a stand-in
+    answers ``.balances`` however it was written to. This one goes through the
+    SDK's own deserializer, which is the only way to meet the model the daemon
+    actually receives. Every value is synthetic.
+    """
+    import plaid
+    from plaid.model.investments_holdings_get_response import InvestmentsHoldingsGetResponse
+
+    def account(account_id: str, **balances: Any) -> dict[str, Any]:
+        return {
+            "account_id": account_id,
+            "balances": {
+                "available": None,
+                "current": 1000.0,
+                "iso_currency_code": "USD",
+                "limit": None,
+                "margin_loan_amount": None,
+                "unofficial_currency_code": None,
+                **balances,
+            },
+            "mask": "0000",
+            "name": "Synthetic Retirement",
+            "official_name": None,
+            "subtype": "ira",
+            "type": "investment",
+        }
+
+    body = {
+        "accounts": [
+            account("acct-1"),
+            account("acct-2", current=250.5, last_updated_datetime="2026-09-07T14:30:00Z"),
+        ],
+        "holdings": [
+            {
+                "account_id": "acct-1",
+                "cost_basis": 900.0,
+                "institution_price": 100.0,
+                "institution_price_as_of": "2026-09-04",
+                "institution_price_datetime": None,
+                "institution_value": 1000.0,
+                "iso_currency_code": "USD",
+                "quantity": 10.0,
+                "security_id": "sec-1",
+                "unofficial_currency_code": None,
+            }
+        ],
+        "securities": [],
+        "item": {
+            "available_products": ["balance"],
+            "billed_products": ["investments"],
+            "consent_expiration_time": None,
+            "error": None,
+            "institution_id": "ins_x",
+            "item_id": "item-1",
+            "update_type": "background",
+            "webhook": "",
+        },
+        "request_id": "req-1",
+        "is_investments_fallback_item": False,
+    }
+    return plaid.ApiClient().deserialize(
+        SimpleNamespace(data=json.dumps(body)), (InvestmentsHoldingsGetResponse,), True
+    )
+
+
+def test_a_holdings_reply_the_sdk_built_can_be_read() -> None:
+    """The SDK cannot read ``balances`` off its own holdings account; the reader must.
+
+    ``/investments/holdings/get`` types each account as ``InvestmentAccount``,
+    composed from two schemas that declare ``balances`` as two different
+    classes. The SDK's accessor refuses a property whose composed parts are not
+    equal, and two classes never are — so ``account.balances`` raises on every
+    account of every holdings reply. Against Plaid on 2026-10-10 that cost each
+    investment account its observation, the run its snapshot and the phone its
+    total, while every test here passed: a ``SimpleNamespace`` has no parts to
+    disagree. The first assertion pins that premise; if an SDK upgrade removes
+    it, this fails there and ``_account_balances`` has nothing left to do.
+    """
+    reply = _holdings_reply_from_the_sdk()
+    with pytest.raises(ApiValueError):
+        _ = reply.accounts[0].balances
+    client, _ = sandbox_client(investments_holdings_get=reply)
+
+    investments = client.fetch_holdings("access")
+
+    assert [(a.account_id, a.current, a.currency) for a in investments.accounts] == [
+        ("acct-1", Decimal("1000.0"), "USD"),
+        ("acct-2", Decimal("250.5"), "USD"),
+    ]
+    assert [a.last_updated_datetime for a in investments.accounts] == [
+        None,
+        datetime(2026, 9, 7, 14, 30, tzinfo=UTC),
+    ]
+    assert [
+        (h.account_id, h.institution_value, h.currency, h.institution_price_as_of)
+        for h in investments.holdings
+    ] == [("acct-1", Decimal("1000.0"), "USD", date(2026, 9, 4))]
 
 
 def test_value_fetch_refuses_unusable_provider_fields_without_echoing_them() -> None:

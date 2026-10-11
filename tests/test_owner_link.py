@@ -729,6 +729,32 @@ def test_status_of_a_linked_flow_reports_it_without_starting_anything(tmp_path: 
     assert "the next time the app is opened" in console.text
 
 
+def test_a_total_without_the_new_accounts_is_not_called_the_new_total(tmp_path: Path) -> None:
+    """A first read that failed leaves the phone on the total it already had.
+
+    ``published_latest`` is true then: the newest snapshot *is* the published
+    one, and it is the snapshot from before the Link. Measured against Plaid on
+    2026-10-10 — eight accounts recorded, none in the total, a healthy
+    publication of the old figure — which the driver reported as the new total
+    reaching the phone.
+    """
+    host, console, clock = ScriptedHost(), Console(), Clock()
+    recorded = flow_status(
+        results={"EXCHANGED": 1}, items=1, items_discovered=1, accounts=3, accounts_in_snapshot=1
+    )
+    host.flows = [status(recorded)]
+    host.steady = status(recorded, paired=True, published_latest=True)
+
+    code = report_status(
+        host, console, FLOW, environment=PRODUCTION, clock=clock, sleep=clock.sleep
+    )
+
+    assert code == EXIT_OK
+    assert "3 account(s) recorded; 1 already in the total." in console.text
+    assert "the phone still shows the total from before" in console.text
+    assert "new total" not in console.text
+
+
 @pytest.mark.parametrize(
     ("overrides", "phrase", "absent"),
     [

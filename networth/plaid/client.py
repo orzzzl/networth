@@ -37,12 +37,13 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from types import SimpleNamespace
 from typing import Any, Protocol, cast
 
 import plaid
 import urllib3.exceptions
 from plaid.api import plaid_api
-from plaid.exceptions import ApiException
+from plaid.exceptions import ApiException, ApiValueError
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
@@ -727,10 +728,32 @@ def _response_records(response: Any, field: str, *, step: str) -> tuple[Any, ...
     return tuple(value)
 
 
+def _account_balances(account: Any) -> Any:
+    """``account.balances``, read so that a holdings account can answer.
+
+    ``/investments/holdings/get`` types its accounts as ``InvestmentAccount``,
+    which the SDK composes from two schemas that both declare ``balances`` — one
+    as ``AccountBalance``, one as ``InvestmentAccountBalance``. Both are built
+    from the single JSON object in the reply, but the SDK's accessor requires
+    the composed parts to hold *equal* values, and two models of different
+    classes never compare equal. Plain attribute access therefore raises
+    ``ApiValueError`` on every account of every holdings reply (plaid-python
+    43.0.0, measured against Plaid on 2026-10-10: each investment account lost
+    its observation, and the run its snapshot).
+
+    ``to_dict`` is the SDK's own merge of those parts and does not compare them.
+    """
+    try:
+        return getattr(account, "balances", _MISSING)
+    except ApiValueError:
+        merged = account.to_dict().get("balances")
+        return SimpleNamespace(**merged) if isinstance(merged, dict) else _MISSING
+
+
 def _balance_records(response: Any, *, step: str) -> tuple[BalanceRecord, ...]:
     converted: list[BalanceRecord] = []
     for account in _response_records(response, "accounts", step=step):
-        balances = getattr(account, "balances", _MISSING)
+        balances = _account_balances(account)
         if balances is _MISSING or balances is None:
             raise PlaidCallError(f"{step} returned an account with no balances")
         try:
