@@ -21,10 +21,11 @@ commit that is installed on the host.
    command again re-pairs; the previous pairing stops working at once.
 2. **Rehearse once.** `scripts/link.sh --sandbox` opens Plaid's page; choose any
    institution and log in as `user_good` / `pass_good`. Keep the terminal window
-   open until it says `Connected`. Nothing real is connected. This is the only run
-   of the steps *after* a login — exchange, account discovery, first sync — that
-   can happen before a real connection depends on them, and no agent can do it: a
-   completed login needs a person in a browser.
+   open until it says `Connected` and counts the accounts in the total. Nothing real
+   is connected. It is the only run in which Plaid itself reports a finished login
+   to this host, which needs a person in a browser. The steps after that report —
+   exchange, account discovery, first sync, publication — were run by the agents
+   against Plaid's test bank on 2026-10-10, with the report injected.
 3. **Connect.** `scripts/link.sh`, type `LINK`, log in to one institution on the
    page that opens, and wait for `Connected` and the account count. Then run it
    again for the next institution.

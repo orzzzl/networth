@@ -678,6 +678,15 @@ def _settle(
         return EXIT_OK
     if not status["paired"]:
         console.say("No phone is paired yet. Pair one with: scripts/pair-phone.sh")
+    elif flow["accounts_in_snapshot"] < flow["accounts"]:
+        # The newest snapshot predates these accounts, so "published" is true of
+        # the total the phone already had. A read that failed is retried an hour
+        # later at the earliest; saying "a minute or two" here would be a guess.
+        console.say(
+            "These accounts are not in the total yet, so the phone still shows the total "
+            "from before. The host keeps retrying on its own, and the next try can be an "
+            "hour away. If they are still missing tomorrow, tell the agents."
+        )
     elif status["published_latest"]:
         console.say("The phone shows the new total the next time the app is opened.")
     else:
