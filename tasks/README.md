@@ -1642,8 +1642,36 @@ capture is issue **#14**.
       *(Added 2026-09-08 alongside `26a`, whose module docstring now **states** this
       precondition instead of silently depending on it — the `#36` lesson: a module that is
       correct only because of a fact it never asserts is one edit away from not being.)*
-- [ ] Crash injection **after the exchange response and before, during, and after** the
+- [x] Crash injection **after the exchange response and before, during, and after** the
       emergency write; each leaves a state the next run can classify correctly.
+
+      *Measured 2026-09-30 (`networth/link_crash.py`, `tests/test_link_crash.py`): three
+      injection points, three honest classes — but **the collapse is in a different place
+      than `06a` (iii)'s**, and one of the three states was being reported wrongly.*
+      **During** and **after** the write are distinguishable here, unlike the VPS flow's
+      first two boundaries: the artifact is the evidence, and openability under the
+      escrowed key is a durable property of it. **Before** the write is the one that
+      collapses — with *before the exchange*, not with its neighbour — because **this host
+      keeps no attempt log.** Where the VPS reaches `STRANDED_KNOWN` from a `request_id`
+      row written after a successful response, the Mac writes the `request_id` only
+      *inside* the artifact and otherwise merely prints it, so **the Mac's irreducible
+      window is wider than the VPS's**. Closing it needs a durable pre-credential marker,
+      which is the trade `06a` (iii) declined for the VPS (*"only trades this window for a
+      larger one in which the credential is lost"*); whether the Mac's different evidence
+      set changes that answer is **left open, deliberately and in writing**, and it is the
+      same thing codex's #129 review asked to preserve before an incomplete sink is
+      enabled through the CLI.
+
+      **What was wrong rather than missing:** the next run's only reading of an existing
+      artifact was `prepare()`'s refusal, *"Move it aside — it may hold an earlier
+      recovery"* — one sentence covering both an artifact that opens (credential durable)
+      and one that does not (credential gone). Following it on the first means moving the
+      only copy of the credential and re-running, and a re-run exchanges again: measured
+      **ACCEPTED** with the first credential still healthy (`06a` (ii)), Item count
+      unmeasured. So the advice pointed at the cost **F2a** exists to prevent.
+      `classify-recovery` is the verb that reports the state, and it exists rather than
+      the classifier being library-only because *"a module with tests and no caller"* is a
+      failure this project has already made once.
 - [ ] The full path is rehearsed end-to-end in Sandbox **with the VPS `TokenStore`
       unavailable**, and the recovered token is proven restorable and usable. `06a`
       measurement (iv) has already established that a different host *can* retrieve and
