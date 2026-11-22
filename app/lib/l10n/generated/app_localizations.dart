@@ -142,11 +142,23 @@ abstract class AppLocalizations {
   /// **'the copy saved on this phone was written by a different version of the app'**
   String get copyOutdated;
 
-  /// An instant, always displayed in UTC with the zone named. The zone is shown rather than silently converted so the displayed date and the stored one stay the same fact. The month name comes from the locale's own date symbols, which is why this is a placeholder rather than a Dart constant list.
+  /// An instant as the owner reads it: the Los Angeles wall clock, with the zone named (zonePacificStandard / zonePacificDaylight). The owner asked for Pacific time by name, so it is Pacific whatever zone the device is set to. Storage and the wire stay UTC; this is display only. The month name comes from the locale's own date symbols, which is why the date and time are placeholders rather than a Dart constant list.
   ///
   /// In en, this message translates to:
-  /// **'{date}, {time} UTC'**
-  String instantUtc(DateTime date, DateTime time);
+  /// **'{date}, {time} {zone}'**
+  String instantPacific(DateTime date, DateTime time, String zone);
+
+  /// Pacific Standard Time (UTC-8), the zone name after an instant from early November to mid-March.
+  ///
+  /// In en, this message translates to:
+  /// **'PST'**
+  String get zonePacificStandard;
+
+  /// Pacific Daylight Time (UTC-7), the zone name after an instant from mid-March to early November.
+  ///
+  /// In en, this message translates to:
+  /// **'PDT'**
+  String get zonePacificDaylight;
 
   /// The age annotation for a total whose whole basis has a known source clock. The timestamp is the OLDEST clock in the basis.
   ///

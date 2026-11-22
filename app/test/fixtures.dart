@@ -103,27 +103,27 @@ String readFixture(String assetPath) => File(assetPath).readAsStringSync();
 /// would go red if the store's format and this one drifted apart.
 const String demoSeriesJson = '''
 [
-  {"published_at": "2026-09-05T04:00:00.000000Z", "seq": "1", "total": {
+  {"published_at": "2026-09-05T16:00:00.000000Z", "seq": "1", "total": {
     "age_state": "KNOWN", "as_of": "2026-09-05T01:35:00.000000Z", "currency": "USD",
     "value_minor": 4812000, "assets_minor": 4812000, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": true}},
-  {"published_at": "2026-09-06T04:00:00.000000Z", "seq": "2", "total": {
+  {"published_at": "2026-09-06T16:00:00.000000Z", "seq": "2", "total": {
     "age_state": "KNOWN", "as_of": "2026-09-06T01:35:00.000000Z", "currency": "USD",
     "value_minor": 4835500, "assets_minor": 4835500, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": true}},
-  {"published_at": "2026-09-07T04:00:00.000000Z", "seq": "3", "total": {
+  {"published_at": "2026-09-07T16:00:00.000000Z", "seq": "3", "total": {
     "age_state": "KNOWN", "as_of": "2026-09-07T01:35:00.000000Z", "currency": "USD",
     "value_minor": 4801200, "assets_minor": 4801200, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": true}},
-  {"published_at": "2026-09-10T04:00:00.000000Z", "seq": "4", "total": {
+  {"published_at": "2026-09-10T16:00:00.000000Z", "seq": "4", "total": {
     "age_state": "KNOWN", "as_of": "2026-09-10T01:35:00.000000Z", "currency": "USD",
     "value_minor": 4776900, "assets_minor": 4776900, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": true}},
-  {"published_at": "2026-09-11T04:00:00.000000Z", "seq": "5", "total": {
+  {"published_at": "2026-09-11T16:00:00.000000Z", "seq": "5", "total": {
     "age_state": "KNOWN", "as_of": "2026-09-11T01:35:00.000000Z", "currency": "USD",
     "value_minor": 4780300, "assets_minor": 4780300, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": false}},
-  {"published_at": "2026-09-12T04:00:00.000000Z", "seq": "6", "total": {
+  {"published_at": "2026-09-12T16:00:00.000000Z", "seq": "6", "total": {
     "age_state": "KNOWN", "as_of": "2026-09-12T01:35:00.000000Z", "currency": "USD",
     "value_minor": 4790000, "assets_minor": 4790000, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": true}},
@@ -131,15 +131,15 @@ const String demoSeriesJson = '''
     "age_state": "KNOWN", "as_of": "2026-09-12T18:05:00.000000Z", "currency": "USD",
     "value_minor": 4844100, "assets_minor": 4844100, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": true}},
-  {"published_at": "2026-09-13T04:00:00.000000Z", "seq": "8", "total": {
+  {"published_at": "2026-09-13T16:00:00.000000Z", "seq": "8", "total": {
     "age_state": "KNOWN", "as_of": "2026-09-13T01:35:00.000000Z", "currency": "USD",
     "value_minor": 4861700, "assets_minor": 4861700, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": true}},
-  {"published_at": "2026-09-14T04:00:00.000000Z", "seq": "9", "total": {
+  {"published_at": "2026-09-14T16:00:00.000000Z", "seq": "9", "total": {
     "age_state": "KNOWN", "as_of": "2026-09-14T01:35:00.000000Z", "currency": "USD",
     "value_minor": 4903400, "assets_minor": 4903400, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": true}},
-  {"published_at": "2026-09-15T04:00:00.000000Z", "seq": "10", "total": {
+  {"published_at": "2026-09-15T16:00:00.000000Z", "seq": "10", "total": {
     "age_state": "KNOWN", "as_of": "2026-09-15T01:35:00.000000Z", "currency": "USD",
     "value_minor": 4925000, "assets_minor": 4925000, "liabilities_minor": 0,
     "static_account_count": 0, "is_complete": true}}

@@ -69,7 +69,7 @@ class Headline extends StatelessWidget {
 /// ARB's, not an inline `?:`, so a locale whose plural rules are not English's
 /// is a translation rather than a code change.
 String _ageAnnotation(AppLocalizations l10n, DatedTotal total) => switch (total) {
-      KnownAgeTotal(:final asOf) => l10n.totalAsOf(formatInstantUtc(l10n, asOf)),
+      KnownAgeTotal(:final asOf) => l10n.totalAsOf(formatInstant(l10n, asOf)),
       // Named locals rather than two bare positionals: gen-l10n orders the
       // generated parameters by the ARB's `placeholders` map, not by where they
       // appear in the message, and the first draft of this call passed them the

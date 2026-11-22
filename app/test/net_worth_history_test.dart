@@ -18,7 +18,7 @@ HistoryPoint point(
 }) {
   final at = DateTime.parse(publishedAt);
   return HistoryPoint(
-    publishedAt: at,
+    at: at,
     total: KnownAgeTotal(
       amount: Money(minorUnits: valueMinor, currency: currency),
       assets: Money(minorUnits: valueMinor, currency: currency),
@@ -31,45 +31,38 @@ HistoryPoint point(
 }
 
 void main() {
-  group('days are UTC days', () {
-    test('a reading late in the UTC day stays on that day', () {
-      expect(point('2026-09-10T23:30:00Z', 1).day, DateTime.utc(2026, 9, 10));
+  group('days are the owner\'s days, in Los Angeles', () {
+    test('a reading taken after UTC midnight is still his evening', () {
+      // The owner's own first snapshot: 00:19Z on the 22nd is 16:19 PST on the
+      // 21st. On UTC days the curve put it on a date that had not yet arrived.
+      expect(point('2026-11-22T00:19:18Z', 1).day, DateTime.utc(2026, 11, 21));
     });
 
-    test('a device-local instant is converted before it is bucketed', () {
-      // The components of a local DateTime are its local ones, so bucketing
-      // without `.toUtc()` would file this under the 9th for a device west of
-      // UTC and the 10th for one east of it — the same bytes, two different
-      // curves. `instant.dart` refuses zone-less wire strings for this reason;
-      // this is the same hazard arriving from a constructor instead.
-      //
-      // **Every hour of one UTC day, not one chosen hour.** Whichever zone the
-      // runner is in, at least one of these instants has a local date differing
-      // from its UTC date, and those are the only ones that can tell a correct
-      // `.toUtc()` from a missing one. A single hour cannot: the first version
-      // of this test used 23:30Z, which straddles local midnight east of UTC and
-      // not west of it, so on this machine at -07:00 it passed against the
-      // mutation that deletes the conversion. The bug was in the test.
-      for (var hour = 0; hour < 24; hour++) {
-        final local = DateTime.utc(2026, 9, 10, hour, 30).toLocal();
-        expect(utcDayOf(local), DateTime.utc(2026, 9, 10), reason: 'hour $hour');
-        expect(utcDayOf(local).isUtc, isTrue, reason: 'hour $hour');
-      }
+    test('the day turns at his midnight, on both sides of a DST change', () {
+      expect(point('2026-09-10T06:59:00Z', 1).day, DateTime.utc(2026, 9, 9));
+      expect(point('2026-09-10T07:00:00Z', 1).day, DateTime.utc(2026, 9, 10));
+      expect(point('2026-12-10T07:59:00Z', 1).day, DateTime.utc(2026, 12, 9));
+      expect(point('2026-12-10T08:00:00Z', 1).day, DateTime.utc(2026, 12, 10));
+    });
 
-      // **This test can only go red off UTC**, where the two implementations are
-      // genuinely different functions; in UTC they are the same one and no
-      // assertion can separate them. So it is skipped rather than passed there,
-      // because a pass that cannot fail is not evidence — and CI sets `TZ`
-      // precisely so this runs rather than skips.
-    }, skip: DateTime.now().timeZoneOffset == Duration.zero
-        ? 'runner is on UTC: this test cannot distinguish the fix from the bug'
-        : false);
+    test('a device-local instant lands on the same day as its UTC self', () {
+      // The conversion itself is pinned in `pacific_time_test.dart`; this is
+      // the point that uses it, every hour of one day, whatever zone runs it.
+      for (var hour = 0; hour < 24; hour++) {
+        final utc = DateTime.utc(2026, 9, 10, hour, 30);
+        expect(
+          HistoryPoint(at: utc.toLocal(), total: point('2026-09-10T00:00:00Z', 1).total).day,
+          point(utc.toIso8601String(), 1).day,
+          reason: 'hour $hour',
+        );
+      }
+    });
   });
 
   group('one point per day: the latest reading of that day', () {
     test('a later reading on the same day supersedes the earlier one', () {
       final history = NetWorthHistory.reduce([
-        point('2026-09-12T04:00:00Z', 4790000),
+        point('2026-09-12T16:00:00Z', 4790000),
         point('2026-09-12T19:30:00Z', 4844100),
       ]);
 
@@ -83,7 +76,7 @@ void main() {
       // not of the caller having sorted first.
       final history = NetWorthHistory.reduce([
         point('2026-09-12T19:30:00Z', 4844100),
-        point('2026-09-12T04:00:00Z', 4790000),
+        point('2026-09-12T16:00:00Z', 4790000),
       ]);
 
       expect(history.points.single.total.amount.minorUnits, 4844100);
@@ -196,7 +189,7 @@ void main() {
           .singleWhere((p) => p.day == DateTime.utc(2026, 9, 12));
 
       expect(day.total.amount.minorUnits, 4844100);
-      expect(day.publishedAt, DateTime.utc(2026, 9, 12, 19, 30));
+      expect(day.at, DateTime.utc(2026, 9, 12, 19, 30));
     });
 
     test('is refused rather than guessed at when it is not a series', () {

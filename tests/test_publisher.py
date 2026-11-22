@@ -839,9 +839,7 @@ def test_history_is_each_owner_day_latest_snapshot_across_both_dst_changes(
         ("2026-03-09T07:30:00Z", 7),  # Mar 9, 00:30 PDT — a fixed -08:00 says Mar 8
     ]
     for index, (taken_at, value) in enumerate(readings):
-        _insert_snapshot(
-            db, f"run-{index}", datetime.fromisoformat(taken_at), value_minor=value
-        )
+        _insert_snapshot(db, f"run-{index}", datetime.fromisoformat(taken_at), value_minor=value)
     _setup_snapshot(db)
 
     document = _document(_publisher(db).publish(at=NOW).envelope)

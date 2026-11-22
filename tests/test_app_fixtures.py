@@ -89,9 +89,7 @@ def test_item_budget_keys_match_a_real_publication(name: str, published: dict[st
 
 
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
-def test_history_point_keys_match_a_real_publication(
-    name: str, published: dict[str, Any]
-) -> None:
+def test_history_point_keys_match_a_real_publication(name: str, published: dict[str, Any]) -> None:
     expected = published["history"][-1]
     for point in _fixture(name)["history"]:
         assert point.keys() == expected.keys()

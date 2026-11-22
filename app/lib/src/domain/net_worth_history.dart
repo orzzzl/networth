@@ -2,23 +2,18 @@ import 'package:flutter/foundation.dart';
 
 import 'dated_total.dart';
 import 'instant.dart';
+import 'pacific_time.dart';
 import 'payload_format_exception.dart';
 
-/// The UTC calendar day an instant falls on, as UTC midnight.
+/// One point on the curve: a total the host computed and stored, on the
+/// Los Angeles calendar day it is placed at.
 ///
-/// `.toUtc()` first, always. The components of a local `DateTime` are its local
-/// ones, so bucketing without the conversion would put a 23:30Z reading on the
-/// previous day for a device in `-07:00` — the same class of error
-/// `parseWireInstant` refuses zone-less strings to avoid. `AGENTS.md` puts all
-/// staleness math in UTC and `instant.dart` renders in UTC rather than
-/// converting, so the curve's days are the same days the rest of the app names.
-DateTime utcDayOf(DateTime instant) {
-  final utc = instant.toUtc();
-  return DateTime.utc(utc.year, utc.month, utc.day);
-}
-
-/// One point on the curve: a total the host computed and stored, on the UTC day
-/// it was published.
+/// **Los Angeles days, because those are the days the owner reads.** Every time
+/// on screen is Pacific (`ui/instant.dart`), and a reading taken at 00:07Z on
+/// the 22nd is his afternoon of the 21st; filing it under the 22nd would put a
+/// date on the curve that had not yet arrived where he was. The host buckets its
+/// series by the same zone (`networth/publisher.py::OWNER_ZONE`). Staleness math
+/// stays UTC; this is only which day a point is drawn on.
 ///
 /// **The point holds the whole [DatedTotal], not its amount.** Invariant **I2**
 /// — no total rendered without its age state — has no exception for a chart, and
@@ -27,40 +22,50 @@ DateTime utcDayOf(DateTime instant) {
 /// to plot. That is also why it draws no value labels (`ui/history_curve.dart`).
 @immutable
 class HistoryPoint {
-  const HistoryPoint({required this.publishedAt, required this.total});
+  const HistoryPoint({required this.at, required this.total});
 
-  /// One stored reading: the instant it was published and the total as stored.
+  /// One reading of the phone's own record: the instant the payload was
+  /// published, and its total as stored.
   ///
   /// The `total` object goes through [DatedTotal.fromJson] — the same strict
   /// parser the headline uses — so a reading the headline would have refused
   /// cannot enter the curve by a side door.
-  factory HistoryPoint.fromJson(Map<String, Object?> reading) {
+  factory HistoryPoint.fromJson(Map<String, Object?> reading) =>
+      _fromJson(reading, instantField: 'published_at');
+
+  /// One point of the series the host publishes (`publisher.py::_history`):
+  /// the snapshot's own `taken_at`, and its total as stored.
+  factory HistoryPoint.fromHostJson(Map<String, Object?> point) =>
+      _fromJson(point, instantField: 'taken_at');
+
+  static HistoryPoint _fromJson(Map<String, Object?> reading, {required String instantField}) {
     final total = reading['total'];
     if (total is! Map<String, Object?>) {
       throw const PayloadFormatException('history reading total is not a JSON object');
     }
-    final publishedAt = reading['published_at'];
-    if (publishedAt is! String) {
-      throw const PayloadFormatException('history reading published_at is not a string');
+    final at = reading[instantField];
+    if (at is! String) {
+      throw PayloadFormatException('history reading $instantField is not a string');
     }
     return HistoryPoint(
-      publishedAt: parseWireInstant(publishedAt, field: 'published_at'),
+      at: parseWireInstant(at, field: instantField),
       total: DatedTotal.fromJson(total),
     );
   }
 
-  /// When the host published this reading.
+  /// The instant this reading is placed at.
   ///
-  /// The host's snapshot row has `taken_at`, which is what "when this reading
-  /// was taken" properly means, but `publisher.py::_plaintext` does not put it
-  /// on the wire — so this is the only per-publication instant the phone has,
-  /// and it is a proxy rather than the thing itself.
+  /// For a point of the host's series it is the snapshot's `taken_at` — what
+  /// "when this reading was taken" properly means. For a reading of the phone's
+  /// own record it is the payload's `published_at`, the only per-publication
+  /// instant a payload without a series carries, and a proxy rather than the
+  /// thing itself.
   ///
   /// Deliberately **not** `total.as_of`: two readings whose data did not advance
   /// carry one `as_of` and would land on the same day, erasing the fact that
   /// time passed without news; and `UNKNOWN`/`STATIC_ONLY` totals carry no
   /// `as_of` at all, so half the states could not be placed.
-  final DateTime publishedAt;
+  final DateTime at;
 
   final DatedTotal total;
 
@@ -71,8 +76,8 @@ class HistoryPoint {
   /// nothing may set one without the other.
   bool get isComplete => total.isComplete;
 
-  /// The UTC day this point sits on. The curve's x axis.
-  DateTime get day => utcDayOf(publishedAt);
+  /// The Los Angeles day this point sits on. The curve's x axis.
+  DateTime get day => pacificDayOf(at);
 }
 
 /// The curve's points, one per day, already split where the record has a hole.
@@ -152,7 +157,7 @@ class NetWorthHistory {
       // of the same day. I6 (§9.3) is the real defence — the phone refuses a
       // payload whose `seq` regressed — but a store that reorders whatever it is
       // handed is not relying on a caller having done that first.
-      if (held == null || held.publishedAt.isBefore(reading.publishedAt)) {
+      if (held == null || held.at.isBefore(reading.at)) {
         latestPerDay[reading.day] = reading;
       }
     }
@@ -206,10 +211,80 @@ class NetWorthHistory {
 
   /// Whole days from the first point's day to [point]'s.
   int dayOffsetOf(HistoryPoint point) => _daysBetween(points.first.day, point.day);
+
+  /// The points on or after [day] — a range of the chart.
+  ///
+  /// A subset of a series [reduce] built is still one point per day, ascending
+  /// and in one currency, so nothing needs checking again. A range that reaches
+  /// back before the first reading simply starts at the first reading: nothing
+  /// is padded in front of it.
+  NetWorthHistory since(DateTime day) => NetWorthHistory._(
+        List<HistoryPoint>.unmodifiable(points.where((point) => !point.day.isBefore(day))),
+      );
 }
 
-/// Whole days between two UTC midnights.
+/// Whole days between two day keys.
 ///
-/// Both arguments come from [utcDayOf], so this is exact: UTC has no DST, and
-/// the difference of two midnights is a whole number of 24-hour days.
+/// Both arguments are [PacificTime.day] values — UTC midnights standing for
+/// Los Angeles dates — so this is exact: the difference of two UTC midnights is
+/// a whole number of 24-hour days, whatever the offset was on either date.
 int _daysBetween(DateTime from, DateTime to) => to.difference(from).inDays;
+
+/// What a payload carries for the curve.
+///
+/// Three answers, kept apart for the reason `HistoryCurve` keeps an unreadable
+/// record apart from an empty one: drawing "no readings yet" over a series that
+/// arrived and failed to parse would be a false statement about the owner's own
+/// history.
+sealed class CarriedHistory {
+  const CarriedHistory();
+
+  /// Read the payload body's `history`, without ever refusing the payload.
+  ///
+  /// **A damaged series must not take the total off the screen** — the number
+  /// with its age is what this product is for, and the curve is what it adds —
+  /// so a series that does not parse becomes [HistoryUnreadable] here rather
+  /// than a [PayloadFormatException] that would fail the whole copy.
+  factory CarriedHistory.fromBody(Map<String, Object?> body) {
+    if (!body.containsKey('history')) {
+      return const HistoryNotCarried();
+    }
+    final value = body['history'];
+    if (value is! List<Object?>) {
+      return const HistoryUnreadable('history is not a JSON array');
+    }
+    try {
+      final points = [
+        for (final point in value)
+          if (point is Map<String, Object?>)
+            HistoryPoint.fromHostJson(point)
+          else
+            throw const PayloadFormatException('history point is not a JSON object'),
+      ];
+      return HistoryCarried(NetWorthHistory.reduce(points));
+    } on PayloadFormatException catch (error) {
+      return HistoryUnreadable(error.message);
+    }
+  }
+}
+
+/// The payload has no `history` key: a host that predates the series, or a
+/// copy saved by an app that did. The phone's own record is what is left.
+final class HistoryNotCarried extends CarriedHistory {
+  const HistoryNotCarried();
+}
+
+/// The host's own series, as it published it.
+final class HistoryCarried extends CarriedHistory {
+  const HistoryCarried(this.history);
+
+  final NetWorthHistory history;
+}
+
+/// The payload carried a series this build could not read.
+final class HistoryUnreadable extends CarriedHistory {
+  const HistoryUnreadable(this.reason);
+
+  /// For `debugLog`, never the screen.
+  final String reason;
+}

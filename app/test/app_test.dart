@@ -179,7 +179,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text(r'$42,500.00'), findsOneWidget);
-    expect(find.text('as of Sep 14, 2026, 20:15 UTC'), findsOneWidget);
+    expect(find.text('as of Sep 14, 2026, 13:15 PDT'), findsOneWidget);
   });
 
   testWidgets('while loading there is no headline at all, bare or otherwise', (tester) async {
@@ -415,7 +415,7 @@ void main() {
     expect(
       find.text(
         'nothing newer has been published — your server last confirmed this '
-        'copy Sep 19, 2026, 23:00 UTC',
+        'copy Sep 19, 2026, 16:00 PDT',
       ),
       findsOneWidget,
     );

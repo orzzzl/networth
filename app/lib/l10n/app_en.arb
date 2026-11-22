@@ -41,13 +41,24 @@
     "description": "HeldCopyOutdated — a copy whose schema_version is well-formed and not the one this build reads. Ordinary news rather than alarming: the usual cause is that the owner installed a new APK. 'a different version' rather than 'an older version' because a rolled-back APK lands here too. No version number reaches the screen; it means nothing to the owner and the state is evidence about one field."
   },
 
-  "instantUtc": "{date}, {time} UTC",
-  "@instantUtc": {
-    "description": "An instant, always displayed in UTC with the zone named. The zone is shown rather than silently converted so the displayed date and the stored one stay the same fact. The month name comes from the locale's own date symbols, which is why this is a placeholder rather than a Dart constant list.",
+  "instantPacific": "{date}, {time} {zone}",
+  "@instantPacific": {
+    "description": "An instant as the owner reads it: the Los Angeles wall clock, with the zone named (zonePacificStandard / zonePacificDaylight). The owner asked for Pacific time by name, so it is Pacific whatever zone the device is set to. Storage and the wire stay UTC; this is display only. The month name comes from the locale's own date symbols, which is why the date and time are placeholders rather than a Dart constant list.",
     "placeholders": {
       "date": { "type": "DateTime", "format": "yMMMd" },
-      "time": { "type": "DateTime", "format": "Hm" }
+      "time": { "type": "DateTime", "format": "Hm" },
+      "zone": { "type": "String" }
     }
+  },
+
+  "zonePacificStandard": "PST",
+  "@zonePacificStandard": {
+    "description": "Pacific Standard Time (UTC-8), the zone name after an instant from early November to mid-March."
+  },
+
+  "zonePacificDaylight": "PDT",
+  "@zonePacificDaylight": {
+    "description": "Pacific Daylight Time (UTC-7), the zone name after an instant from mid-March to early November."
   },
 
   "totalAsOf": "as of {timestamp}",

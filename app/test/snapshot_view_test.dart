@@ -48,9 +48,9 @@ void main() {
       // original lie reproduced inside the product built to refuse it.
       await _pump(tester, loadFixture(knownFixture), DateTime.utc(2026, 9, 20));
 
-      expect(find.text('as of Sep 14, 2026, 20:15 UTC'), findsOneWidget);
+      expect(find.text('as of Sep 14, 2026, 13:15 PDT'), findsOneWidget);
       expect(find.text('all reporting normally'), findsOneWidget);
-      expect(find.text('showing a copy from Sep 15, 2026, 04:00 UTC'), findsOneWidget);
+      expect(find.text('showing a copy from Sep 14, 2026, 21:00 PDT'), findsOneWidget);
     },
   );
 
@@ -58,7 +58,7 @@ void main() {
     'a stale copy this phone never checked blames nobody for it',
     (tester) async {
       // **The assertion this test replaced was the defect.** It expected
-      // `overdue — nothing new since Sep 15, 2026, 04:00 UTC` on exactly this
+      // `overdue — nothing new since Sep 14, 2026, 21:00 PDT` on exactly this
       // input, and that sentence is §9.1's `HOST_NOT_PUBLISHING` — *"reached the
       // source; nothing has been published since"*. This build performs no
       // fetches, so its diagnostics are [DiagnosticsAbsent] and the predicate
@@ -122,7 +122,7 @@ void main() {
       expect(
         find.text(
           'nothing newer has been published — your server last confirmed this '
-          'copy Sep 19, 2026, 23:00 UTC',
+          'copy Sep 19, 2026, 16:00 PDT',
         ),
         findsOneWidget,
       );
@@ -141,10 +141,10 @@ void main() {
     // utterance.
     await _pump(tester, loadFixture(knownFixture), DateTime.utc(2026, 9, 20));
 
-    expect(find.text('showing a copy from Sep 15, 2026, 04:00 UTC'), findsOneWidget);
+    expect(find.text('showing a copy from Sep 14, 2026, 21:00 PDT'), findsOneWidget);
     expect(find.text("this device hasn't checked yet"), findsOneWidget);
     expect(
-      find.textContaining("Sep 15, 2026, 04:00 UTC — this device hasn't checked"),
+      find.textContaining("Sep 14, 2026, 21:00 PDT — this device hasn't checked"),
       findsNothing,
     );
   });
@@ -153,7 +153,7 @@ void main() {
     // A row that always carries a cause teaches the eye to skip the cause.
     await _pump(tester, loadFixture(knownFixture), DateTime.utc(2026, 9, 15, 12));
 
-    expect(find.text('published Sep 15, 2026, 04:00 UTC'), findsOneWidget);
+    expect(find.text('published Sep 14, 2026, 21:00 PDT'), findsOneWidget);
     expect(find.textContaining("hasn't checked"), findsNothing);
     // §9.2 rule 3's qualifier belongs to a copy that is *not* current. Over a
     // fresh one the payload's connection state and now are the same thing, and
@@ -186,13 +186,13 @@ void main() {
   testWidgets('a fresh copy says when it was published', (tester) async {
     await _pump(tester, loadFixture(knownFixture), DateTime.utc(2026, 9, 15, 12));
 
-    expect(find.text('published Sep 15, 2026, 04:00 UTC'), findsOneWidget);
+    expect(find.text('published Sep 14, 2026, 21:00 PDT'), findsOneWidget);
   });
 
   testWidgets('a disagreeing device clock is named as such', (tester) async {
     await _pump(tester, loadFixture(knownFixture), DateTime.utc(2026, 9, 15, 3));
 
-    expect(find.text('showing a copy dated Sep 15, 2026, 04:00 UTC'), findsOneWidget);
+    expect(find.text('showing a copy dated Sep 14, 2026, 21:00 PDT'), findsOneWidget);
     expect(
       find.text("the copy is dated ahead of this device's clock, so its age can't be worked out"),
       findsOneWidget,
@@ -293,6 +293,7 @@ void main() {
         total: base.total,
         connectionState: ConnectionDisplayState.actionNeeded,
         alerts: const [],
+        history: base.history,
       ),
       DateTime.utc(2026, 9, 15, 12),
     );

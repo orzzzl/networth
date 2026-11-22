@@ -25,7 +25,7 @@ void main() {
     // That is why this reads "Sep 14, 2026" rather than the old hand-built
     // "14 Sep 2026": en_US orders it that way, and a locale added later gets its
     // own ordering without touching Dart.
-    expect(find.text('as of Sep 14, 2026, 20:15 UTC'), findsOneWidget);
+    expect(find.text('as of Sep 14, 2026, 13:15 PDT'), findsOneWidget);
   });
 
   testWidgets('UNKNOWN names how much of the total cannot be dated', (tester) async {

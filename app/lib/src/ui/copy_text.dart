@@ -54,7 +54,7 @@ import 'instant.dart';
 /// The cause belongs to [copyReasonText], where exactly one branch may mention
 /// the host.
 String copyDetailText(AppLocalizations l10n, CopyState copy, DateTime publishedAt) {
-  final published = formatInstantUtc(l10n, publishedAt);
+  final published = formatInstant(l10n, publishedAt);
   return switch (copy) {
     CopyFresh() => l10n.copyFresh(published),
     CopyStale() => l10n.copyStale(published),
@@ -81,14 +81,14 @@ String? copyReasonText(AppLocalizations l10n, CopyState copy) => switch (copy) {
       // its own sentence, so it never takes the `last checked` suffix — the
       // suffix would restate the same instant twice.
       CopyStale(reason: HostNotPublishing(:final confirmedAt)) =>
-        l10n.copyReasonHostNotPublishing(formatInstantUtc(l10n, confirmedAt)),
+        l10n.copyReasonHostNotPublishing(formatInstant(l10n, confirmedAt)),
       // The second branch allowed to speak about the server, and it says a
       // different thing: not *"nothing newer than yours"* but *"none at all"*.
       // Its own instant is inside its sentence for the same reason the branch
       // above takes no `last checked` suffix — the `404` **is** the last check,
       // so the suffix would print the same instant twice.
       CopyStale(reason: HostServingNothing(:final reachedAt)) =>
-        l10n.copyReasonHostServingNothing(formatInstantUtc(l10n, reachedAt)),
+        l10n.copyReasonHostServingNothing(formatInstant(l10n, reachedAt)),
       CopyStale(reason: CannotCheck(:final cause, :final since)) =>
         _withLastChecked(l10n, _cannotCheckText(l10n, cause), since),
     };
@@ -100,7 +100,7 @@ String? copyReasonText(AppLocalizations l10n, CopyState copy) => switch (copy) {
 /// Nothing is substituted for it: an invented instant would be the same lie the
 /// nullable itself exists to refuse, one layer up.
 String _withLastChecked(AppLocalizations l10n, String reason, DateTime? since) =>
-    since == null ? reason : l10n.copyReasonLastChecked(reason, formatInstantUtc(l10n, since));
+    since == null ? reason : l10n.copyReasonLastChecked(reason, formatInstant(l10n, since));
 
 String _cannotCheckText(AppLocalizations l10n, CannotCheckCause cause) => switch (cause) {
       NeverFetched() => l10n.copyReasonNeverFetched,
