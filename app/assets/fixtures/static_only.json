@@ -18,6 +18,23 @@
   "alerts": [],
   "connection_state": "OK",
   "grace_seconds": 21600,
+  "history": [
+    {
+      "taken_at": "2026-09-14T21:00:00.000000Z",
+      "total": {
+        "account_count": 1,
+        "age_state": "STATIC_ONLY",
+        "as_of": null,
+        "assets_minor": 68000000,
+        "currency": "USD",
+        "is_complete": true,
+        "liabilities_minor": 0,
+        "static_account_count": 1,
+        "unknown_freshness_account_count": 0,
+        "value_minor": 68000000
+      }
+    }
+  ],
   "item_budget": {
     "capacity": 10,
     "in_flight_count": 0,

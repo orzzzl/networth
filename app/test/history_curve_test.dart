@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:networth_app/src/domain/dated_total.dart';
+import 'package:networth_app/src/domain/money.dart';
 import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/ui/history_curve.dart';
 
@@ -7,6 +9,13 @@ import 'fixtures.dart';
 import 'net_worth_history_test.dart' show point;
 
 const Size _box = Size(307, 120);
+
+/// [days] consecutive readings from [first], each at 20:00Z — the afternoon in
+/// Los Angeles, so each lands on its own date there.
+NetWorthHistory _daily(DateTime first, int days) => NetWorthHistory.reduce([
+      for (var i = 0; i < days; i++)
+        point(first.add(Duration(days: i, hours: 20)).toIso8601String(), 100000 + i),
+    ]);
 
 /// The width of one day in [_box], for the series passed in.
 double _dayWidth(NetWorthHistory history) =>
@@ -164,22 +173,173 @@ void main() {
           ),
         );
 
-    testWidgets('renders no figures at all — I2 has no exception for a chart', (
+    testWidgets('every figure it renders carries its date — I2 has no exception for a chart', (
       tester,
     ) async {
-      // There is no widget in this app that takes a bare amount, and an axis
-      // label would be exactly that: a number with no age beside it. The whole
-      // rendered surface is checked rather than one widget, because the defect
-      // would be an amount reaching the screen, not a particular `Text`.
+      // The whole rendered surface is checked rather than one widget, because
+      // the defect would be an amount reaching the screen without its day.
       await pump(tester, demoSeries());
 
-      for (final line in renderedText(tester, find.byType(HistoryCurve))) {
+      final amounts = [
+        for (final line in renderedText(tester, find.byType(HistoryCurve)))
+          if (line.contains(r'$')) line,
+      ];
+      expect(amounts, [r'+$1,130.00 (+2.35%) since Sep 5, 2026']);
+    });
+
+    testWidgets('a range longer than the record starts at its first reading, and says so', (
+      tester,
+    ) async {
+      final series = _daily(DateTime.utc(2026, 11, 12), 10);
+      await pump(tester, series);
+
+      for (final range in ['1M', '3M', 'YTD', '1Y', '3Y', '5Y']) {
+        await tester.tap(find.text(range));
+        await tester.pump();
         expect(
-          line,
-          isNot(matches(RegExp(r'\d'))),
-          reason: 'the curve rendered a figure: "$line"',
+          tester.widget<Text>(find.byKey(const Key('history-change'))).data,
+          endsWith('since Nov 12, 2026'),
+          reason: range,
         );
       }
+    });
+
+    testWidgets('the range buttons choose how far back the change is measured', (tester) async {
+      // 800 days ending 2026-11-21: long enough for every range but 5Y.
+      await pump(tester, _daily(DateTime.utc(2024, 9, 13), 800));
+
+      String since() => tester.widget<Text>(find.byKey(const Key('history-change'))).data!;
+      expect(since(), endsWith('since Nov 21, 2025'), reason: 'the initial range is 1Y');
+      for (final (range, start) in [
+        ('1M', 'Oct 21, 2026'),
+        ('3M', 'Aug 21, 2026'),
+        ('YTD', 'Jan 1, 2026'),
+        ('1Y', 'Nov 21, 2025'),
+        ('3Y', 'Sep 13, 2024'),
+        ('5Y', 'Sep 13, 2024'),
+      ]) {
+        await tester.tap(find.text(range));
+        await tester.pump();
+        expect(since(), endsWith('since $start'), reason: range);
+      }
+    });
+
+    group('the reading under the finger', () {
+      final readout = find.byKey(const Key('history-readout'));
+      final chart = find.byKey(const Key('history-chart'));
+
+      List<String> readoutLines(WidgetTester tester) => renderedText(tester, readout);
+
+      testWidgets('follows a drag, with its own day and age, and goes on release', (
+        tester,
+      ) async {
+        await pump(
+          tester,
+          NetWorthHistory.reduce([
+            point('2026-09-10T20:00:00Z', 100000),
+            point('2026-09-11T20:00:00Z', 200000),
+            point('2026-09-12T20:00:00Z', 300000),
+          ]),
+        );
+        expect(readout, findsNothing);
+
+        final left = tester.getTopLeft(chart) + const Offset(1, 90);
+        final gesture = await tester.startGesture(left);
+        await gesture.moveBy(const Offset(30, 0));
+        await tester.pump();
+        expect(readoutLines(tester), [
+          r'$1,000.00',
+          'Sep 10, 2026',
+          'as of Sep 10, 2026, 13:00 PDT',
+        ]);
+        expect(find.byKey(const Key('history-change')), findsNothing);
+
+        await gesture.moveTo(tester.getTopRight(chart) + const Offset(-1, 90));
+        await tester.pump();
+        expect(readoutLines(tester).first, r'$3,000.00');
+
+        await gesture.up();
+        await tester.pump();
+        expect(readout, findsNothing);
+        expect(find.byKey(const Key('history-change')), findsOneWidget);
+      });
+
+      testWidgets('is pinned by a tap and let go by a second one', (tester) async {
+        await pump(tester, demoSeries());
+
+        await tester.tapAt(tester.getTopRight(chart) + const Offset(-1, 90));
+        await tester.pump();
+        expect(readoutLines(tester).take(2), [r'$49,250.00', 'Sep 15, 2026']);
+
+        await tester.tapAt(tester.getTopRight(chart) + const Offset(-1, 90));
+        await tester.pump();
+        expect(readout, findsNothing);
+      });
+
+      testWidgets('is on the owner\'s day, not the UTC one', (tester) async {
+        // His first real snapshot, taken at 00:19Z on the 22nd: his 21st.
+        await pump(tester, NetWorthHistory.reduce([point('2026-11-22T00:19:18Z', 500000)]));
+
+        await tester.tapAt(tester.getCenter(chart));
+        await tester.pump();
+        expect(readoutLines(tester).take(2), [r'$5,000.00', 'Nov 21, 2026']);
+      });
+
+      testWidgets('an undatable reading stays undatable, and an incomplete one says so', (
+        tester,
+      ) async {
+        final at = DateTime.parse('2026-11-21T20:00:00Z');
+        await pump(
+          tester,
+          NetWorthHistory.reduce([
+            HistoryPoint(
+              at: at,
+              total: const UndatableTotal(
+                amount: Money(minorUnits: 700000, currency: 'USD'),
+                assets: Money(minorUnits: 700000, currency: 'USD'),
+                liabilities: Money(minorUnits: 0, currency: 'USD'),
+                staticAccountCount: 0,
+                isComplete: false,
+                undatableAccountCount: 3,
+                accountCount: 9,
+              ),
+            ),
+          ]),
+        );
+
+        await tester.tapAt(tester.getCenter(chart));
+        await tester.pump();
+        expect(readoutLines(tester), [
+          r'$7,000.00',
+          'Nov 21, 2026',
+          "can't date this total — 3 of 9 accounts can't be dated",
+          'incomplete reading',
+        ]);
+      });
+    });
+
+    testWidgets('a single reading has no change to report, and its day on the axis', (
+      tester,
+    ) async {
+      await pump(tester, NetWorthHistory.reduce([point('2026-11-21T20:00:00Z', 100)]));
+
+      expect(find.byKey(const Key('history-change')), findsNothing);
+      expect(find.text('Nov 21'), findsOneWidget);
+    });
+
+    testWidgets('a range starting at nothing or at a debt shows no percentage', (tester) async {
+      await pump(
+        tester,
+        NetWorthHistory.reduce([
+          point('2026-11-20T20:00:00Z', -5000),
+          point('2026-11-21T20:00:00Z', 5000),
+        ]),
+      );
+
+      expect(
+        tester.widget<Text>(find.byKey(const Key('history-change'))).data,
+        r'+$100.00 since Nov 20, 2026',
+      );
     });
 
     testWidgets('names a treatment only when that treatment is on screen', (

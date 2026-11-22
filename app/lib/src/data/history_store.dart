@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../domain/dated_total.dart';
 import '../domain/net_worth_history.dart';
+import '../domain/pacific_time.dart';
 import '../domain/payload_format_exception.dart';
 import '../domain/phone_payload.dart';
 import 'history_source.dart';
@@ -61,7 +62,7 @@ class FileHistoryStore implements HistoryStore {
 
   /// **The bound, and it is in days rather than readings on purpose.**
   ///
-  /// The store keeps at most one reading per UTC day — the latest recorded for
+  /// The store keeps at most one reading per Los Angeles day — the latest recorded for
   /// that day, which is the point §7 says the curve draws — so the file grows
   /// with *days*, not with how often the app is opened or how often the host
   /// publishes. A phone that fetches every five minutes and one that fetches
@@ -177,7 +178,7 @@ class FileHistoryStore implements HistoryStore {
   /// nothing to write.
   ///
   /// **A later payload never mutates an earlier point.** A reading only ever
-  /// touches its own UTC day: every other day in the list comes back untouched,
+  /// touches its own day: every other day in the list comes back untouched,
   /// so revaluing in 2026 leaves the 2024 points exactly as they were stored —
   /// the phone-side analogue of `13`'s criterion.
   ///
@@ -193,8 +194,8 @@ class FileHistoryStore implements HistoryStore {
   /// new) a no-op, and what stops an out-of-order arrival from displacing a
   /// later reading of the same day.
   List<_Reading>? _merge(List<_Reading> stored, _Reading reading) {
-    final day = utcDayOf(reading.publishedAt);
-    final existing = stored.indexWhere((other) => utcDayOf(other.publishedAt) == day);
+    final day = pacificDayOf(reading.publishedAt);
+    final existing = stored.indexWhere((other) => pacificDayOf(other.publishedAt) == day);
     final List<_Reading> merged;
     if (existing >= 0) {
       if (!stored[existing].publishedAt.isBefore(reading.publishedAt)) {
@@ -241,7 +242,7 @@ class FileHistoryStore implements HistoryStore {
     //
     // **Not made redundant by [_readableBytes], which checks the other file.**
     // Without this one, an already-damaged file would be read, and a merge that
-    // happened to drop the damaged reading — its UTC day replaced, or aged past
+    // happened to drop the damaged reading — its day replaced, or aged past
     // [retainedDays] — would produce a readable collection and write it. The
     // store would then have silently repaired the owner's record by deleting
     // part of it, which is the one thing [record] refuses to do.
@@ -263,7 +264,7 @@ class FileHistoryStore implements HistoryStore {
   /// it: readings recorded after the damage are no more renderable than the
   /// damaged one. The laxness bought no display, and it spent the thing this
   /// store promises — [_merge] replaces a stored reading that shares the new
-  /// one's UTC day and drops the oldest past [retainedDays], either of which
+  /// one's day and drops the oldest past [retainedDays], either of which
   /// destroys the bytes [record]'s "the failure travels up instead" exists to
   /// keep. `HomePage` records before it loads, so that happened *before* the
   /// owner was ever shown that something was wrong.
@@ -284,7 +285,7 @@ class FileHistoryStore implements HistoryStore {
     // Validates `published_at` and the total, through `DatedTotal.fromJson`.
     final point = HistoryPoint.fromJson(reading);
     return (
-      (publishedAt: point.publishedAt, seq: seq, json: reading),
+      (publishedAt: point.at, seq: seq, json: reading),
       point,
     );
   }

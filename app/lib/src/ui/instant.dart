@@ -1,24 +1,28 @@
 import '../../l10n/generated/app_localizations.dart';
+import '../domain/pacific_time.dart';
 
-/// Render an instant in UTC, with the zone named.
+/// Render an instant as the owner reads it: Los Angeles time, zone named.
 ///
-/// `AGENTS.md` requires every stored timestamp to be UTC with an explicit zone,
-/// and a sibling project has already shipped a "no notification" bug that came
-/// down to a timezone lookup. Showing the zone rather than quietly converting to
-/// whatever the device believes local time is keeps the displayed date and the
-/// stored one the same fact.
+/// He asked for Pacific time by name, so it is Pacific whatever the device is
+/// set to — not `toLocal()`, which would make the same stored instant read
+/// differently on a phone that travels. The zone is printed (PST or PDT), so a
+/// displayed time is never ambiguous about which clock it is on.
 ///
-/// The month name is the locale's, not this file's. An earlier version kept a
-/// `const List<String> _months` here and called localised formatting "the rest
-/// of the i18n work" — but a hard-coded English month name in a date the owner
-/// reads is exactly the thing the convention forbids, and leaving it for later
-/// meant every screen built on top of this one would inherit it. The ARB entry
-/// declares the date and the time as `DateTime` placeholders, so `intl` supplies
-/// the symbols and the ordering for whatever locale is resolved.
+/// The conversion is [PacificTime]'s, which computes the offset from the rules
+/// rather than looking anything up. Storage and the wire stay UTC (`AGENTS.md`);
+/// this function is the only place an instant becomes Pacific text.
 ///
-/// The [DateTime] is converted with [DateTime.toUtc] first, so the fields `intl`
-/// formats are the UTC ones regardless of what the caller passed in.
-String formatInstantUtc(AppLocalizations l10n, DateTime instant) {
-  final utc = instant.toUtc();
-  return l10n.instantUtc(utc, utc);
+/// The month name is the locale's, not this file's: the ARB entry declares the
+/// date and the time as `DateTime` placeholders, so `intl` supplies the symbols
+/// and the ordering. What it is handed is [PacificTime.wallClock], whose fields
+/// are the Los Angeles ones, and `intl` formats a [DateTime]'s fields as they
+/// stand.
+String formatInstant(AppLocalizations l10n, DateTime instant) {
+  final pacific = PacificTime.of(instant);
+  final local = pacific.wallClock;
+  return l10n.instantPacific(
+    local,
+    local,
+    pacific.isDaylight ? l10n.zonePacificDaylight : l10n.zonePacificStandard,
+  );
 }

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 from networth.alerts import AlertEvaluator, DeliverableAlert
 from networth.item_budget import ItemBudget, ItemBudgetError, read_item_budget
@@ -18,9 +19,37 @@ from networth.payload import KEY_BYTES, NONCE_BYTES, PayloadEnvelope, seal_paylo
 from networth.query import AccountRead, NetWorthQuery, NetWorthRead
 from networth.store import Store
 
+# Still "1" with `history` in the body: the field is additive, and an app that
+# predates it reads named keys and ignores the rest, so it cannot misread a
+# payload that carries one. A bump is for a change an older app would misread.
 SCHEMA_VERSION = "1"
 PUBLISH_INTERVAL_SECONDS = 86_400
 GRACE_SECONDS = 21_600
+
+#: The owner's zone. The phone shows every instant in it, so the series is
+#: bucketed by its calendar days: a reading taken at 00:07Z on the 22nd is on
+#: the 21st for the person looking at it, and that is the day it is drawn on.
+OWNER_ZONE = ZoneInfo("America/Los_Angeles")
+
+#: The longest range the phone offers (5Y). The series stops there so the
+#: payload stays bounded: about 270 bytes a day, under half of what the phone
+#: will read from one response even at five full years.
+HISTORY_YEARS = 5
+
+#: Exactly the fields the phone's `DatedTotal.fromJson` reads, so every point
+#: passes the same parser as the headline and costs no more than it needs to.
+_HISTORY_TOTAL_FIELDS = (
+    "account_count",
+    "age_state",
+    "as_of",
+    "assets_minor",
+    "currency",
+    "is_complete",
+    "liabilities_minor",
+    "static_account_count",
+    "unknown_freshness_account_count",
+    "value_minor",
+)
 
 
 class PublisherError(RuntimeError):
@@ -89,6 +118,51 @@ def _total(snapshot: Snapshot) -> dict[str, object]:
         "reauth_account_count": snapshot.counts.reauth_account_count,
         "unreconciled_account_count": snapshot.counts.unreconciled_account_count,
         "is_complete": snapshot.is_complete,
+    }
+
+
+def _years_before(day: date, years: int) -> date:
+    try:
+        return day.replace(year=day.year - years)
+    except ValueError:  # 29 February, in a year that has none
+        return day.replace(year=day.year - years, day=28)
+
+
+def _history(snapshots: Sequence[Snapshot]) -> list[dict[str, object]]:
+    """The curve's series: each day's latest stored snapshot, as stored.
+
+    One point per owner-zone calendar day — the last snapshot taken that day,
+    because `snapshots` is chronological and a later one replaces an earlier one.
+    Nothing is recomputed or filled in: a day with no snapshot has no point.
+
+    A snapshot over **zero accounts** is not a reading of anything — it is what
+    every sync stores before the first Link — so the series begins with the
+    first snapshot that contains an account. Without that, the owner's first
+    real total would be drawn as a jump from a month of `$0.00`.
+    """
+
+    latest_per_day: dict[date, Snapshot] = {}
+    for snapshot in snapshots:
+        if snapshot.counts.account_count == 0:
+            continue
+        latest_per_day[snapshot.taken_at.astimezone(OWNER_ZONE).date()] = snapshot
+    if not latest_per_day:
+        return []
+    first_day = _years_before(max(latest_per_day), HISTORY_YEARS)
+    return [
+        _history_point(snapshot)
+        for day, snapshot in sorted(latest_per_day.items())
+        if day >= first_day
+    ]
+
+
+def _history_point(snapshot: Snapshot) -> dict[str, object]:
+    # Selected from `_total` rather than written out again, so a point and the
+    # headline can never encode the same stored field two different ways.
+    total = _total(snapshot)
+    return {
+        "taken_at": _timestamp(snapshot.taken_at),
+        "total": {field: total[field] for field in _HISTORY_TOTAL_FIELDS},
     }
 
 
@@ -161,6 +235,7 @@ def _plaintext(
     grace_seconds: int,
     item_budget: dict[str, object],
     alerts: tuple[DeliverableAlert, ...],
+    history: list[dict[str, object]],
 ) -> bytes:
     document: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -174,6 +249,7 @@ def _plaintext(
         "accounts": [_account(account) for account in read.accounts],
         "item_budget": item_budget,
         "alerts": [_alert(alert) for alert in alerts],
+        "history": history,
     }
     return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
 
@@ -255,9 +331,13 @@ class Publisher:
             raise PayloadKeyError("active pairing key must resolve to exactly 32 bytes")
 
         store = Store(self._connection)
-        read = NetWorthQuery(store).latest()
+        query = NetWorthQuery(store)
+        read = query.latest()
         if read is None:
             raise PublisherError("no snapshot exists to publish")
+        # Read under the same write lock as `latest()`, so the series ends on the
+        # very snapshot this payload's headline carries.
+        history = _history(query.history())
         alerts = AlertEvaluator(store.alerts).bulletin(at=at)
         budget = _budget(self._connection)
 
@@ -276,6 +356,7 @@ class Publisher:
             grace_seconds=self._grace_seconds,
             item_budget=budget,
             alerts=alerts,
+            history=history,
         )
         nonce = self._nonce_factory(NONCE_BYTES)
         if not isinstance(nonce, bytes) or len(nonce) != NONCE_BYTES:
@@ -333,6 +414,8 @@ class Publisher:
 
 __all__ = [
     "GRACE_SECONDS",
+    "HISTORY_YEARS",
+    "OWNER_ZONE",
     "PUBLISH_INTERVAL_SECONDS",
     "PairingUnavailableError",
     "PayloadKeyError",

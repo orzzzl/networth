@@ -102,12 +102,12 @@ void main() {
 
   group('the claim on the first line names no cause', () {
     test('a fresh copy says when it was published', () {
-      expect(detail(const CopyFresh()), 'published Sep 15, 2026, 04:00 UTC');
+      expect(detail(const CopyFresh()), 'published Sep 14, 2026, 21:00 PDT');
     });
 
     test('a stale copy says how old it is and blames nobody', () {
       final line = detail(cannotCheck(const NeverFetched()));
-      expect(line, 'showing a copy from Sep 15, 2026, 04:00 UTC');
+      expect(line, 'showing a copy from Sep 14, 2026, 21:00 PDT');
       // The regression, stated as the string that must never come back. Through
       // task 22 this line was `overdue — nothing new since <t>` for EVERY stale
       // copy, which asserts §9.1's HOST_NOT_PUBLISHING on the strength of the
@@ -119,7 +119,7 @@ void main() {
     test('an undatable copy says "dated", never "from"', () {
       // "from" quietly claims the age the reason line goes on to disclaim.
       final line = detail(const CopyUnknown(ClockDisagreement.clockContinuityUnknown));
-      expect(line, 'showing a copy dated Sep 15, 2026, 04:00 UTC');
+      expect(line, 'showing a copy dated Sep 14, 2026, 21:00 PDT');
       expect(line, isNot(contains('from')));
     });
   });
@@ -129,7 +129,7 @@ void main() {
       expect(
         reason(CopyStale(HostNotPublishing(lastPublishedAt: published, confirmedAt: confirmed))),
         'nothing newer has been published — your server last confirmed this copy '
-        'Sep 18, 2026, 06:30 UTC',
+        'Sep 17, 2026, 23:30 PDT',
       );
     });
 
@@ -146,7 +146,7 @@ void main() {
         CopyStale(HostServingNothing(lastPublishedAt: published, reachedAt: confirmed)),
       )!;
 
-      expect(line, 'your server answered Sep 18, 2026, 06:30 UTC and has no snapshot to give');
+      expect(line, 'your server answered Sep 17, 2026, 23:30 PDT and has no snapshot to give');
       // Not `HOST_NOT_PUBLISHING`: that sentence says the server *confirmed*
       // this copy, and a 404 disowns it.
       expect(line, isNot(contains('confirmed')));
@@ -319,7 +319,7 @@ void main() {
     test('it is appended when a fetch has ever succeeded', () {
       expect(
         reason(cannotCheck(const FetchFailed(FetchFailureClass.offline), since: confirmed)),
-        "no network here, so it couldn't check — last checked Sep 18, 2026, 06:30 UTC",
+        "no network here, so it couldn't check — last checked Sep 17, 2026, 23:30 PDT",
       );
     });
 

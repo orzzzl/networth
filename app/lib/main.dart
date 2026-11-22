@@ -59,7 +59,8 @@ HomeLoader _homeLoader(HistoryStore history, PairingVault vault) {
   );
 }
 
-/// The curve's series — **the phone's own record, and nothing else.**
+/// The phone's own record — what the curve draws for a copy that carries no
+/// series of the host's (`SnapshotView` prefers the host's when it has one).
 ///
 /// No entry point names a bundled series and there is no longer one to name. A
 /// made-up *today* announces itself, because the screen it draws is covered in

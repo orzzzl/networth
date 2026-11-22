@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../l10n/generated/app_localizations.dart';
+import '../debug_log.dart';
 import '../domain/clock_continuity.dart';
 import '../domain/copy_freshness.dart';
 import '../domain/fetch_diagnostics.dart';
@@ -145,14 +146,38 @@ class SnapshotView extends StatelessWidget {
           // agrees with itself and disagrees with the total above it, and a
           // figure-less curve of the wrong quantity looks exactly like a right
           // one.
-          HistoryCurve(
-            history: history,
-            recordingFailed: recordingFailed,
-            headlineCurrency: payload.total.amount.currency,
-          ),
+          _curve(),
         ],
       ),
     );
+  }
+
+  /// The host's series when this copy carries one; the phone's own record when
+  /// it does not.
+  ///
+  /// **The host's series wins outright rather than being merged.** It is every
+  /// day the host stored, while the phone's record holds only the days the app
+  /// happened to be opened, and the two place a reading at different instants
+  /// (`taken_at` against `published_at`) — merged, the phone's later instant
+  /// would let an earlier snapshot displace the day's last one. The record
+  /// remains what a copy from a host that predates the series is drawn from,
+  /// and its recording warning only means anything over that record.
+  Widget _curve() {
+    final currency = payload.total.amount.currency;
+    switch (payload.history) {
+      case HistoryCarried(:final history):
+        return HistoryCurve(history: history, recordingFailed: false, headlineCurrency: currency);
+      case HistoryNotCarried():
+        return HistoryCurve(
+          history: history,
+          recordingFailed: recordingFailed,
+          headlineCurrency: currency,
+        );
+      case HistoryUnreadable(:final reason):
+        // The reason is `debugLog`'s, never the screen's.
+        debugLog(() => 'carried history unreadable: $reason');
+        return HistoryCurve(history: null, recordingFailed: false, headlineCurrency: currency);
+    }
   }
 }
 

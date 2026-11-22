@@ -34,14 +34,20 @@ class AppLocalizationsEn extends AppLocalizations {
       'the copy saved on this phone was written by a different version of the app';
 
   @override
-  String instantUtc(DateTime date, DateTime time) {
+  String instantPacific(DateTime date, DateTime time, String zone) {
     final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
     final String dateString = dateDateFormat.format(date);
     final intl.DateFormat timeDateFormat = intl.DateFormat.Hm(localeName);
     final String timeString = timeDateFormat.format(time);
 
-    return '$dateString, $timeString UTC';
+    return '$dateString, $timeString $zone';
   }
+
+  @override
+  String get zonePacificStandard => 'PST';
+
+  @override
+  String get zonePacificDaylight => 'PDT';
 
   @override
   String totalAsOf(String timestamp) {
@@ -241,6 +247,79 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get historyLabel => 'History';
+
+  @override
+  String historyChangeWithPercentSince(
+    String change,
+    String percent,
+    DateTime date,
+  ) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$change ($percent) since $dateString';
+  }
+
+  @override
+  String historyChangeSince(String change, DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$change since $dateString';
+  }
+
+  @override
+  String historyReadingDay(DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$dateString';
+  }
+
+  @override
+  String get historyReadingIncomplete => 'incomplete reading';
+
+  @override
+  String historyAxisDay(DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.MMMd(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$dateString';
+  }
+
+  @override
+  String historyAxisMonth(DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.MMM(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$dateString';
+  }
+
+  @override
+  String historyAxisYear(DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.y(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$dateString';
+  }
+
+  @override
+  String get historyRangeOneMonth => '1M';
+
+  @override
+  String get historyRangeThreeMonths => '3M';
+
+  @override
+  String get historyRangeYearToDate => 'YTD';
+
+  @override
+  String get historyRangeOneYear => '1Y';
+
+  @override
+  String get historyRangeThreeYears => '3Y';
+
+  @override
+  String get historyRangeFiveYears => '5Y';
 
   @override
   String get historyEmpty => 'no readings recorded yet';

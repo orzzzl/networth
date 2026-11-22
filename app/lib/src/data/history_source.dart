@@ -3,13 +3,12 @@ import 'dart:convert';
 import '../domain/net_worth_history.dart';
 import '../domain/payload_format_exception.dart';
 
-/// Where the curve's points come from.
+/// Where the curve's points come from **when the copy carries no series**.
 ///
-/// **The payload carries one total, not a series.** `publisher.py::_plaintext`
-/// sends a single `total`, and `DESIGN.md` §6.2 states the other half where it
-/// describes what a compromised phone leaks — *"the phone's local cache … does
-/// contain the history window the curve renders, because the curve has to come
-/// from somewhere."* So the series is the phone's, accumulated one reading per
+/// Since 2026-11-21 the host publishes its own daily series beside the total
+/// (`publisher.py::_history`), and `SnapshotView` draws that whenever the copy
+/// on screen carries one. This record is what is left for a copy that does not
+/// — one from a host that predates the series — accumulated one reading per
 /// accepted payload and kept across launches.
 ///
 /// **This is the reading half only**, and the split is deliberate: `HomePage`

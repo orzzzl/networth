@@ -89,6 +89,24 @@ def test_item_budget_keys_match_a_real_publication(name: str, published: dict[st
 
 
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
+def test_history_point_keys_match_a_real_publication(name: str, published: dict[str, Any]) -> None:
+    expected = published["history"][-1]
+    for point in _fixture(name)["history"]:
+        assert point.keys() == expected.keys()
+        assert point["total"].keys() == expected["total"].keys()
+
+
+@pytest.mark.parametrize("name", FIXTURE_NAMES)
+def test_history_ends_on_the_fixtures_own_total(name: str) -> None:
+    """The host's series ends on the snapshot the headline carries; so must these."""
+
+    body = _fixture(name)
+    last = body["history"][-1]
+    assert last["total"] == {key: body["total"][key] for key in last["total"]}
+    assert last["taken_at"] <= body["published_at"]
+
+
+@pytest.mark.parametrize("name", FIXTURE_NAMES)
 def test_enumerated_values_are_ones_this_project_defines(name: str) -> None:
     """A plausible-looking fixture may still name a state that does not exist."""
 

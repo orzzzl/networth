@@ -7,6 +7,7 @@ import 'copy_freshness.dart';
 import 'dated_total.dart';
 import 'fetch_diagnostics.dart';
 import 'instant.dart';
+import 'net_worth_history.dart';
 import 'payload_alert.dart';
 import 'payload_format_exception.dart';
 import 'publication_seq.dart';
@@ -38,6 +39,7 @@ class PhonePayload {
     required this.total,
     required this.connectionState,
     required this.alerts,
+    required this.history,
   });
 
   /// The schema this build speaks.
@@ -65,6 +67,12 @@ class PhonePayload {
   /// cached payload is a complete picture of what was true when it was
   /// published. Display order is decided by [summarizeAlerts], not here.
   final List<PayloadAlert> alerts;
+
+  /// The host's daily series, when this copy carries one (`publisher.py::_history`).
+  ///
+  /// Read in a way that can never refuse the payload: a series that does not
+  /// parse is [HistoryUnreadable] and the headline still stands.
+  final CarriedHistory history;
 
   factory PhonePayload.fromJsonString(String source) {
     final Object? decoded;
@@ -107,6 +115,7 @@ class PhonePayload {
       total: DatedTotal.fromJson(total),
       connectionState: connectionState,
       alerts: _alerts(body),
+      history: CarriedHistory.fromBody(body),
     );
   }
 

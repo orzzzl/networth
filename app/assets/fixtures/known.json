@@ -46,6 +46,53 @@
   "alerts": [],
   "connection_state": "OK",
   "grace_seconds": 21600,
+  "history": [
+    {
+      "taken_at": "2026-09-12T21:00:00.000000Z",
+      "total": {
+        "account_count": 3,
+        "age_state": "KNOWN",
+        "as_of": "2026-09-12T20:15:00.000000Z",
+        "assets_minor": 4940000,
+        "currency": "USD",
+        "is_complete": true,
+        "liabilities_minor": 750000,
+        "static_account_count": 0,
+        "unknown_freshness_account_count": 0,
+        "value_minor": 4190000
+      }
+    },
+    {
+      "taken_at": "2026-09-13T21:00:00.000000Z",
+      "total": {
+        "account_count": 3,
+        "age_state": "KNOWN",
+        "as_of": "2026-09-13T20:15:00.000000Z",
+        "assets_minor": 4965000,
+        "currency": "USD",
+        "is_complete": true,
+        "liabilities_minor": 750000,
+        "static_account_count": 0,
+        "unknown_freshness_account_count": 0,
+        "value_minor": 4215000
+      }
+    },
+    {
+      "taken_at": "2026-09-14T21:00:00.000000Z",
+      "total": {
+        "account_count": 3,
+        "age_state": "KNOWN",
+        "as_of": "2026-09-14T20:15:00.000000Z",
+        "assets_minor": 5000000,
+        "currency": "USD",
+        "is_complete": true,
+        "liabilities_minor": 750000,
+        "static_account_count": 0,
+        "unknown_freshness_account_count": 0,
+        "value_minor": 4250000
+      }
+    }
+  ],
   "item_budget": {
     "capacity": 10,
     "in_flight_count": 0,

@@ -179,7 +179,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text(r'$42,500.00'), findsOneWidget);
-    expect(find.text('as of Sep 14, 2026, 20:15 UTC'), findsOneWidget);
+    expect(find.text('as of Sep 14, 2026, 13:15 PDT'), findsOneWidget);
   });
 
   testWidgets('while loading there is no headline at all, bare or otherwise', (tester) async {
@@ -415,7 +415,7 @@ void main() {
     expect(
       find.text(
         'nothing newer has been published — your server last confirmed this '
-        'copy Sep 19, 2026, 23:00 UTC',
+        'copy Sep 19, 2026, 16:00 PDT',
       ),
       findsOneWidget,
     );
@@ -492,7 +492,9 @@ void main() {
             loader: HomeLoader(
               vault: PairingVault(store: MemoryPairingStore(encoded)),
               refresher: RecordingSnapshotRefresher(
-                inner: _AcceptingRefresher(copies, knownFixture),
+                // A copy with no series of its own, so what is drawn is the
+                // record this store refuses to write.
+                inner: _AcceptingRefresher(copies, knownFixture, series: false),
                 store: store,
               ),
               heldCopies: copies,
@@ -521,7 +523,11 @@ void main() {
       await tester.pumpWidget(
         localized(
           HomePage(
-            loader: loaderOver(copy: heldCopy(knownFixture)),
+            loader: loaderOver(
+              copy: HeldCopyHeld(
+                PhonePayload.fromJsonString(readFixtureWithoutSeries(knownFixture)),
+              ),
+            ),
             historySource: const _NoHistory(),
             intake: unusedIntake(),
             clock: () => DateTime.utc(2026, 9, 15, 12),
@@ -553,14 +559,18 @@ void main() {
 /// A refresh that accepts a payload: it writes the copy and hands the payload
 /// back, which is what makes the recorder above record.
 class _AcceptingRefresher implements SnapshotRefreshing {
-  _AcceptingRefresher(this._copies, this._fixture);
+  _AcceptingRefresher(this._copies, this._fixture, {this.series = true});
 
   final _MemoryCopies _copies;
   final String _fixture;
 
+  /// False for a host that predates the series: the copy then carries none,
+  /// and the screen falls back to the phone's own record.
+  final bool series;
+
   @override
   Future<SnapshotRefreshOutcome> refresh() async {
-    final source = readFixture(_fixture);
+    final source = series ? readFixture(_fixture) : readFixtureWithoutSeries(_fixture);
     await _copies.hold(source);
     return RefreshAccepted(PhonePayload.fromJsonString(source));
   }

@@ -59,12 +59,12 @@ void main() {
 
   group('an accepted payload is recorded, as the host stored it', () {
     test('one reading per payload, holding the numbers the host published', () async {
-      await launch().record(payload(publishedAt: '2026-09-15T04:00:00Z', seq: '41'));
+      await launch().record(payload(publishedAt: '2026-09-15T16:00:00Z', seq: '41'));
 
       expect(readingsOnDisk(), hasLength(1));
       final reading = readingsOnDisk().single;
       expect(DateTime.parse(reading['published_at']! as String),
-          DateTime.utc(2026, 9, 15, 4));
+          DateTime.utc(2026, 9, 15, 16));
       expect(reading['seq'], '41');
       expect(reading['total'], {
         'value_minor': 4250000,
@@ -85,7 +85,7 @@ void main() {
       final store = launch();
       for (final (day, value) in [(10, 100), (11, 250), (13, 90)]) {
         await store.record(
-          payload(publishedAt: '2026-09-${day}T04:00:00Z', seq: '$day', valueMinor: value),
+          payload(publishedAt: '2026-09-${day}T16:00:00Z', seq: '$day', valueMinor: value),
         );
       }
 
@@ -103,9 +103,9 @@ void main() {
       // copies of one format: these bytes go back through `parseHistory`, the
       // same parser the screen uses.
       final store = launch();
-      await store.record(payload(publishedAt: '2026-09-10T04:00:00Z', valueMinor: 100));
+      await store.record(payload(publishedAt: '2026-09-10T16:00:00Z', valueMinor: 100));
       await store.record(
-        payload(publishedAt: '2026-09-12T04:00:00Z', valueMinor: 250, isComplete: false),
+        payload(publishedAt: '2026-09-12T16:00:00Z', valueMinor: 250, isComplete: false),
       );
 
       final history = await store.load();
@@ -125,7 +125,7 @@ void main() {
 
   group('durable across launches', () {
     test('a reading recorded by one launch is there for the next', () async {
-      await launch().record(payload(publishedAt: '2026-09-10T04:00:00Z', valueMinor: 777));
+      await launch().record(payload(publishedAt: '2026-09-10T16:00:00Z', valueMinor: 777));
 
       final history = await launch().load();
 
@@ -137,10 +137,10 @@ void main() {
       // owner's own curve is not a capability, so it must survive that — which
       // it does by never being identified by the pairing at all.
       await launch().record(
-        payload(publishedAt: '2026-09-10T04:00:00Z', pairingId: 'pairing-before'),
+        payload(publishedAt: '2026-09-10T16:00:00Z', pairingId: 'pairing-before'),
       );
       await launch().record(
-        payload(publishedAt: '2026-09-11T04:00:00Z', pairingId: 'pairing-after'),
+        payload(publishedAt: '2026-09-11T16:00:00Z', pairingId: 'pairing-after'),
       );
 
       expect((await launch().load()).points, hasLength(2));
@@ -155,10 +155,10 @@ void main() {
   group('a later payload never mutates an earlier point', () {
     test('revaluing in 2026 leaves the 2024 reading byte-identical', () async {
       final store = launch();
-      await store.record(payload(publishedAt: '2024-03-02T04:00:00Z', valueMinor: 111));
+      await store.record(payload(publishedAt: '2024-03-02T16:00:00Z', valueMinor: 111));
       final before = jsonEncode(readingsOnDisk().single);
 
-      await store.record(payload(publishedAt: '2026-09-15T04:00:00Z', valueMinor: 999));
+      await store.record(payload(publishedAt: '2026-09-15T16:00:00Z', valueMinor: 999));
 
       expect(readingsOnDisk(), hasLength(2));
       expect(jsonEncode(readingsOnDisk().first), before);
@@ -168,8 +168,8 @@ void main() {
       // §7's rule — "latest per day for the curve" — applied where the bytes
       // are. It is a selection among published readings, never an arithmetic.
       final store = launch();
-      await store.record(payload(publishedAt: '2026-09-10T04:00:00Z', valueMinor: 100));
-      await store.record(payload(publishedAt: '2026-09-11T04:00:00Z', valueMinor: 200));
+      await store.record(payload(publishedAt: '2026-09-10T16:00:00Z', valueMinor: 100));
+      await store.record(payload(publishedAt: '2026-09-11T16:00:00Z', valueMinor: 200));
       await store.record(
         payload(publishedAt: '2026-09-11T19:30:00Z', seq: '2', valueMinor: 250),
       );
@@ -177,7 +177,7 @@ void main() {
       final history = await store.load();
 
       expect(history.points.map((point) => point.total.amount.minorUnits), [100, 250]);
-      expect(history.points.last.publishedAt, DateTime.utc(2026, 9, 11, 19, 30));
+      expect(history.points.last.at, DateTime.utc(2026, 9, 11, 19, 30));
     });
 
     test('an out-of-order arrival does not displace a later reading', () async {
@@ -188,7 +188,7 @@ void main() {
         payload(publishedAt: '2026-09-11T19:30:00Z', seq: '2', valueMinor: 250),
       );
       await store.record(
-        payload(publishedAt: '2026-09-11T04:00:00Z', seq: '1', valueMinor: 200),
+        payload(publishedAt: '2026-09-11T16:00:00Z', seq: '1', valueMinor: 200),
       );
 
       expect((await store.load()).points.single.total.amount.minorUnits, 250);
@@ -199,7 +199,7 @@ void main() {
       // the host publishes anything new. Without this the record would grow with
       // app launches, and every launch would rewrite the whole file.
       final store = launch();
-      final same = payload(publishedAt: '2026-09-10T04:00:00Z', seq: '41');
+      final same = payload(publishedAt: '2026-09-10T16:00:00Z', seq: '41');
       await store.record(same);
       final written = file.statSync().modified;
       final bytes = file.readAsStringSync();
@@ -218,7 +218,7 @@ void main() {
       final store = launch(retainedDays: 3);
       for (final day in [10, 11, 12, 13, 14]) {
         await store.record(
-          payload(publishedAt: '2026-09-${day}T04:00:00Z', seq: '$day', valueMinor: day),
+          payload(publishedAt: '2026-09-${day}T16:00:00Z', seq: '$day', valueMinor: day),
         );
       }
 
@@ -231,7 +231,8 @@ void main() {
       // worth accumulating on the phone (§6.2). A reading per *fetch* would
       // make the window's size depend on how often he opens the app.
       final store = launch(retainedDays: 3);
-      for (var hour = 0; hour < 20; hour++) {
+      // 07:00Z to 23:00Z: one Los Angeles day, midnight to the afternoon.
+      for (var hour = 7; hour < 24; hour++) {
         await store.record(
           payload(publishedAt: '2026-09-10T${hour.toString().padLeft(2, '0')}:00:00Z',
               seq: '$hour'),
@@ -254,7 +255,7 @@ void main() {
       file.writeAsStringSync('{ not a series');
 
       await expectLater(
-        launch().record(payload(publishedAt: '2026-09-10T04:00:00Z')),
+        launch().record(payload(publishedAt: '2026-09-10T16:00:00Z')),
         throwsA(isA<PayloadFormatException>()),
       );
       expect(file.readAsStringSync(), '{ not a series');
@@ -271,11 +272,11 @@ void main() {
 
     test('a reading with no seq is refused rather than half-read', () async {
       file.writeAsStringSync(jsonEncode([
-        {'published_at': '2026-09-10T04:00:00Z', 'total': <String, Object?>{}},
+        {'published_at': '2026-09-10T16:00:00Z', 'total': <String, Object?>{}},
       ]));
 
       await expectLater(
-        launch().record(payload(publishedAt: '2026-09-11T04:00:00Z')),
+        launch().record(payload(publishedAt: '2026-09-11T16:00:00Z')),
         throwsA(isA<PayloadFormatException>()),
       );
     });
@@ -291,7 +292,7 @@ void main() {
       // cannot, so the first thing checked is that a direct write really is
       // refused here. Without that this test would pass vacuously wherever
       // permissions are ignored, against the bug as happily as against the fix.
-      await launch().record(payload(publishedAt: '2026-09-10T04:00:00Z'));
+      await launch().record(payload(publishedAt: '2026-09-10T16:00:00Z'));
       Process.runSync('chmod', ['444', file.path]);
       var inPlaceWritesRefused = false;
       try {
@@ -304,7 +305,7 @@ void main() {
         return;
       }
 
-      await launch().record(payload(publishedAt: '2026-09-11T04:00:00Z'));
+      await launch().record(payload(publishedAt: '2026-09-11T16:00:00Z'));
 
       expect((await launch().load()).points, hasLength(2));
     });
@@ -330,22 +331,22 @@ void main() {
       // The two halves of the defect, in one test because they are one claim:
       // `load()` refusing while `record()` accepted is exactly what let the
       // recorder modify a record the curve could not show.
-      file.writeAsStringSync(damagedTotal('2026-09-10T04:00:00Z'));
+      file.writeAsStringSync(damagedTotal('2026-09-10T16:00:00Z'));
 
       await expectLater(launch().load(), throwsA(isA<PayloadFormatException>()));
       await expectLater(
-        launch().record(payload(publishedAt: '2026-09-11T04:00:00Z', seq: '2')),
+        launch().record(payload(publishedAt: '2026-09-11T16:00:00Z', seq: '2')),
         throwsA(isA<PayloadFormatException>()),
       );
     });
 
     test('a later reading of the damaged day does not replace it', () async {
-      // Same UTC day, strictly later instant: `_merge`'s replacement branch,
+      // Same day, strictly later instant: `_merge`'s replacement branch,
       // which is the path that overwrites a stored reading in place. Reported
       // by review — the recorder replaced the damaged record and the evidence
       // was gone before `HomePage` (which records before it loads) had shown
       // the owner anything was wrong.
-      final damaged = damagedTotal('2026-09-10T01:00:00Z');
+      final damaged = damagedTotal('2026-09-10T16:00:00Z');
       file.writeAsStringSync(damaged);
 
       await expectLater(
@@ -359,11 +360,11 @@ void main() {
       // The other way a stored reading disappears: it is the oldest, and the
       // bound drops from the front. A one-day window makes every new reading
       // try to evict it.
-      final damaged = damagedTotal('2026-09-10T04:00:00Z');
+      final damaged = damagedTotal('2026-09-10T16:00:00Z');
       file.writeAsStringSync(damaged);
 
       await expectLater(
-        launch(retainedDays: 1).record(payload(publishedAt: '2026-09-11T04:00:00Z', seq: '2')),
+        launch(retainedDays: 1).record(payload(publishedAt: '2026-09-11T16:00:00Z', seq: '2')),
         throwsA(isA<PayloadFormatException>()),
       );
       expect(file.readAsStringSync(), damaged);
@@ -378,9 +379,9 @@ void main() {
       final body = jsonDecode(readFixture(knownFixture)) as Map<String, Object?>;
       final total = Map<String, Object?>.from(body['total']! as Map<String, Object?>);
       final mixed = jsonEncode([
-        {'published_at': '2026-09-10T04:00:00Z', 'seq': '1', 'total': total},
+        {'published_at': '2026-09-10T16:00:00Z', 'seq': '1', 'total': total},
         {
-          'published_at': '2026-09-11T04:00:00Z',
+          'published_at': '2026-09-11T16:00:00Z',
           'seq': '2',
           'total': {...total, 'currency': 'EUR'},
         },
@@ -389,7 +390,7 @@ void main() {
 
       await expectLater(launch().load(), throwsA(isA<PayloadFormatException>()));
       await expectLater(
-        launch().record(payload(publishedAt: '2026-09-12T04:00:00Z', seq: '3')),
+        launch().record(payload(publishedAt: '2026-09-12T16:00:00Z', seq: '3')),
         throwsA(isA<PayloadFormatException>()),
       );
       expect(file.readAsStringSync(), mixed);
@@ -400,7 +401,7 @@ void main() {
       // above is refused by either one: the merged series still mixes, so
       // checking the output would catch it even if the file had been read
       // without complaint. This one is refused by the *read* alone — the new
-      // reading lands on the EUR reading's UTC day and replaces it, so what the
+      // reading lands on the EUR reading's day and replaces it, so what the
       // output check sees is a clean single-currency series it would happily
       // write, with the owner's damaged reading deleted and no trace that
       // anything was wrong.
@@ -412,9 +413,9 @@ void main() {
       final body = jsonDecode(readFixture(knownFixture)) as Map<String, Object?>;
       final total = Map<String, Object?>.from(body['total']! as Map<String, Object?>);
       final mixed = jsonEncode([
-        {'published_at': '2026-09-10T04:00:00Z', 'seq': '1', 'total': total},
+        {'published_at': '2026-09-10T16:00:00Z', 'seq': '1', 'total': total},
         {
-          'published_at': '2026-09-11T04:00:00Z',
+          'published_at': '2026-09-11T16:00:00Z',
           'seq': '2',
           'total': {...total, 'currency': 'EUR'},
         },
@@ -443,12 +444,12 @@ void main() {
     group('a series it could not read back is a series it does not write', () {
       test('another currency is refused, and the record it would have joined stands',
           () async {
-        await launch().record(payload(publishedAt: '2026-09-14T04:00:00Z', seq: '1'));
+        await launch().record(payload(publishedAt: '2026-09-14T16:00:00Z', seq: '1'));
         final before = file.readAsStringSync();
 
         await expectLater(
           launch().record(
-            payload(publishedAt: '2026-09-15T04:00:00Z', seq: '2', currency: 'EUR'),
+            payload(publishedAt: '2026-09-15T16:00:00Z', seq: '2', currency: 'EUR'),
           ),
           throwsA(isA<PayloadFormatException>()),
         );
@@ -460,7 +461,7 @@ void main() {
         // Here they are fine, so a refusal that persisted would have turned one
         // rejected reading into a store that never accepts another — the
         // permanent version of the defect being fixed.
-        await launch().record(payload(publishedAt: '2026-09-16T04:00:00Z', seq: '3'));
+        await launch().record(payload(publishedAt: '2026-09-16T16:00:00Z', seq: '3'));
         expect((await launch().load()).points, hasLength(2), reason: 'still recordable');
       });
 
@@ -477,10 +478,10 @@ void main() {
         // the stored currency — which would refuse here forever, and would
         // leave every *other* collection rule `load()` learns uncovered.
         final store = launch(retainedDays: 1);
-        await store.record(payload(publishedAt: '2026-09-14T04:00:00Z', seq: '1'));
+        await store.record(payload(publishedAt: '2026-09-14T16:00:00Z', seq: '1'));
 
         await store.record(
-          payload(publishedAt: '2026-09-15T04:00:00Z', seq: '2', currency: 'EUR'),
+          payload(publishedAt: '2026-09-15T16:00:00Z', seq: '2', currency: 'EUR'),
         );
 
         final history = await launch(retainedDays: 1).load();
@@ -494,7 +495,7 @@ void main() {
       // never the thing being truncated. What a crash mid-write can leave is
       // this leftover, and it must not be mistaken for the record.
       File('${file.path}.writing').writeAsStringSync('[garbage');
-      await launch().record(payload(publishedAt: '2026-09-10T04:00:00Z'));
+      await launch().record(payload(publishedAt: '2026-09-10T16:00:00Z'));
 
       expect((await launch().load()).points, hasLength(1));
     });
