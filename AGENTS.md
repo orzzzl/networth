@@ -173,7 +173,10 @@ original failure mode, one layer down.
   concrete implementations across layers.
 - The daemon and the phone share **one contract: the payload schema**, versioned
   explicitly. Changing it means bumping `schema_version`; an older app must
-  refuse to render a newer payload rather than misread it.
+  refuse to render a newer payload rather than misread it. *Adding* a key an
+  older app does not read is not a change it can misread, and does not bump —
+  which is how `history` was added (2026-11-21) without breaking the owner's
+  installed app.
 - **Bump `pubspec.yaml` before every APK handed to the owner** — a feature batch
   bumps the minor version, the `+N` build number always increments, and the
   delivered file name carries the new version and overwrites the previous file.

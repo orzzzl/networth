@@ -370,11 +370,93 @@ abstract class AppLocalizations {
   /// **'as of this copy, not now'**
   String get connectionAsOfCopy;
 
-  /// Section label above the net-worth curve. The curve shows shape over time and no figures: I4 forbids a widget that renders an amount without its age, and an axis label would be exactly that. The number is in the headline above.
+  /// Section label above the net-worth chart. Every figure the chart shows carries its date (I2/I4): the change names the day it is measured from, and a reading under the finger carries its own day and age. There are no scale labels, because a bare number on an axis would be a figure with no age.
   ///
   /// In en, this message translates to:
   /// **'History'**
   String get historyLabel;
+
+  /// How the total moved across the selected range, from its first reading to its last. The date is the first reading's day, which is earlier than the range's nominal start only never: when the record is shorter than the range, this is how the screen says how far back it really reaches.
+  ///
+  /// In en, this message translates to:
+  /// **'{change} ({percent}) since {date}'**
+  String historyChangeWithPercentSince(
+    String change,
+    String percent,
+    DateTime date,
+  );
+
+  /// historyChangeWithPercentSince without the percentage, for a range whose first reading is zero or negative: a percentage of nothing, or of a debt, means nothing.
+  ///
+  /// In en, this message translates to:
+  /// **'{change} since {date}'**
+  String historyChangeSince(String change, DateTime date);
+
+  /// The day of the reading under the owner's finger, in Los Angeles. Shown above its age annotation, which is the headline's own sentence for that reading's age state.
+  ///
+  /// In en, this message translates to:
+  /// **'{date}'**
+  String historyReadingDay(DateTime date);
+
+  /// Under a reading whose is_complete is FALSE — something in it was carried forward, stale, or unreconciled. The curve draws it hollow; this says it in words for the one reading being read.
+  ///
+  /// In en, this message translates to:
+  /// **'incomplete reading'**
+  String get historyReadingIncomplete;
+
+  /// A time-axis label for a short range: month and day.
+  ///
+  /// In en, this message translates to:
+  /// **'{date}'**
+  String historyAxisDay(DateTime date);
+
+  /// A time-axis label at the start of a month.
+  ///
+  /// In en, this message translates to:
+  /// **'{date}'**
+  String historyAxisMonth(DateTime date);
+
+  /// A time-axis label at the start of a year.
+  ///
+  /// In en, this message translates to:
+  /// **'{date}'**
+  String historyAxisYear(DateTime date);
+
+  /// Range button: the month ending on the last reading.
+  ///
+  /// In en, this message translates to:
+  /// **'1M'**
+  String get historyRangeOneMonth;
+
+  /// Range button: the three months ending on the last reading.
+  ///
+  /// In en, this message translates to:
+  /// **'3M'**
+  String get historyRangeThreeMonths;
+
+  /// Range button: from January 1 of the last reading's year.
+  ///
+  /// In en, this message translates to:
+  /// **'YTD'**
+  String get historyRangeYearToDate;
+
+  /// Range button: the year ending on the last reading.
+  ///
+  /// In en, this message translates to:
+  /// **'1Y'**
+  String get historyRangeOneYear;
+
+  /// Range button: the three years ending on the last reading.
+  ///
+  /// In en, this message translates to:
+  /// **'3Y'**
+  String get historyRangeThreeYears;
+
+  /// Range button: the five years ending on the last reading — as far back as the host's series reaches.
+  ///
+  /// In en, this message translates to:
+  /// **'5Y'**
+  String get historyRangeFiveYears;
 
   /// Shown instead of the curve when the series is empty. Says only that nothing has been recorded — it does not promise when something will be, because the app cannot know when the next payload arrives.
   ///

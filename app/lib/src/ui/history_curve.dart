@@ -3,7 +3,10 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../l10n/generated/app_localizations.dart';
+import '../domain/dated_total.dart';
+import '../domain/history_range.dart';
 import '../domain/net_worth_history.dart';
+import 'headline.dart';
 
 /// One straight run between two adjacent days.
 ///
@@ -44,18 +47,27 @@ class CurveMarker {
 /// this widget must never do.
 @immutable
 class CurveGeometry {
-  const CurveGeometry({required this.strokes, required this.markers});
+  const CurveGeometry({required this.strokes, required this.markers, required this.positions});
 
   final List<CurveStroke> strokes;
   final List<CurveMarker> markers;
+
+  /// Where each point of the series sits, in the series' order — what a finger
+  /// on the curve is matched against.
+  final List<Offset> positions;
 
   /// Radius of a reading's dot, and therefore the inset the curve needs on every
   /// side so an extreme reading's dot is not half outside the box.
   static const double markerRadius = 3.5;
 
+  /// Below this many pixels a day, a dot per reading would merge into a smear,
+  /// so only the dots that carry information are drawn: an incomplete reading's
+  /// hollow one, and a reading with no neighbour to draw a run to.
+  static const double minimumDayWidthForEveryMarker = 6;
+
   static CurveGeometry layOut(NetWorthHistory history, Size size) {
     if (history.isEmpty) {
-      return const CurveGeometry(strokes: [], markers: []);
+      return const CurveGeometry(strokes: [], markers: [], positions: []);
     }
 
     final left = markerRadius;
@@ -69,7 +81,7 @@ class CurveGeometry {
     // The balances stay integers all the way to here (`AGENTS.md`: money is
     // never a float). What becomes a double is the *pixel offset* — a position
     // in a box, not an amount — and no value derived below is ever rendered as
-    // money. The curve shows no figures at all; see [HistoryCurve].
+    // money.
     final span = highest - lowest;
     final days = history.spanInDays;
 
@@ -83,6 +95,7 @@ class CurveGeometry {
       return Offset(x, y);
     }
 
+    final everyMarker = days == 0 || width / days >= minimumDayWidthForEveryMarker;
     final strokes = <CurveStroke>[];
     final markers = <CurveMarker>[];
     // Iterating **segments**, never `points`: a segment is a run of consecutive
@@ -92,7 +105,9 @@ class CurveGeometry {
     for (final segment in history.segments) {
       for (var index = 0; index < segment.length; index++) {
         final point = segment[index];
-        markers.add(CurveMarker(at: positionOf(point), isHollow: !point.isComplete));
+        if (everyMarker || !point.isComplete || segment.length == 1) {
+          markers.add(CurveMarker(at: positionOf(point), isHollow: !point.isComplete));
+        }
         if (index == 0) {
           continue;
         }
@@ -106,20 +121,40 @@ class CurveGeometry {
         );
       }
     }
-    return CurveGeometry(strokes: strokes, markers: markers);
+    return CurveGeometry(
+      strokes: strokes,
+      markers: markers,
+      positions: [for (final point in history.points) positionOf(point)],
+    );
+  }
+
+  /// The index of the point nearest [dx] across the curve, or null if none.
+  int? nearest(double dx) {
+    int? best;
+    for (var index = 0; index < positions.length; index++) {
+      if (best == null || (positions[index].dx - dx).abs() < (positions[best].dx - dx).abs()) {
+        best = index;
+      }
+    }
+    return best;
   }
 }
 
-/// The net-worth curve.
+/// The net-worth curve, stock-app style: a range, a dated axis, the change
+/// across the range, and the reading under the owner's finger.
 ///
-/// **It renders no figures, and that is invariant I2 rather than an omission.**
-/// There is no widget in this app that takes a bare amount; an axis label would
-/// be exactly that — a number with no age beside it — and a series of them would
-/// be many. The number lives in `Headline` directly above, with its age state
-/// attached. What the curve adds is shape over time, plus the two things §10.5
-/// asks it to make visible: which readings were incomplete, and which days have
-/// no reading at all.
-class HistoryCurve extends StatelessWidget {
+/// **Every figure it renders carries its date.** Invariant I2 has no exception
+/// for a chart: the change names the day it is measured from, and the reading
+/// under the finger is shown with its own day and its own age annotation —
+/// the headline's wording, from the same function — and says so when it was
+/// incomplete. There are no scale labels: a bare number on an axis would be a
+/// figure with no age at all.
+///
+/// **A range is the readings that exist inside it, and nothing else.** One
+/// longer than the record starts at the first reading and says so in the change
+/// line's date; nothing is padded in front of it, joined across a missing day,
+/// or drawn past the last reading.
+class HistoryCurve extends StatefulWidget {
   const HistoryCurve({
     super.key,
     required this.history,
@@ -154,13 +189,38 @@ class HistoryCurve extends StatelessWidget {
   /// defaulted parameter is how this check would quietly stop being made.
   final String headlineCurrency;
 
-  static const double _height = 120;
+  /// The range a fresh screen opens on.
+  static const ChartRange initialRange = ChartRange.oneYear;
+
+  @override
+  State<HistoryCurve> createState() => _HistoryCurveState();
+}
+
+class _HistoryCurveState extends State<HistoryCurve> {
+  ChartRange _range = HistoryCurve.initialRange;
+
+  /// The reading the owner is pointing at, as an index into the range on screen.
+  int? _selected;
+
+  @override
+  void didUpdateWidget(HistoryCurve old) {
+    super.didUpdateWidget(old);
+    if (old.history != widget.history) {
+      // An index into the old series means nothing in the new one.
+      _selected = null;
+    }
+  }
+
+  void _select(int? index) {
+    if (index != _selected) {
+      setState(() => _selected = index);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
-    final history = this.history;
+    final history = widget.history;
     if (history == null) {
       // Not also the recording note. With the store validating the same bytes on
       // both paths, a record this could not read is a record it would refuse to
@@ -173,40 +233,15 @@ class HistoryCurve extends StatelessWidget {
       // is exactly what makes it the wrong sentence: the *yet* promises the
       // readings are on their way, when the reason there are none is that every
       // one of them is being dropped.
-      return _Note(text: recordingFailed ? l10n.historyNotRecorded : l10n.historyEmpty);
+      return _Note(text: widget.recordingFailed ? l10n.historyNotRecorded : l10n.historyEmpty);
     }
     // §10 item 6: one currency, and mixed units fail *loudly*. Drawing the shape
-    // anyway would be the loudest thing on the screen and would say nothing —
-    // the curve has no figures, so a euro series under a dollar total renders as
-    // a perfectly ordinary picture of the wrong quantity.
-    final List<Widget> series = history.currency != headlineCurrency
+    // anyway would be the loudest thing on the screen and would say nothing
+    // true — a euro series under a dollar total renders as a perfectly ordinary
+    // picture of the wrong quantity.
+    final List<Widget> series = history.currency != widget.headlineCurrency
         ? <Widget>[_Note(text: l10n.historyCurrencyMismatch)]
-        : <Widget>[
-            Text(l10n.historyLabel, style: theme.textTheme.labelMedium),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: _height,
-              width: double.infinity,
-              child: CustomPaint(
-                painter: _CurvePainter(
-                  history: history,
-                  line: theme.colorScheme.primary,
-                  fill: theme.colorScheme.surface,
-                ),
-              ),
-            ),
-            // Each note appears only when the thing it describes is on screen.
-            // Explaining a treatment the owner cannot see is noise, and it
-            // invites him to go looking for a gap that is not there.
-            if (history.hasIncompletePoint) ...[
-              const SizedBox(height: 8),
-              _Note(text: l10n.historyIncompleteNote),
-            ],
-            if (history.hasGap) ...[
-              const SizedBox(height: 4),
-              _Note(text: l10n.historyGapNote),
-            ],
-          ];
+        : _series(context, l10n, history);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -218,13 +253,230 @@ class HistoryCurve extends StatelessWidget {
         // and nothing at all about whether today's reading was kept. Written as
         // one append rather than a line in each branch, so a third branch added
         // later inherits it instead of being a third place to remember.
-        if (recordingFailed) ...[
+        if (widget.recordingFailed) ...[
           const SizedBox(height: 8),
           _Note(text: l10n.historyNotRecorded),
         ],
       ],
     );
   }
+
+  List<Widget> _series(BuildContext context, AppLocalizations l10n, NetWorthHistory history) {
+    final theme = Theme.of(context);
+    final range = history.since(_range.startFor(history.points.last.day));
+    final selected = _selected == null || _selected! >= range.points.length ? null : _selected;
+    return <Widget>[
+      Text(l10n.historyLabel, style: theme.textTheme.labelMedium),
+      const SizedBox(height: 4),
+      // The change across the range, or — while a reading is pointed at — that
+      // reading, in the same place so the curve does not jump under the finger.
+      ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 56),
+        child: Align(
+          alignment: Alignment.bottomLeft,
+          child: selected == null
+              ? _Change(change: RangeChange.over(range))
+              : _Readout(point: range.points[selected]),
+        ),
+      ),
+      const SizedBox(height: 8),
+      SizedBox(
+        height: _chartHeight,
+        width: double.infinity,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final geometry = CurveGeometry.layOut(range, constraints.biggest);
+            return GestureDetector(
+              key: const Key('history-chart'),
+              behavior: HitTestBehavior.opaque,
+              onHorizontalDragStart: (details) =>
+                  _select(geometry.nearest(details.localPosition.dx)),
+              onHorizontalDragUpdate: (details) =>
+                  _select(geometry.nearest(details.localPosition.dx)),
+              onHorizontalDragEnd: (_) => _select(null),
+              onHorizontalDragCancel: () => _select(null),
+              onTapUp: (details) {
+                final index = geometry.nearest(details.localPosition.dx);
+                _select(index == selected ? null : index);
+              },
+              child: CustomPaint(
+                painter: _CurvePainter(
+                  geometry: geometry,
+                  selected: selected,
+                  line: theme.colorScheme.primary,
+                  fill: theme.colorScheme.surface,
+                  guide: theme.colorScheme.outline,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+      const SizedBox(height: 4),
+      _TimeAxis(first: range.points.first.day, last: range.points.last.day),
+      const SizedBox(height: 12),
+      _RangeButtons(
+        selected: _range,
+        onSelected: (range) => setState(() {
+          _range = range;
+          _selected = null;
+        }),
+      ),
+      // Each note appears only when the thing it describes is on screen.
+      // Explaining a treatment the owner cannot see is noise, and it invites
+      // him to go looking for a gap that is not there.
+      if (range.hasIncompletePoint) ...[
+        const SizedBox(height: 8),
+        _Note(text: l10n.historyIncompleteNote),
+      ],
+      if (range.hasGap) ...[
+        const SizedBox(height: 4),
+        _Note(text: l10n.historyGapNote),
+      ],
+    ];
+  }
+
+  static const double _chartHeight = 180;
+}
+
+/// `+$1,234.56 (+1.23%) since Nov 21, 2025` — or nothing, for a single reading.
+class _Change extends StatelessWidget {
+  const _Change({required this.change});
+
+  final RangeChange? change;
+
+  @override
+  Widget build(BuildContext context) {
+    final change = this.change;
+    if (change == null) {
+      return const SizedBox.shrink();
+    }
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+    final amount = formatSignedMoney(change.change);
+    final percent = change.percentHundredths;
+    return Text(
+      percent == null
+          ? l10n.historyChangeSince(amount, change.from.day)
+          : l10n.historyChangeWithPercentSince(amount, formatSignedPercent(percent), change.from.day),
+      key: const Key('history-change'),
+      style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+    );
+  }
+}
+
+/// The reading under the finger: its total, its day, and its age.
+class _Readout extends StatelessWidget {
+  const _Readout({required this.point});
+
+  final HistoryPoint point;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+    final quiet = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final note = staticNote(l10n, point.total);
+    return Column(
+      key: const Key('history-readout'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          point.total.amount.format(),
+          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        Text(l10n.historyReadingDay(point.day), style: quiet),
+        // The headline's own sentence for its own state, so an undatable past
+        // total is undatable here too rather than dated by its day.
+        Text(
+          ageAnnotation(l10n, point.total),
+          style: point.total is KnownAgeTotal
+              ? quiet
+              : theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+        ),
+        if (note != null) Text(note, style: quiet),
+        if (!point.isComplete) Text(l10n.historyReadingIncomplete, style: quiet),
+      ],
+    );
+  }
+}
+
+/// The dated axis under the curve.
+class _TimeAxis extends StatelessWidget {
+  const _TimeAxis({required this.first, required this.last});
+
+  final DateTime first;
+  final DateTime last;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+    final style = theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final span = last.difference(first).inDays;
+    return SizedBox(
+      height: 18,
+      width: double.infinity,
+      child: Stack(
+        children: [
+          for (final tick in axisTicks(first, last))
+            Align(
+              // Edge-aware: a mark at either end sits inside the box rather than
+              // half outside it, and one in the middle is centred on its day.
+              alignment: Alignment(
+                span == 0 ? 0 : 2 * tick.day.difference(first).inDays / span - 1,
+                0,
+              ),
+              child: Text(_label(l10n, tick), style: style),
+            ),
+        ],
+      ),
+    );
+  }
+
+  static String _label(AppLocalizations l10n, AxisTick tick) => switch (tick.unit) {
+        AxisUnit.day => l10n.historyAxisDay(tick.day),
+        AxisUnit.month => l10n.historyAxisMonth(tick.day),
+        AxisUnit.year => l10n.historyAxisYear(tick.day),
+      };
+}
+
+class _RangeButtons extends StatelessWidget {
+  const _RangeButtons({required this.selected, required this.onSelected});
+
+  final ChartRange selected;
+  final ValueChanged<ChartRange> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<ChartRange>(
+        segments: [
+          for (final range in ChartRange.values)
+            ButtonSegment(value: range, label: Text(_label(l10n, range))),
+        ],
+        selected: {selected},
+        onSelectionChanged: (chosen) => onSelected(chosen.single),
+        showSelectedIcon: false,
+        style: const ButtonStyle(
+          visualDensity: VisualDensity.compact,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      ),
+    );
+  }
+
+  static String _label(AppLocalizations l10n, ChartRange range) => switch (range) {
+        ChartRange.oneMonth => l10n.historyRangeOneMonth,
+        ChartRange.threeMonths => l10n.historyRangeThreeMonths,
+        ChartRange.yearToDate => l10n.historyRangeYearToDate,
+        ChartRange.oneYear => l10n.historyRangeOneYear,
+        ChartRange.threeYears => l10n.historyRangeThreeYears,
+        ChartRange.fiveYears => l10n.historyRangeFiveYears,
+      };
 }
 
 class _Note extends StatelessWidget {
@@ -243,27 +495,56 @@ class _Note extends StatelessWidget {
 }
 
 class _CurvePainter extends CustomPainter {
-  const _CurvePainter({required this.history, required this.line, required this.fill});
+  const _CurvePainter({
+    required this.geometry,
+    required this.selected,
+    required this.line,
+    required this.fill,
+    required this.guide,
+  });
 
-  final NetWorthHistory history;
+  final CurveGeometry geometry;
+  final int? selected;
   final Color line;
   final Color fill;
+  final Color guide;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final geometry = CurveGeometry.layOut(history, size);
     final stroke = Paint()
       ..color = line
       ..strokeWidth = 2
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke;
 
+    // The dash pattern runs on across consecutive dashed runs, so an
+    // incomplete stretch still reads as dashed when a day is narrower than a
+    // dash — at five years, every day is.
+    var phase = 0.0;
+    Offset? end;
     for (final run in geometry.strokes) {
-      if (run.isDashed) {
-        _dashed(canvas, run.from, run.to, stroke);
-      } else {
+      if (!run.isDashed) {
         canvas.drawLine(run.from, run.to, stroke);
+        end = null;
+        continue;
       }
+      if (run.from != end) {
+        phase = 0;
+      }
+      phase = _dashed(canvas, run.from, run.to, stroke, phase);
+      end = run.to;
+    }
+
+    final index = selected;
+    if (index != null && index < geometry.positions.length) {
+      final at = geometry.positions[index];
+      canvas.drawLine(
+        Offset(at.dx, 0),
+        Offset(at.dx, size.height),
+        Paint()
+          ..color = guide
+          ..strokeWidth = 1,
+      );
     }
 
     // Shape carries the distinction, not colour — a dashed run and a hollow dot
@@ -280,26 +561,40 @@ class _CurvePainter extends CustomPainter {
         canvas.drawCircle(marker.at, CurveGeometry.markerRadius - 1.5, hollowCentre);
       }
     }
+    if (index != null && index < geometry.positions.length) {
+      canvas.drawCircle(geometry.positions[index], CurveGeometry.markerRadius + 1.5, dot);
+    }
   }
 
-  static void _dashed(Canvas canvas, Offset from, Offset to, Paint paint) {
+  /// Draws [from]→[to] dashed, starting [phase] pixels into the pattern, and
+  /// returns the phase the next run should start at.
+  static double _dashed(Canvas canvas, Offset from, Offset to, Paint paint, double phase) {
     const double dash = 4;
     const double gap = 3;
+    const double period = dash + gap;
     final delta = to - from;
     final length = delta.distance;
     if (length == 0) {
-      return;
+      return phase;
     }
     final unit = delta / length;
-    var travelled = 0.0;
+    var travelled = -phase;
     while (travelled < length) {
-      final end = math.min(travelled + dash, length);
-      canvas.drawLine(from + unit * travelled, from + unit * end, paint);
-      travelled = end + gap;
+      final start = math.max(travelled, 0.0);
+      final stop = math.min(travelled + dash, length);
+      if (stop > start) {
+        canvas.drawLine(from + unit * start, from + unit * stop, paint);
+      }
+      travelled += period;
     }
+    return (phase + length) % period;
   }
 
   @override
   bool shouldRepaint(_CurvePainter old) =>
-      old.history != history || old.line != line || old.fill != fill;
+      old.geometry != geometry ||
+      old.selected != selected ||
+      old.line != line ||
+      old.fill != fill ||
+      old.guide != guide;
 }

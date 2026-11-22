@@ -88,6 +88,12 @@ const List<String> allFixtures = [
 
 String readFixture(String assetPath) => File(assetPath).readAsStringSync();
 
+/// [assetPath]'s fixture as a host that predates the series would publish it:
+/// no `history` key, so the screen draws the phone's own record instead.
+String readFixtureWithoutSeries(String assetPath) => jsonEncode(
+      (jsonDecode(readFixture(assetPath)) as Map<String, Object?>)..remove('history'),
+    );
+
 /// A series carrying both treatments §10.5 asks for — a gap, and one incomplete
 /// reading — **in the test, because the app no longer ships one.**
 ///

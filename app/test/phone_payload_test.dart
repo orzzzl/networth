@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/data/snapshot_source.dart';
 import 'package:networth_app/src/domain/copy_freshness.dart';
+import 'package:networth_app/src/domain/net_worth_history.dart';
 import 'package:networth_app/src/domain/payload_format_exception.dart';
 import 'package:networth_app/src/domain/phone_payload.dart';
 
@@ -151,6 +152,45 @@ void main() {
       );
 
       expect(source.load(), throwsA(isA<Object>()));
+    });
+  });
+
+  group('the host\'s series', () {
+    Map<String, Object?> known() =>
+        jsonDecode(readFixture(knownFixture)) as Map<String, Object?>;
+
+    test('is read, one point per Los Angeles day, ending on the headline', () {
+      final payload = PhonePayload.fromJson(known());
+
+      final history = (payload.history as HistoryCarried).history;
+      expect(
+        [for (final point in history.points) point.day],
+        [DateTime.utc(2026, 9, 12), DateTime.utc(2026, 9, 13), DateTime.utc(2026, 9, 14)],
+      );
+      expect(history.points.last.total.amount, payload.total.amount);
+    });
+
+    test('a copy without one says so, and is not an empty series', () {
+      // A host that predates the series, or a copy saved by 0.2.0: the screen
+      // falls back to the phone's own record rather than drawing nothing.
+      final body = known()..remove('history');
+      expect(PhonePayload.fromJson(body).history, isA<HistoryNotCarried>());
+    });
+
+    test('a damaged one never takes the headline with it', () {
+      for (final damaged in <Object?>[
+        'not a list',
+        [42],
+        [
+          {'taken_at': '2026-09-14T21:00:00', 'total': <String, Object?>{}},
+        ],
+        null,
+      ]) {
+        final body = known()..['history'] = damaged;
+        final payload = PhonePayload.fromJson(body);
+        expect(payload.history, isA<HistoryUnreadable>(), reason: '$damaged');
+        expect(payload.total.amount.minorUnits, 4250000, reason: '$damaged');
+      }
     });
   });
 }

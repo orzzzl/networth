@@ -249,6 +249,79 @@ class AppLocalizationsEn extends AppLocalizations {
   String get historyLabel => 'History';
 
   @override
+  String historyChangeWithPercentSince(
+    String change,
+    String percent,
+    DateTime date,
+  ) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$change ($percent) since $dateString';
+  }
+
+  @override
+  String historyChangeSince(String change, DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$change since $dateString';
+  }
+
+  @override
+  String historyReadingDay(DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$dateString';
+  }
+
+  @override
+  String get historyReadingIncomplete => 'incomplete reading';
+
+  @override
+  String historyAxisDay(DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.MMMd(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$dateString';
+  }
+
+  @override
+  String historyAxisMonth(DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.MMM(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$dateString';
+  }
+
+  @override
+  String historyAxisYear(DateTime date) {
+    final intl.DateFormat dateDateFormat = intl.DateFormat.y(localeName);
+    final String dateString = dateDateFormat.format(date);
+
+    return '$dateString';
+  }
+
+  @override
+  String get historyRangeOneMonth => '1M';
+
+  @override
+  String get historyRangeThreeMonths => '3M';
+
+  @override
+  String get historyRangeYearToDate => 'YTD';
+
+  @override
+  String get historyRangeOneYear => '1Y';
+
+  @override
+  String get historyRangeThreeYears => '3Y';
+
+  @override
+  String get historyRangeFiveYears => '5Y';
+
+  @override
   String get historyEmpty => 'no readings recorded yet';
 
   @override

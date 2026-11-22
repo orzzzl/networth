@@ -22,7 +22,7 @@ class Headline extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
-    final staticNote = _staticNote(l10n, total);
+    final note = staticNote(l10n, total);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -33,17 +33,17 @@ class Headline extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          _ageAnnotation(l10n, total),
+          ageAnnotation(l10n, total),
           style: theme.textTheme.bodyMedium?.copyWith(
             color: total is KnownAgeTotal
                 ? theme.colorScheme.onSurfaceVariant
                 : theme.colorScheme.error,
           ),
         ),
-        if (staticNote != null) ...[
+        if (note != null) ...[
           const SizedBox(height: 4),
           Text(
-            staticNote,
+            note,
             style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),
         ],
@@ -68,7 +68,7 @@ class Headline extends StatelessWidget {
 /// to say what is missing and how much of the money it covers. The plural is the
 /// ARB's, not an inline `?:`, so a locale whose plural rules are not English's
 /// is a translation rather than a code change.
-String _ageAnnotation(AppLocalizations l10n, DatedTotal total) => switch (total) {
+String ageAnnotation(AppLocalizations l10n, DatedTotal total) => switch (total) {
       KnownAgeTotal(:final asOf) => l10n.totalAsOf(formatInstant(l10n, asOf)),
       // Named locals rather than two bare positionals: gen-l10n orders the
       // generated parameters by the ARB's `placeholders` map, not by where they
@@ -88,7 +88,7 @@ String _ageAnnotation(AppLocalizations l10n, DatedTotal total) => switch (total)
 /// the same thing in prose. That annotation no longer makes the claim, so this
 /// note is where a `STATIC_ONLY` total now says what it is made of — and it says
 /// it with a count that came off the wire rather than with an inference.
-String? _staticNote(AppLocalizations l10n, DatedTotal total) {
+String? staticNote(AppLocalizations l10n, DatedTotal total) {
   final count = total.staticAccountCount;
   if (count == 0) {
     return null;

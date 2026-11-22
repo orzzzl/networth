@@ -1586,11 +1586,21 @@ saying plainly because "we removed the mechanism" and "we fixed the mechanism"
 are very different claims.
 
 **Blast radius, stated plainly.** If the phone is compromised, the attacker gets
-the current payload and the phone's local cache — which does contain the history
-window the curve renders, because the curve has to come from somewhere. What
-they do *not* get: the ability to publish anything (there is no write route),
-any Plaid token, the full history, or a way back into the tailnet beyond that
-device. Recovery is `networth revoke` plus removing the device in the Tailscale
+the current payload and the phone's local cache — and the payload carries **the
+daily series the curve draws: each Los Angeles day's last stored total, for up to
+five years** (`publisher.py::_history`), because the curve has to come from
+somewhere. What they do *not* get: the ability to publish anything (there is no
+write route), any Plaid token, any per-account or per-holding history, or a way
+back into the tailnet beyond that device. *(2026-11-21, the owner's request for a
+stock-style chart with YTD/1Y/3Y/5Y ranges: through then this paragraph said the
+curve's history lived only on the phone, accumulated one reading per accepted
+payload — which is a reading for each day the app happened to be opened, and
+cannot draw five years. The host already stores every snapshot (§7), so it now
+sends the series. What that costs is stated here rather than discovered: one
+leaked payload key plus that device's tailnet access now reveals five years of
+daily totals instead of today's. The transport's retention is unchanged — the
+host still serves only its current envelope. The series is additive, so
+`schema_version` stays `"1"`: an older app reads named keys and ignores it.)* Recovery is `networth revoke` plus removing the device in the Tailscale
 admin console (§6.3), and unlike the Cloudflare branch **nothing retained
 anywhere else survives it** — there is no third party holding a copy.
 
@@ -3125,7 +3135,14 @@ net_worth = Σ(account value × account.sign)     -- v0: every sign is +1, so th
    return, `sign` is set once at link time from the Plaid account type and
    stored, never inferred at render time — and nothing else in §10 changes.
 5. History renders incomplete snapshots visually distinct (dashed/hollow) — a gap
-   in the record must look like a gap.
+   in the record must look like a gap. **Every figure the chart shows carries its
+   date**, which is I2 applied to a chart rather than an exception to it: the
+   change across a range names the day it is measured from, the reading under the
+   finger carries its own day and the headline's age annotation for its own
+   state, and there are no scale labels. A range longer than the record starts at
+   the first reading and says so — nothing is padded, joined across a missing
+   day, or drawn past the last reading. Days are Los Angeles calendar days,
+   because those are the days the owner reads (storage and staleness stay UTC).
 6. Single currency (USD). The schema carries currency so mixed units fail loudly
    rather than silently summing unlike things.
 
