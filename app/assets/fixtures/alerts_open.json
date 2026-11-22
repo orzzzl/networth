@@ -69,6 +69,38 @@
   ],
   "connection_state": "ACTION_NEEDED",
   "grace_seconds": 21600,
+  "history": [
+    {
+      "taken_at": "2026-09-13T21:00:00.000000Z",
+      "total": {
+        "account_count": 3,
+        "age_state": "KNOWN",
+        "as_of": "2026-09-11T20:15:00.000000Z",
+        "assets_minor": 5010000,
+        "currency": "USD",
+        "is_complete": false,
+        "liabilities_minor": 0,
+        "static_account_count": 0,
+        "unknown_freshness_account_count": 0,
+        "value_minor": 5010000
+      }
+    },
+    {
+      "taken_at": "2026-09-14T21:00:00.000000Z",
+      "total": {
+        "account_count": 3,
+        "age_state": "KNOWN",
+        "as_of": "2026-09-11T20:15:00.000000Z",
+        "assets_minor": 5000000,
+        "currency": "USD",
+        "is_complete": false,
+        "liabilities_minor": 0,
+        "static_account_count": 0,
+        "unknown_freshness_account_count": 0,
+        "value_minor": 5000000
+      }
+    }
+  ],
   "item_budget": {
     "capacity": 10,
     "in_flight_count": 0,

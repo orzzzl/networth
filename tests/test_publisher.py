@@ -22,6 +22,8 @@ from networth.model import (
 from networth.payload import PayloadEnvelope, open_payload
 from networth.publisher import (
     GRACE_SECONDS,
+    HISTORY_YEARS,
+    OWNER_ZONE,
     PUBLISH_INTERVAL_SECONDS,
     PairingUnavailableError,
     Publisher,
@@ -736,3 +738,185 @@ def test_no_snapshot_is_a_refusal_not_an_empty_published_total(db: sqlite3.Conne
         _publisher(db).publish(at=NOW)
 
     assert db.execute("SELECT count(*) FROM publication").fetchone() == (0,)
+
+
+def _insert_snapshot(
+    connection: sqlite3.Connection,
+    run_id: str,
+    taken_at: datetime,
+    *,
+    value_minor: int = 10_000,
+    account_count: int = 1,
+    is_complete: bool = True,
+) -> None:
+    """An earlier stored snapshot, written as rows rather than through a sync.
+
+    Only the *latest* snapshot is checked against the live account population
+    (`NetWorthQuery.latest`), so these must all predate `_setup_snapshot`'s.
+    """
+
+    assert taken_at < NOW
+    connection.execute(
+        """
+        INSERT INTO sync_run(id, started_at, finished_at, "trigger", ok, error_summary)
+        VALUES (?, ?, ?, 'TEST', 1, NULL)
+        """,
+        (run_id, _timestamp(taken_at - timedelta(minutes=1)), _timestamp(taken_at)),
+    )
+    as_of = None if account_count == 0 else _timestamp(taken_at - timedelta(hours=1))
+    connection.execute(
+        """
+        INSERT INTO snapshot(
+            sync_run_id, taken_at, total_net_worth_minor, total_assets_minor,
+            total_liabilities_minor, account_count, stale_account_count,
+            unknown_freshness_account_count, static_account_count,
+            reauth_account_count, unreconciled_account_count, is_complete,
+            age_state, as_of, oldest_known_source_as_of
+        ) VALUES (?, ?, ?, ?, 0, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            _timestamp(taken_at),
+            value_minor,
+            value_minor,
+            account_count,
+            0 if is_complete else account_count,
+            int(is_complete),
+            "STATIC_ONLY" if as_of is None else "KNOWN",
+            as_of,
+            as_of,
+        ),
+    )
+
+
+def _history_days(document: dict[str, Any]) -> list[tuple[str, int]]:
+    return [(point["taken_at"], point["total"]["value_minor"]) for point in document["history"]]
+
+
+def test_history_ends_on_the_published_snapshot_and_carries_what_the_phone_parses(
+    db: sqlite3.Connection,
+) -> None:
+    _insert_snapshot(db, "run-earlier", NOW - timedelta(days=2), value_minor=9_000)
+    _setup_snapshot(db)
+
+    document = _document(_publisher(db).publish(at=NOW).envelope)
+
+    assert _history_days(document) == [
+        (_timestamp(NOW - timedelta(days=2)), 9_000),
+        (_timestamp(NOW), 12_345),
+    ]
+    # The headline's own encoding, minus the fields no phone reads: a point and
+    # the total above it cannot spell one stored fact two ways.
+    last = document["history"][-1]["total"]
+    assert last == {key: document["total"][key] for key in last}
+    assert set(last) == {
+        "account_count",
+        "age_state",
+        "as_of",
+        "assets_minor",
+        "currency",
+        "is_complete",
+        "liabilities_minor",
+        "static_account_count",
+        "unknown_freshness_account_count",
+        "value_minor",
+    }
+
+
+def test_history_is_each_owner_day_latest_snapshot_across_both_dst_changes(
+    db: sqlite3.Connection,
+) -> None:
+    # Instants chosen so UTC days, a fixed -08:00 and the real zone all disagree.
+    # 2025-11-02 is the day DST ended (09:00Z); 2026-03-08 is the day it began
+    # (10:00Z).
+    readings = [
+        ("2025-11-02T07:30:00Z", 1),  # Nov 2, 00:30 PDT
+        ("2025-11-02T09:30:00Z", 2),  # Nov 2, 01:30 PST — same day, later
+        ("2025-11-03T07:30:00Z", 3),  # Nov 2, 23:30 PST — UTC and -07:00 say Nov 3
+        ("2025-11-03T08:30:00Z", 4),  # Nov 3, 00:30 PST
+        ("2026-03-08T07:30:00Z", 5),  # Mar 7, 23:30 PST
+        ("2026-03-09T06:30:00Z", 6),  # Mar 8, 23:30 PDT
+        ("2026-03-09T07:30:00Z", 7),  # Mar 9, 00:30 PDT — a fixed -08:00 says Mar 8
+    ]
+    for index, (taken_at, value) in enumerate(readings):
+        _insert_snapshot(
+            db, f"run-{index}", datetime.fromisoformat(taken_at), value_minor=value
+        )
+    _setup_snapshot(db)
+
+    document = _document(_publisher(db).publish(at=NOW).envelope)
+
+    assert [value for _, value in _history_days(document)] == [3, 4, 5, 6, 7, 12_345]
+
+
+def test_history_starts_with_the_first_snapshot_that_holds_an_account(
+    db: sqlite3.Connection,
+) -> None:
+    # What every sync stores before the first Link: a total over nothing. On
+    # the owner's host that was 85 consecutive $0.00 snapshots, and drawing them
+    # would show his first real total as a cliff out of a month of zeros.
+    _insert_snapshot(db, "run-empty-1", NOW - timedelta(days=3), value_minor=0, account_count=0)
+    _insert_snapshot(db, "run-empty-2", NOW - timedelta(days=2), value_minor=0, account_count=0)
+    _insert_snapshot(db, "run-first", NOW - timedelta(days=1), value_minor=8_000)
+    _setup_snapshot(db)
+
+    document = _document(_publisher(db).publish(at=NOW).envelope)
+
+    assert [value for _, value in _history_days(document)] == [8_000, 12_345]
+
+
+def test_an_incomplete_reading_stays_incomplete_in_the_series(
+    db: sqlite3.Connection,
+) -> None:
+    _insert_snapshot(db, "run-partial", NOW - timedelta(days=1), is_complete=False)
+    _setup_snapshot(db)
+
+    history = _document(_publisher(db).publish(at=NOW).envelope)["history"]
+
+    assert [point["total"]["is_complete"] for point in history] == [False, True]
+    assert history[0]["total"]["age_state"] == "KNOWN"
+
+
+def test_history_reaches_back_exactly_five_years_from_its_last_day(
+    db: sqlite3.Connection,
+) -> None:
+    last_day = NOW.astimezone(OWNER_ZONE).date()
+    boundary = last_day.replace(year=last_day.year - HISTORY_YEARS)
+    for run_id, day, value in (
+        ("run-outside", boundary - timedelta(days=1), 1),
+        ("run-boundary", boundary, 2),
+    ):
+        # Noon in the owner's zone, so the day under test is unambiguous.
+        taken_at = datetime(day.year, day.month, day.day, 12, tzinfo=OWNER_ZONE).astimezone(UTC)
+        _insert_snapshot(db, run_id, taken_at, value_minor=value)
+    _setup_snapshot(db)
+
+    document = _document(_publisher(db).publish(at=NOW).envelope)
+
+    assert [value for _, value in _history_days(document)] == [2, 12_345]
+
+
+def test_five_full_years_of_history_fit_well_inside_what_the_phone_will_read(
+    db: sqlite3.Connection,
+) -> None:
+    # `app/lib/src/data/snapshot_transport.dart::snapshotMaxBodyBytes`: the phone
+    # stops reading a response at 1 MiB. A series that grew past it would not
+    # degrade the curve, it would cost the owner his number.
+    phone_read_cap = 1 << 20
+    day = NOW - timedelta(days=1)
+    for index in range(HISTORY_YEARS * 366 + 10):
+        # Wide figures and incomplete readings, the most bytes a day can cost.
+        _insert_snapshot(
+            db,
+            f"run-{index}",
+            day - timedelta(days=index),
+            value_minor=999_999_999_999,
+            account_count=99,
+            is_complete=False,
+        )
+    _setup_snapshot(db)
+
+    publication = _publisher(db).publish(at=NOW)
+
+    assert len(_document(publication.envelope)["history"]) <= HISTORY_YEARS * 366 + 1
+    assert len(publication.envelope.to_json()) < phone_read_cap * 0.75
