@@ -34,7 +34,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'the copy saved on this phone was written by a different version of the app';
 
   @override
-  String instantPacific(DateTime date, DateTime time, String zone) {
+  String instantZoned(DateTime date, DateTime time, String zone) {
     final intl.DateFormat dateDateFormat = intl.DateFormat.yMMMd(localeName);
     final String dateString = dateDateFormat.format(date);
     final intl.DateFormat timeDateFormat = intl.DateFormat.Hm(localeName);
@@ -42,12 +42,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
     return '$dateString, $timeString $zone';
   }
-
-  @override
-  String get zonePacificStandard => 'PST';
-
-  @override
-  String get zonePacificDaylight => 'PDT';
 
   @override
   String totalAsOf(String timestamp) {

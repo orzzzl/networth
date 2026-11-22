@@ -1,11 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:networth_app/src/domain/pacific_time.dart';
+import 'pacific_zone.dart';
 
 /// Every daylight-saving change in Los Angeles from 2007 to 2040, as the IANA
 /// database has them: the UTC hour PDT begins, and the UTC hour it ends.
 ///
 /// Derived from Python's `zoneinfo` on 2026-11-21 rather than from the rule in
-/// `pacific_time.dart`, so a mistake in the rule cannot also be in its test.
+/// `pacific_zone.dart`, so a mistake in the fixture cannot also be in its test.
 const _transitions = [
   (2007, '03-11T10', '11-04T09'),
   (2008, '03-09T10', '11-02T09'),
@@ -52,33 +52,33 @@ void main() {
     for (final (year, starts, ends) in _transitions) {
       final start = _at(year, starts);
       final end = _at(year, ends);
-      expect(PacificTime.of(start.subtract(second)).isDaylight, isFalse, reason: '$year start');
-      expect(PacificTime.of(start).isDaylight, isTrue, reason: '$year start');
-      expect(PacificTime.of(end.subtract(second)).isDaylight, isTrue, reason: '$year end');
-      expect(PacificTime.of(end).isDaylight, isFalse, reason: '$year end');
+      expect(PacificZone.isDaylight(start.subtract(second)), isFalse, reason: '$year start');
+      expect(PacificZone.isDaylight(start), isTrue, reason: '$year start');
+      expect(PacificZone.isDaylight(end.subtract(second)), isTrue, reason: '$year end');
+      expect(PacificZone.isDaylight(end), isFalse, reason: '$year end');
     }
   });
 
   test('the wall clock is the UTC instant moved by the offset in force', () {
     // The owner's first real snapshot: 00:19Z on the 22nd is his afternoon of
     // the 21st, and the day it belongs on is the 21st.
-    final winter = PacificTime.of(DateTime.parse('2026-11-22T00:19:18Z'));
-    expect(winter.isDaylight, isFalse);
+    final winter = const PacificZone().of(DateTime.parse('2026-11-22T00:19:18Z'));
+    expect(winter.zoneName, 'PST');
     expect(winter.wallClock, DateTime.utc(2026, 11, 21, 16, 19, 18));
     expect(winter.day, DateTime.utc(2026, 11, 21));
 
-    final summer = PacificTime.of(DateTime.parse('2026-09-15T04:00:00Z'));
-    expect(summer.isDaylight, isTrue);
+    final summer = const PacificZone().of(DateTime.parse('2026-09-15T04:00:00Z'));
+    expect(summer.zoneName, 'PDT');
     expect(summer.wallClock, DateTime.utc(2026, 9, 14, 21));
     expect(summer.day, DateTime.utc(2026, 9, 14));
   });
 
   test('the day changes at local midnight on both nights the offset changes', () {
     // 07:30Z is the hour where PST and PDT disagree about the date.
-    expect(pacificDayOf(DateTime.parse('2026-03-09T06:30:00Z')), DateTime.utc(2026, 3, 8));
-    expect(pacificDayOf(DateTime.parse('2026-03-09T07:30:00Z')), DateTime.utc(2026, 3, 9));
-    expect(pacificDayOf(DateTime.parse('2026-11-02T07:30:00Z')), DateTime.utc(2026, 11, 1));
-    expect(pacificDayOf(DateTime.parse('2026-11-02T08:30:00Z')), DateTime.utc(2026, 11, 2));
+    expect(const PacificZone().of(DateTime.parse('2026-03-09T06:30:00Z')).day, DateTime.utc(2026, 3, 8));
+    expect(const PacificZone().of(DateTime.parse('2026-03-09T07:30:00Z')).day, DateTime.utc(2026, 3, 9));
+    expect(const PacificZone().of(DateTime.parse('2026-11-02T07:30:00Z')).day, DateTime.utc(2026, 11, 1));
+    expect(const PacificZone().of(DateTime.parse('2026-11-02T08:30:00Z')).day, DateTime.utc(2026, 11, 2));
   });
 
   test('the device zone has no say', () {
@@ -86,8 +86,8 @@ void main() {
     // is converted first, so every hour of one day lands the same way on both.
     for (var hour = 0; hour < 24; hour++) {
       final utc = DateTime.utc(2026, 9, 10, hour, 30);
-      expect(PacificTime.of(utc.toLocal()).wallClock, PacificTime.of(utc).wallClock);
-      expect(pacificDayOf(utc.toLocal()), pacificDayOf(utc));
+      expect(const PacificZone().of(utc.toLocal()).wallClock, const PacificZone().of(utc).wallClock);
+      expect(const PacificZone().of(utc.toLocal()).day, const PacificZone().of(utc).day);
     }
   });
 }

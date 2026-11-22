@@ -2,24 +2,20 @@ import 'package:flutter/foundation.dart';
 
 import 'dated_total.dart';
 import 'instant.dart';
-import 'pacific_time.dart';
+import 'display_zone.dart';
 import 'payload_format_exception.dart';
 
 /// One point on the curve: a total the host computed and stored, on the
-/// Los Angeles calendar day it is placed at.
+/// calendar day it is placed at where the phone is.
 ///
-/// **Los Angeles days, because those are the days the owner reads.** Every time
-/// on screen is Pacific (`ui/instant.dart`), and a reading taken at 00:07Z on
-/// the 22nd is his afternoon of the 21st; filing it under the 22nd would put a
-/// date on the curve that had not yet arrived where he was. The host buckets its
-/// series by the same zone (`networth/publisher.py::OWNER_ZONE`). Staleness math
+/// **The phone's own days, because those are the days the owner reads.** Every
+/// time on screen is in the device's zone (`ui/instant.dart`), and a reading
+/// taken at 00:07Z on the 22nd is his afternoon of the 21st in Los Angeles;
+/// filing it under the 22nd would put a date on the curve that had not yet
+/// arrived where he was. The host picks each day's last snapshot by his home
+/// zone (`networth/publisher.py::OWNER_ZONE`), and this re-buckets by the
+/// phone's, so the two agree whenever the phone is at home. Staleness math
 /// stays UTC; this is only which day a point is drawn on.
-///
-/// **The point holds the whole [DatedTotal], not its amount.** Invariant **I2**
-/// — no total rendered without its age state — has no exception for a chart, and
-/// a series of bare numbers is still numbers with no age. So there is no
-/// constructor here that takes a bare `Money`, and the curve cannot acquire one
-/// to plot. That is also why it draws no value labels (`ui/history_curve.dart`).
 @immutable
 class HistoryPoint {
   const HistoryPoint({required this.at, required this.total});
@@ -76,8 +72,8 @@ class HistoryPoint {
   /// nothing may set one without the other.
   bool get isComplete => total.isComplete;
 
-  /// The Los Angeles day this point sits on. The curve's x axis.
-  DateTime get day => pacificDayOf(at);
+  /// The day this point sits on where the phone is. The curve's x axis.
+  DateTime get day => localDayOf(at);
 }
 
 /// The curve's points, one per day, already split where the record has a hole.
@@ -225,8 +221,8 @@ class NetWorthHistory {
 
 /// Whole days between two day keys.
 ///
-/// Both arguments are [PacificTime.day] values — UTC midnights standing for
-/// Los Angeles dates — so this is exact: the difference of two UTC midnights is
+/// Both arguments are [ZonedTime.day] values — UTC midnights standing for
+/// local dates — so this is exact: the difference of two UTC midnights is
 /// a whole number of 24-hour days, whatever the offset was on either date.
 int _daysBetween(DateTime from, DateTime to) => to.difference(from).inDays;
 

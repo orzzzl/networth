@@ -26,9 +26,10 @@ SCHEMA_VERSION = "1"
 PUBLISH_INTERVAL_SECONDS = 86_400
 GRACE_SECONDS = 21_600
 
-#: The owner's zone. The phone shows every instant in it, so the series is
-#: bucketed by its calendar days: a reading taken at 00:07Z on the 22nd is on
-#: the 21st for the person looking at it, and that is the day it is drawn on.
+#: The owner's home zone. The phone shows times in its own zone and buckets the
+#: curve by its own days; picking each day's last snapshot by the zone the phone
+#: is normally in makes the two agree at home. A reading taken at 00:07Z on the
+#: 22nd is on the 21st for the person looking at it, and that is its day.
 OWNER_ZONE = ZoneInfo("America/Los_Angeles")
 
 #: The longest range the phone offers (5Y). The series stops there so the
