@@ -142,23 +142,11 @@ abstract class AppLocalizations {
   /// **'the copy saved on this phone was written by a different version of the app'**
   String get copyOutdated;
 
-  /// An instant as the owner reads it: the Los Angeles wall clock, with the zone named (zonePacificStandard / zonePacificDaylight). The owner asked for Pacific time by name, so it is Pacific whatever zone the device is set to. Storage and the wire stay UTC; this is display only. The month name comes from the locale's own date symbols, which is why the date and time are placeholders rather than a Dart constant list.
+  /// An instant as the owner reads it: the phone's own time zone, with the zone named as the platform names it (PST, PDT, IST — or an offset such as +04 for a zone with no abbreviation). The owner asked for his phone's local time, so it follows the phone when he travels. Storage and the wire stay UTC; this is display only. The month name comes from the locale's own date symbols, which is why the date and time are placeholders rather than a Dart constant list.
   ///
   /// In en, this message translates to:
   /// **'{date}, {time} {zone}'**
-  String instantPacific(DateTime date, DateTime time, String zone);
-
-  /// Pacific Standard Time (UTC-8), the zone name after an instant from early November to mid-March.
-  ///
-  /// In en, this message translates to:
-  /// **'PST'**
-  String get zonePacificStandard;
-
-  /// Pacific Daylight Time (UTC-7), the zone name after an instant from mid-March to early November.
-  ///
-  /// In en, this message translates to:
-  /// **'PDT'**
-  String get zonePacificDaylight;
+  String instantZoned(DateTime date, DateTime time, String zone);
 
   /// The age annotation for a total whose whole basis has a known source clock. The timestamp is the OLDEST clock in the basis.
   ///
@@ -376,7 +364,7 @@ abstract class AppLocalizations {
   /// **'History'**
   String get historyLabel;
 
-  /// How the total moved across the selected range, from its first reading to its last. The date is the first reading's day, which is earlier than the range's nominal start only never: when the record is shorter than the range, this is how the screen says how far back it really reaches.
+  /// How the total moved across the selected range, from its first reading to its last. The date is the first reading's day inside the range. When the record is shorter than the range it is later than the range's nominal start, and that is how the screen says how far back the record really reaches — nothing is padded in front of it.
   ///
   /// In en, this message translates to:
   /// **'{change} ({percent}) since {date}'**
@@ -392,7 +380,7 @@ abstract class AppLocalizations {
   /// **'{change} since {date}'**
   String historyChangeSince(String change, DateTime date);
 
-  /// The day of the reading under the owner's finger, in Los Angeles. Shown above its age annotation, which is the headline's own sentence for that reading's age state.
+  /// The day of the reading under the owner's finger, in the phone's own zone. Shown above its age annotation, which is the headline's own sentence for that reading's age state.
   ///
   /// In en, this message translates to:
   /// **'{date}'**

@@ -1587,7 +1587,8 @@ are very different claims.
 
 **Blast radius, stated plainly.** If the phone is compromised, the attacker gets
 the current payload and the phone's local cache — and the payload carries **the
-daily series the curve draws: each Los Angeles day's last stored total, for up to
+daily series the curve draws: each day's last stored total (days in the owner's
+home zone, `America/Los_Angeles`; the phone re-buckets by its own), for up to
 five years** (`publisher.py::_history`), because the curve has to come from
 somewhere. What they do *not* get: the ability to publish anything (there is no
 write route), any Plaid token, any per-account or per-holding history, or a way
@@ -3141,8 +3142,9 @@ net_worth = Σ(account value × account.sign)     -- v0: every sign is +1, so th
    finger carries its own day and the headline's age annotation for its own
    state, and there are no scale labels. A range longer than the record starts at
    the first reading and says so — nothing is padded, joined across a missing
-   day, or drawn past the last reading. Days are Los Angeles calendar days,
-   because those are the days the owner reads (storage and staleness stay UTC).
+   day, or drawn past the last reading. Times and days are the phone's own time
+   zone, zone named, because those are what the owner reads (his choice,
+   2026-11-21); storage and staleness stay UTC.
 6. Single currency (USD). The schema carries currency so mixed units fail loudly
    rather than silently summing unlike things.
 

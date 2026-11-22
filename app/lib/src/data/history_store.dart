@@ -5,7 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../domain/dated_total.dart';
 import '../domain/net_worth_history.dart';
-import '../domain/pacific_time.dart';
+import '../domain/display_zone.dart';
 import '../domain/payload_format_exception.dart';
 import '../domain/phone_payload.dart';
 import 'history_source.dart';
@@ -62,7 +62,7 @@ class FileHistoryStore implements HistoryStore {
 
   /// **The bound, and it is in days rather than readings on purpose.**
   ///
-  /// The store keeps at most one reading per Los Angeles day — the latest recorded for
+  /// The store keeps at most one reading per local day — the latest recorded for
   /// that day, which is the point §7 says the curve draws — so the file grows
   /// with *days*, not with how often the app is opened or how often the host
   /// publishes. A phone that fetches every five minutes and one that fetches
@@ -194,8 +194,8 @@ class FileHistoryStore implements HistoryStore {
   /// new) a no-op, and what stops an out-of-order arrival from displacing a
   /// later reading of the same day.
   List<_Reading>? _merge(List<_Reading> stored, _Reading reading) {
-    final day = pacificDayOf(reading.publishedAt);
-    final existing = stored.indexWhere((other) => pacificDayOf(other.publishedAt) == day);
+    final day = localDayOf(reading.publishedAt);
+    final existing = stored.indexWhere((other) => localDayOf(other.publishedAt) == day);
     final List<_Reading> merged;
     if (existing >= 0) {
       if (!stored[existing].publishedAt.isBefore(reading.publishedAt)) {

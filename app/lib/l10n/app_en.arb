@@ -41,24 +41,14 @@
     "description": "HeldCopyOutdated — a copy whose schema_version is well-formed and not the one this build reads. Ordinary news rather than alarming: the usual cause is that the owner installed a new APK. 'a different version' rather than 'an older version' because a rolled-back APK lands here too. No version number reaches the screen; it means nothing to the owner and the state is evidence about one field."
   },
 
-  "instantPacific": "{date}, {time} {zone}",
-  "@instantPacific": {
-    "description": "An instant as the owner reads it: the Los Angeles wall clock, with the zone named (zonePacificStandard / zonePacificDaylight). The owner asked for Pacific time by name, so it is Pacific whatever zone the device is set to. Storage and the wire stay UTC; this is display only. The month name comes from the locale's own date symbols, which is why the date and time are placeholders rather than a Dart constant list.",
+  "instantZoned": "{date}, {time} {zone}",
+  "@instantZoned": {
+    "description": "An instant as the owner reads it: the phone's own time zone, with the zone named as the platform names it (PST, PDT, IST — or an offset such as +04 for a zone with no abbreviation). The owner asked for his phone's local time, so it follows the phone when he travels. Storage and the wire stay UTC; this is display only. The month name comes from the locale's own date symbols, which is why the date and time are placeholders rather than a Dart constant list.",
     "placeholders": {
       "date": { "type": "DateTime", "format": "yMMMd" },
       "time": { "type": "DateTime", "format": "Hm" },
-      "zone": { "type": "String" }
+      "zone": { "type": "String", "example": "PST" }
     }
-  },
-
-  "zonePacificStandard": "PST",
-  "@zonePacificStandard": {
-    "description": "Pacific Standard Time (UTC-8), the zone name after an instant from early November to mid-March."
-  },
-
-  "zonePacificDaylight": "PDT",
-  "@zonePacificDaylight": {
-    "description": "Pacific Daylight Time (UTC-7), the zone name after an instant from mid-March to early November."
   },
 
   "totalAsOf": "as of {timestamp}",
@@ -279,7 +269,7 @@
 
   "historyReadingDay": "{date}",
   "@historyReadingDay": {
-    "description": "The day of the reading under the owner's finger, in Los Angeles. Shown above its age annotation, which is the headline's own sentence for that reading's age state.",
+    "description": "The day of the reading under the owner's finger, in the phone's own zone. Shown above its age annotation, which is the headline's own sentence for that reading's age state.",
     "placeholders": {
       "date": { "type": "DateTime", "format": "yMMMd" }
     }
