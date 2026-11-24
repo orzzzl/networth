@@ -553,13 +553,19 @@ class BalanceRecord:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class HoldingRecord:
-    """One contributing holding, converted out of Plaid's SDK types."""
+    """One contributing holding, converted out of Plaid's SDK types.
+
+    ``is_cash`` is whether its security is Plaid's ``cash`` type — "cash,
+    currency, and money market funds". It is how an institution that lists an
+    account's uninvested money among its holdings lists it, even at zero.
+    """
 
     account_id: str
     institution_value: Decimal
     currency: str
     institution_price_datetime: datetime | None
     institution_price_as_of: date | None
+    is_cash: bool
 
     def __post_init__(self) -> None:
         if (
@@ -585,13 +591,16 @@ class HoldingRecord:
             or isinstance(self.institution_price_as_of, datetime)
         ):
             raise ValueError("institution_price_as_of must be a date")
+        if not isinstance(self.is_cash, bool):
+            raise ValueError("is_cash must be a bool")
 
     def __repr__(self) -> str:
         return (
             "HoldingRecord(account_id=<redacted>, institution_value=<redacted>, "
             f"currency={self.currency!r}, "
             f"institution_price_datetime={self.institution_price_datetime!r}, "
-            f"institution_price_as_of={self.institution_price_as_of!r})"
+            f"institution_price_as_of={self.institution_price_as_of!r}, "
+            f"is_cash={self.is_cash!r})"
         )
 
 
@@ -806,7 +815,18 @@ def _account_descriptors(response: Any, *, step: str) -> tuple[AccountDescriptor
     return tuple(converted)
 
 
+def _cash_securities(response: Any, *, step: str) -> frozenset[str]:
+    """The ids of the reply's securities that Plaid types ``cash``."""
+    cash: set[str] = set()
+    for security in _response_records(response, "securities", step=step):
+        security_id = _optional_text(security, "security_id", step=step)
+        if security_id is not None and _optional_text(security, "type", step=step) == "cash":
+            cash.add(security_id)
+    return frozenset(cash)
+
+
 def _holding_records(response: Any, *, step: str) -> tuple[HoldingRecord, ...]:
+    cash = _cash_securities(response, step=step)
     converted: list[HoldingRecord] = []
     for holding in _response_records(response, "holdings", step=step):
         try:
@@ -821,6 +841,7 @@ def _holding_records(response: Any, *, step: str) -> tuple[HoldingRecord, ...]:
                     institution_price_as_of=_optional_date(
                         holding, "institution_price_as_of", step=step
                     ),
+                    is_cash=_optional_text(holding, "security_id", step=step) in cash,
                 )
             )
         except ValueError:

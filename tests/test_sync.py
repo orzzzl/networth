@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
+import plaid
 import pytest
+from plaid.model.investments_holdings_get_response import InvestmentsHoldingsGetResponse
 
 from networth.model import (
     FreshnessPolicy,
@@ -18,6 +23,7 @@ from networth.model import (
     SourcedFigure,
 )
 from networth.plaid import BalanceRecord, HoldingRecord, InvestmentRecords
+from networth.plaid.client import PlaidClient
 from networth.storage import migrate
 from networth.store import ObservationConflictError, Store
 from networth.sync import (
@@ -30,6 +36,8 @@ from networth.sync import (
     BalanceMode,
     FullSync,
 )
+from tests.fake_plaid import FakeSandboxApi
+from tests.test_plaid_client import CREDENTIALS
 
 NOW = datetime(2026, 1, 15, 18, 0, tzinfo=UTC)
 SOURCE = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
@@ -199,7 +207,97 @@ def holding(
         currency="USD",
         institution_price_datetime=price_datetime,
         institution_price_as_of=price_as_of,
+        is_cash=False,
     )
+
+
+def _sdk_security(kind: str) -> dict[str, Any]:
+    return {
+        "security_id": f"security-{kind}",
+        "isin": None,
+        "cusip": None,
+        "sedol": None,
+        "institution_security_id": None,
+        "institution_id": None,
+        "proxy_security_id": None,
+        "name": f"Synthetic {kind}",
+        "ticker_symbol": "CUR:USD" if kind == "cash" else "SYN",
+        "is_cash_equivalent": kind == "cash",
+        "type": kind,
+        "close_price": 1.0 if kind == "cash" else 10.0,
+        "close_price_as_of": None,
+        "iso_currency_code": "USD",
+        "unofficial_currency_code": None,
+        "market_identifier_code": None,
+        "sector": None,
+        "industry": None,
+        "cfi_code": None,
+        "figi": None,
+        "option_contract": None,
+        "fixed_income": None,
+    }
+
+
+def sdk_holdings_client(total: str, holdings: tuple[tuple[str, str], ...]) -> PlaidClient:
+    """The real reader, given one account's holdings reply as plaid-python builds it.
+
+    ``holdings`` is ``(security type, value)`` pairs, each priced at the close of
+    OLDER_SOURCE's day. A hand-built record cannot show what the reader makes of
+    a reply, and a stand-in object cannot show what the SDK does to one: its
+    holdings accounts refuse their own ``balances`` (test_plaid_client).
+    """
+    body = {
+        "accounts": [
+            {
+                "account_id": "account-portfolio",
+                "balances": {
+                    "available": None,
+                    "current": float(total),
+                    "iso_currency_code": "USD",
+                    "limit": None,
+                    "margin_loan_amount": None,
+                    "unofficial_currency_code": None,
+                },
+                "mask": "0000",
+                "name": "Synthetic Brokerage",
+                "official_name": None,
+                "subtype": "brokerage",
+                "type": "investment",
+            }
+        ],
+        "holdings": [
+            {
+                "account_id": "account-portfolio",
+                "cost_basis": None,
+                "institution_price": 1.0 if kind == "cash" else 10.0,
+                "institution_price_as_of": "2026-01-13",
+                "institution_price_datetime": None,
+                "institution_value": float(value),
+                "iso_currency_code": "USD",
+                "quantity": float(value) if kind == "cash" else float(value) / 10,
+                "security_id": f"security-{kind}",
+                "unofficial_currency_code": None,
+            }
+            for kind, value in holdings
+        ],
+        "securities": [_sdk_security(kind) for kind in sorted({kind for kind, _ in holdings})],
+        "item": {
+            "available_products": ["balance"],
+            "billed_products": ["investments"],
+            "consent_expiration_time": None,
+            "error": None,
+            "institution_id": "ins_x",
+            "item_id": "item-1",
+            "update_type": "background",
+            "webhook": "",
+        },
+        "request_id": "req-1",
+        "is_investments_fallback_item": False,
+    }
+    reply = plaid.ApiClient().deserialize(
+        SimpleNamespace(data=json.dumps(body)), (InvestmentsHoldingsGetResponse,), True
+    )
+    return PlaidClient(CREDENTIALS, api=FakeSandboxApi(investments_holdings_get=reply))
 
 
 def sync_for(
@@ -275,7 +373,7 @@ def test_holdings_value_comes_from_the_account_total_and_clock_from_oldest_holdi
     investments = InvestmentRecords(
         accounts=(balance("portfolio", "999.99"),),
         holdings=(
-            holding("portfolio", "300.00", price_datetime=SOURCE),
+            holding("portfolio", "599.996", price_datetime=SOURCE),
             holding("portfolio", "400.00", price_as_of=date(2026, 1, 13)),
         ),
     )
@@ -285,7 +383,7 @@ def test_holdings_value_comes_from_the_account_total_and_clock_from_oldest_holdi
 
     observed = result.observations[0]
     assert observed.figure.value_minor == 99_999
-    assert observed.figure.value_minor != 70_000, "holdings do not replace the account total"
+    assert observed.figure.value_minor != 100_000, "within rounding, the total is the value"
     assert observed.figure.as_of == OLDER_SOURCE
     assert observed.figure.source_clock == HOLDING_PRICE_AS_OF
     assert observed.source is ObservationSource.PLAID_HOLDINGS
@@ -355,6 +453,77 @@ def test_missing_holding_clock_or_item_clock_is_unknown_not_inferred(
     result = sync_for(db, client, mode=BalanceMode.REALTIME).run("run-unknown", at=NOW)
 
     assert result.observations[0].figure == SourcedFigure(12_345, "USD", None, UNKNOWN)
+
+
+@pytest.mark.parametrize(
+    ("total", "holdings", "expected"),
+    [
+        pytest.param(
+            "1000.00",
+            (("etf", "700.00"), ("etf", "360.00"), ("cash", "0")),
+            SourcedFigure(106_000, "USD", OLDER_SOURCE, HOLDING_PRICE_AS_OF),
+            id="a total behind holdings that list the cash, even at zero, is their value",
+        ),
+        pytest.param(
+            "1000.00",
+            (("etf", "700.00"), ("etf", "360.00")),
+            SourcedFigure(100_000, "USD", None, UNKNOWN),
+            id="holdings that list no cash may omit some, so the total stands undated",
+        ),
+        pytest.param(
+            "1000.00",
+            (("equity", "600.012"), ("cash", "400.00")),
+            SourcedFigure(100_000, "USD", OLDER_SOURCE, HOLDING_PRICE_AS_OF),
+            id="a total its holdings add up to, to rounding, is unchanged",
+        ),
+        pytest.param(
+            "1000.00",
+            (("etf", "1000.004"),),
+            SourcedFigure(100_000, "USD", OLDER_SOURCE, HOLDING_PRICE_AS_OF),
+            id="adding up needs no cash holding",
+        ),
+        pytest.param(
+            "0",
+            (),
+            SourcedFigure(0, "USD", None, UNKNOWN),
+            id="an empty account has nothing to date it",
+        ),
+        pytest.param(
+            "1000.00",
+            (),
+            SourcedFigure(100_000, "USD", None, UNKNOWN),
+            id="no holdings are not holdings that list the cash",
+        ),
+    ],
+)
+def test_a_holdings_account_is_valued_by_what_its_clock_dates(
+    db: sqlite3.Connection,
+    total: str,
+    holdings: tuple[tuple[str, str], ...],
+    expected: SourcedFigure,
+) -> None:
+    """The figure and its clock describe the same data (owner's report, 2026-11-23).
+
+    The total came from the reply's balance, which Plaid may cache, and the
+    clock from the holdings' prices: a figure a session old, dated today. Each
+    reply is read by the real reader from what the SDK built, and every row
+    the fix did not mean to move is pinned beside the two it did.
+    """
+    item_id = add_item(db, "portfolio")
+    add_account(db, item_id, "portfolio", policy=FreshnessPolicy.SYNCED_HOLDINGS)
+    add_run(db, "run-valued")
+    db.commit()
+    sync = FullSync(
+        Store(db),
+        sdk_holdings_client(total, holdings),
+        FakeTokens(),
+        balance_mode=BalanceMode.CACHED,
+    )
+
+    result = sync.run("run-valued", at=NOW)
+
+    assert result.ok
+    assert result.observations[0].figure == expected
 
 
 def test_failed_fetch_carries_the_whole_previous_observation_without_advancing_either_clock(

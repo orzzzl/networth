@@ -855,7 +855,7 @@ class Provider:
             accounts=self._balances(),
             holdings=(
                 HoldingRecord(
-                    "account-brokerage", Decimal("1000.25"), "USD", None, date(2026, 10, 2)
+                    "account-brokerage", Decimal("1000.25"), "USD", None, date(2026, 10, 2), False
                 ),
             ),
         )
