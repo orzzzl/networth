@@ -106,7 +106,7 @@ class Client:
         return InvestmentRecords(
             accounts=records,
             holdings=tuple(
-                HoldingRecord(r.account_id, r.current, "USD", None, date(2026, 9, 18))
+                HoldingRecord(r.account_id, r.current, "USD", None, date(2026, 9, 18), False)
                 for r in records
             ),
         )

@@ -12,6 +12,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
+from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
 
@@ -435,8 +436,10 @@ class FullSync:
                 failures.append(failure)
                 continue
 
-            source_as_of, source_clock = self._holdings_clock(account_holdings, item)
             total = totals[0]
+            value_minor, source_as_of, source_clock = self._holdings_value(
+                total, account_holdings, item
+            )
             plans.append(
                 _Plan(
                     draft=ObservationDraft(
@@ -444,7 +447,7 @@ class FullSync:
                         account_id=target.id,
                         observed_at=fetched_at,
                         figure=SourcedFigure(
-                            value_minor=to_minor_units(total.current, currency=total.currency),
+                            value_minor=value_minor,
                             currency=total.currency,
                             as_of=source_as_of,
                             source_clock=source_clock,
@@ -456,6 +459,34 @@ class FullSync:
                 )
             )
         return plans, failures
+
+    def _holdings_value(
+        self,
+        total: BalanceRecord,
+        holdings: list[HoldingRecord],
+        item: ItemHealth,
+    ) -> tuple[int, datetime | None, str]:
+        """An account's value, with a clock that dates that value and no other.
+
+        Only the holdings carry clocks. The account total in the same reply "may
+        be cached" (Plaid), and on 2026-11-23 one institution's stayed at the
+        previous session's figure all day while its holdings were priced at the
+        close — an old number that the holdings' date passed off as a fresh one.
+        So the total keeps their clock only while it is their value. When it is
+        not, the holdings are the value if they list the account's cash, since
+        then nothing in the account is missing from them; otherwise the total
+        stands with no clock, because holdings without cash may be leaving some
+        out.
+        """
+        held = sum((holding.institution_value for holding in holdings), Decimal(0))
+        if _adds_up(total, held, len(holdings)):
+            value = total.current
+        elif any(holding.is_cash for holding in holdings):
+            value = held
+        else:
+            return to_minor_units(total.current, currency=total.currency), None, UNKNOWN
+        source_as_of, source_clock = self._holdings_clock(holdings, item)
+        return to_minor_units(value, currency=total.currency), source_as_of, source_clock
 
     def _holdings_clock(
         self,
@@ -551,6 +582,19 @@ class FullSync:
                 carried_forward=True,
             ),
         )
+
+
+def _adds_up(total: BalanceRecord, held: Decimal, count: int) -> bool:
+    """Whether an account total is the value ``held`` of its ``count`` holdings.
+
+    Each figure — the total and every holding's value — may be rounded by up to
+    half a minor unit, so their sum may miss the total by that much per figure.
+    Measured against Production on 2026-11-23: the accounts whose holdings are
+    their total miss it by at most a fifth of that allowance, and the one whose
+    total had not been refreshed missed it by percent, not cents.
+    """
+    per_unit = to_minor_units(Decimal(1), currency=total.currency)
+    return abs(held - total.current) * per_unit * 2 <= count + 1
 
 
 __all__ = [

@@ -2287,12 +2287,17 @@ say so rather than compute an age over an empty set.
 | Manual, qty × quote | `QuoteClient` | the quote's own `as_of` | quote at or after the last market close |
 | Carried forward | — | inherited, **never advanced** | ages continuously |
 
-Two details that will otherwise be discovered as bugs:
+Three details that will otherwise be discovered as bugs:
 `institution_price_datetime` is documented to be returned only by select
 institutions and "may contain default time values (such as 00:00:00)", so an
 exactly-midnight value is treated as date-granular rather than as a precise
-instant; and holdings freshness is taken as the **oldest** contributing holding,
-because one stale position is enough to make a portfolio total wrong.
+instant; holdings freshness is taken as the **oldest** contributing holding,
+because one stale position is enough to make a portfolio total wrong; and the
+holdings' clock dates only a value that is theirs. The account total in the same
+reply may be cached — on 2026-11-23 one stayed a session behind its holdings all
+day — so it keeps their clock only while they add up to it, to rounding.
+Otherwise the value is their sum when they list the account's cash (Plaid type
+`cash`), and the total, `UNKNOWN`, when they do not.
 
 Market-close awareness stays where it belongs — on this axis. Plaid updates
 investments after close on market days, so a Friday-close value is legitimately
