@@ -97,6 +97,9 @@ class SnapshotView extends StatelessWidget {
     // layout that happens to fit the test device is not a layout; the content
     // is what it is, and the screen must be able to show all of it.
     return SingleChildScrollView(
+      // Always, so pull-to-refresh works on a screen whose content happens to
+      // fit: a scroll view with nothing to scroll does not report the drag.
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

@@ -176,11 +176,33 @@ class _CountingStore implements SecureStringStore {
 /// write and the next load's read cross the same object; a helper that built two
 /// would make every test here pass over an app whose form provisions a vault
 /// nothing reads.
+/// A history read that parks on its [parked]th call, so a load can be held
+/// after it has read its pairing and its copy — the last await before it lands.
+class _ParkingHistory implements HistorySource {
+  _ParkingHistory(this.parked);
+
+  final int parked;
+  int loads = 0;
+  final _gate = Completer<void>();
+
+  void release() => _gate.complete();
+
+  @override
+  Future<NetWorthHistory> load() async {
+    loads += 1;
+    if (loads == parked) {
+      await _gate.future;
+    }
+    return NetWorthHistory.empty;
+  }
+}
+
 class _Harness {
   _Harness({
     required this.store,
     Map<String, HeldCopyState>? copies,
     int? gateRefreshFrom,
+    this.history = const _NoHistory(),
   })  : vault = PairingVault(store: store),
         scopedCopies = _ScopedCopies(copies ?? const {}) {
     refresher = _VaultReadingRefresher(vault, gateFrom: gateRefreshFrom);
@@ -189,6 +211,7 @@ class _Harness {
   final _CountingStore store;
   final PairingVault vault;
   final _ScopedCopies scopedCopies;
+  final HistorySource history;
   late final _VaultReadingRefresher refresher;
 
   Widget get app => NetWorthApp(
@@ -199,7 +222,7 @@ class _Harness {
           diagnostics: _NoDiagnostics(),
           baselines: _NoBaselines(),
         ),
-        historySource: const _NoHistory(),
+        historySource: history,
         intake: PairingIntake(vault: vault),
       );
 }
@@ -550,6 +573,44 @@ void main() {
 
     harness.refresher.release();
     await tester.pumpAndSettle();
+    expect(find.text(totalOfStaticOnly), findsOneWidget);
+  });
+
+  testWidgets('a refresh begun under the old pairing cannot land on the new one', (tester) async {
+    // The second way a load can be in flight across a replacement, and further
+    // along than the one above: a refresh keeps the screen up, so the replace
+    // action is reachable while it runs, and this one has already read the old
+    // pairing and its copy. Parked at its last await, it is A's screen waiting
+    // to land — after B's.
+    final history = _ParkingHistory(2);
+    final harness = _Harness(
+      store: _CountingStore(stored: encoded),
+      copies: {
+        pairingId: copyOf(knownFixture),
+        replacementPairingId: copyOf(staticOnlyFixture),
+      },
+      history: history,
+    );
+    await tester.pumpWidget(harness.app);
+    await tester.pumpAndSettle();
+    expect(find.text(totalOfKnown), findsOneWidget);
+
+    await leaveAndReturn(tester);
+    await tester.pump();
+    expect(history.loads, 2, reason: 'the refresh is not parked where this test needs it');
+    expect(harness.scopedCopies.reads, [pairingId, pairingId]);
+
+    await openIntake(tester, replacing: true);
+    await typeAndSubmit(tester, replacementEncoded);
+    expect(find.text(totalOfStaticOnly), findsOneWidget);
+
+    history.release();
+    await tester.pumpAndSettle();
+    expect(
+      find.text(totalOfKnown),
+      findsNothing,
+      reason: "a load from the pairing that ended landed on the new pairing's screen",
+    );
     expect(find.text(totalOfStaticOnly), findsOneWidget);
   });
 }

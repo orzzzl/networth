@@ -456,7 +456,18 @@ class _RangeButtons extends StatelessWidget {
       child: SegmentedButton<ChartRange>(
         segments: [
           for (final range in ChartRange.values)
-            ButtonSegment(value: range, label: Text(_label(l10n, range))),
+            ButtonSegment(
+              value: range,
+              // One line, always: a segment is a sixth of the width, and on a
+              // 360dp phone the text button's own 12dp each side left "YTD"
+              // less room than it needs, so it broke as "YT" over "D". Scaled
+              // down rather than wrapped when even the narrower padding is not
+              // enough, which only a large system font size reaches.
+              label: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(_label(l10n, range), maxLines: 1, softWrap: false),
+              ),
+            ),
         ],
         selected: {selected},
         onSelectionChanged: (chosen) => onSelected(chosen.single),
@@ -464,6 +475,7 @@ class _RangeButtons extends StatelessWidget {
         style: const ButtonStyle(
           visualDensity: VisualDensity.compact,
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 4)),
         ),
       ),
     );
