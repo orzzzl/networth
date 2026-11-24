@@ -210,6 +210,26 @@ class StringAssetBundle extends CachingAssetBundle {
   }
 }
 
+/// Send the app to the background and bring it back.
+///
+/// Through `flutter/lifecycle`, the channel the engine itself reports on, so
+/// the binding generates the states in between exactly as it does on a phone —
+/// [AppLifecycleListener] asserts on a transition that skips one. [whileAway]
+/// runs while the app is paused, which is when the host's new publication
+/// happens in the case this exists for.
+Future<void> leaveAndReturn(WidgetTester tester, {void Function()? whileAway}) async {
+  Future<void> report(AppLifecycleState state) =>
+      tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        SystemChannels.lifecycle.name,
+        SystemChannels.lifecycle.codec.encodeMessage(state.toString()),
+        (_) {},
+      );
+
+  await report(AppLifecycleState.paused);
+  whileAway?.call();
+  await report(AppLifecycleState.resumed);
+}
+
 /// Every string rendered by a [Text] in the subtree, in tree order.
 ///
 /// Used to assert the *absence* of a date, which is a claim about the whole

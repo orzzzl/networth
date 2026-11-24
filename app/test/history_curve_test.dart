@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:networth_app/src/domain/dated_total.dart';
 import 'package:networth_app/src/domain/money.dart';
@@ -201,6 +202,61 @@ void main() {
           endsWith('since Nov 12, 2026'),
           reason: range,
         );
+      }
+    });
+
+    testWidgets("every range label is one line at the owner's width, at any text size", (
+      tester,
+    ) async {
+      // His phone is 360dp wide — measured off his screenshot, where the
+      // screen's 24dp side padding is 60 of 900 pixels — so the chart gets 312
+      // and each range a sixth of that. 0.3.1 broke "YTD" there as "YT" over
+      // "D" at his ordinary text size.
+      int linesOf(String label) {
+        final paragraph = tester.renderObject<RenderParagraph>(find.text(label));
+        final boxes = paragraph.getBoxesForSelection(
+          TextSelection(baseOffset: 0, extentOffset: label.length),
+        );
+        return boxes.map((box) => box.top).toSet().length;
+      }
+
+      for (final scale in [1.0, 1.3, 2.0]) {
+        await tester.pumpWidget(
+          localized(
+            MediaQuery(
+              data: MediaQueryData(
+                size: const Size(360, 800),
+                textScaler: TextScaler.linear(scale),
+              ),
+              // Scrollable as on the screen it lives in: at twice the text
+              // size the curve is taller than the test surface.
+              child: SingleChildScrollView(
+                child: Center(
+                  child: SizedBox(
+                    width: 312,
+                    child: HistoryCurve(
+                      history: demoSeries(),
+                      recordingFailed: false,
+                      headlineCurrency: 'USD',
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        for (final label in ['1M', '3M', 'YTD', '1Y', '3Y', '5Y']) {
+          expect(linesOf(label), 1, reason: '$label at ${scale}x');
+          if (scale == 1.0) {
+            // And at his own text size, by room rather than by shrinking: the
+            // painted width is the laid-out width.
+            expect(
+              tester.getRect(find.text(label)).width,
+              closeTo(tester.getSize(find.text(label)).width, 0.01),
+              reason: '$label is drawn smaller than its text size',
+            );
+          }
+        }
       }
     });
 

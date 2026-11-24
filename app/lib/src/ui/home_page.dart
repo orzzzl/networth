@@ -10,6 +10,7 @@ import '../domain/held_copy.dart';
 import '../domain/net_worth_history.dart';
 import '../domain/phone_payload.dart';
 import '../pairing/pairing_intake.dart';
+import 'copy_text.dart';
 import 'pairing_intake_page.dart';
 import 'snapshot_view.dart';
 
@@ -90,7 +91,29 @@ ClockContinuity _noContinuitySource() => const ContinuityUnknown(ContinuityGap.n
 typedef _Loaded = (HomeLoad load, NetWorthHistory? history, bool recordingFailed);
 
 class _HomePageState extends State<HomePage> {
-  late Future<_Loaded> _loaded;
+  /// The last load that resolved: what is on screen, and **what stays on screen
+  /// while the next one runs.**
+  ///
+  /// A refresh that blanked this would take the number off the screen every
+  /// time the owner came back to the app, and on a phone with no route to the
+  /// host it would be replaced by a spinner and then by the same number.
+  /// Only a pairing replacement clears it — see [_openIntake].
+  _Loaded? _shown;
+
+  /// Whether the load that should have filled [_shown] broke
+  /// [HomeLoader.load]'s never-throws contract instead. Only ever true while
+  /// nothing is shown; [_fail] says why.
+  bool _broken = false;
+
+  /// The load running now, if any. A refresh asked for while it runs *is* that
+  /// load — see [_refresh].
+  Future<void>? _running;
+
+  /// Which pairing the screen is about. Bumped when intake replaces it, so a
+  /// load begun under the old one is dropped when it resolves.
+  int _scope = 0;
+
+  late final AppLifecycleListener _lifecycle;
 
   /// Whether the intake route is already on the stack.
   ///
@@ -102,7 +125,101 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _loaded = _load();
+    // **Android keeps the process alive behind the launcher**, so returning to
+    // the app is a resume and not a launch. Until this listener existed the only
+    // fetch was the one in this method, and the copy on screen was whatever the
+    // host had published when the process started — a day old on the owner's
+    // phone, while the host held three newer publications and the phone never
+    // asked for one.
+    _lifecycle = AppLifecycleListener(onResume: _refresh);
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    super.dispose();
+  }
+
+  /// Fetch and re-read, **keeping what is on screen until the answer is in.**
+  ///
+  /// One load at a time: a resume or a pull that arrives while a load runs
+  /// joins it rather than starting a second fetch. Cold start is where that
+  /// happens without anyone touching anything — the platform reports the first
+  /// resume while the load from [initState] is usually still out.
+  ///
+  /// Joining is also what keeps an older load from landing over a newer one:
+  /// within one pairing there is never more than one load to land.
+  Future<void> _refresh() => _running ?? _start();
+
+  /// A new load, unconditionally. [_refresh] for anything that may join one.
+  Future<void> _start() {
+    final scope = _scope;
+    late final Future<void> run;
+    run = _load()
+        .then((loaded) => _settle(scope, loaded), onError: (Object error) => _fail(scope, error))
+        .whenComplete(() {
+      // Only its own entry: a replacement may already have started the next
+      // load, and that one is still running.
+      if (identical(_running, run)) {
+        _running = null;
+      }
+    });
+    _running = run;
+    return run;
+  }
+
+  void _settle(int scope, _Loaded loaded) {
+    if (!mounted || scope != _scope) {
+      return;
+    }
+    setState(() {
+      _shown = loaded;
+      _broken = false;
+    });
+    // The copy stayed, so the screen alone would not say that this attempt
+    // brought nothing. The sentence is the one the copy row gives the same
+    // record once the copy is overdue; on a copy that is not yet overdue — or
+    // on a device that cannot confirm its own clock, which is every phone
+    // today — that row has no room for it.
+    if (_lastCheckMissed(AppLocalizations.of(context), loaded.$1) case final String sentence) {
+      _say(sentence);
+    }
+  }
+
+  void _fail(int scope, Object error) {
+    if (!mounted || scope != _scope) {
+      return;
+    }
+    // The error object does not reach the screen. It used to, as
+    // `'${snapshot.error}'` under the summary, which put raw internal text like
+    // `Bad state: no payload` in front of the owner — past the i18n layer, in a
+    // shape nobody chose, and with no bound on what an exception might have put
+    // in its message.
+    //
+    // It goes to [debugLog], not to `debugPrint`: the second round of this
+    // review found that `debugPrint` still logs in release, so the first fix had
+    // moved the unbounded text off the screen and left it in the shipped APK's
+    // logcat.
+    //
+    // And it is passed as a closure rather than a string, because the third
+    // round found the first version of that fix still shipping the literal: an
+    // argument is evaluated before the callee's gate is reached, so only work
+    // placed *inside* the gate can be dead code. See `src/debug_log.dart`.
+    debugLog(() => 'snapshot unreadable: $error');
+    if (_shown == null) {
+      setState(() => _broken = true);
+    } else {
+      // A copy that was read is still the best thing this phone has, with its
+      // date; a broken refresh is not a reason to take it away.
+      _say(AppLocalizations.of(context).snapshotUnreadable);
+    }
+  }
+
+  void _say(String sentence) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(sentence)));
   }
 
   /// Opens §6.3 step 2 and, **only if the vault actually took a bundle**, loads
@@ -119,13 +236,21 @@ class _HomePageState extends State<HomePage> {
   ///   `PairingIntake.submit` awaits `PairingVault.provision`, which awaits the
   ///   protected write, and the form pops only after that returns — so the
   ///   refresh below cannot read a vault that is still being written.
-  /// - **Reassigning `_loaded` is what isolates an old attempt**, and it is the
-  ///   whole of that isolation on this side. A refresh that was in flight across
-  ///   the replacement finishes against the future this line just replaced, and
-  ///   `FutureBuilder` has dropped it: it renders the future it is given now, so
-  ///   the earlier load cannot arrive late and take over the new pairing's
-  ///   screen. What it filed while it ran is scoped by the `pairing_id` its own
-  ///   reader read, which is the other half, and it lives in `snapshot_refresh.dart`.
+  /// - **Bumping `_scope` is what isolates an old attempt**, and it is the whole
+  ///   of that isolation on this side. A load that was in flight across the
+  ///   replacement resolves with the scope it began under and is dropped, so it
+  ///   cannot arrive late and take over the new pairing's screen. What it filed
+  ///   while it ran is scoped by the `pairing_id` its own reader read, which is
+  ///   the other half, and it lives in `snapshot_refresh.dart`.
+  /// - **The one reload that clears the screen.** A refresh keeps the copy on
+  ///   screen because it is about the same pairing; this one is not, and the
+  ///   copy on screen belongs to a relationship that has just ended. It used to
+  ///   survive the whole reload anyway — `FutureBuilder.didUpdateWidget` carries
+  ///   the previous snapshot's data across a future swap — so the phone was
+  ///   paired to B and rendering A's figure under A's age annotation. The
+  ///   reload starts from nothing and renders the loading state it is in, and
+  ///   it is a new load rather than a join, because a load still running was
+  ///   begun for the pairing that ended.
   Future<void> _openIntake({required bool isReplacement}) async {
     if (_intakeOpen) {
       return;
@@ -142,8 +267,11 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       setState(() {
-        _loaded = _load();
+        _scope += 1;
+        _shown = null;
+        _broken = false;
       });
+      _start();
     } finally {
       _intakeOpen = false;
     }
@@ -163,7 +291,7 @@ class _HomePageState extends State<HomePage> {
   ///
   /// [HomeLoader.load] never throws by contract, so unlike the source it
   /// replaced its failures arrive as values and are rendered as themselves. The
-  /// error branch in [build] is kept anyway and is now exactly what its name
+  /// error branch in [_content] is kept anyway and is now exactly what its name
   /// says: the backstop for a store that breaks that contract, not the screen a
   /// routine unpaired phone lands on.
   Future<_Loaded> _load() async {
@@ -189,43 +317,17 @@ class _HomePageState extends State<HomePage> {
     return (load, history, recordingFailed);
   }
 
-  /// **The load is above the `Scaffold`, not inside its body, and that is this
-  /// commit's one structural change.**
-  ///
   /// The replace-pairing action belongs in the app bar: it is the only place
   /// reachable from all five of `HomePaired`'s copy states, and putting it in the
   /// body would mean adding it to five branches, one of which is
   /// [SnapshotView]'s whole screenful. But it must appear *only* when a pairing
   /// exists — offering to replace one on a phone that has none contradicts the
   /// sentence under it — and whether one exists is a fact the load carries. So
-  /// the app bar cannot be built before the load resolves, and the
-  /// [FutureBuilder] moves up rather than the state moving down.
+  /// the app bar is built from [_shown], like everything under it.
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<_Loaded>(
-      // **Keyed on the future, and this is the fix for a defect the `21a` tests
-      // found rather than a precaution.** `FutureBuilder.didUpdateWidget`
-      // unsubscribes from the old future and subscribes to the new one, but it
-      // carries the old `AsyncSnapshot`'s *data* across — only the connection
-      // state is reset. So replacing a pairing left the previous pairing's total
-      // on screen for the whole of the new load: the phone was paired to B and
-      // rendering A's figure, under A's age annotation, with no way for the owner
-      // to tell. A number belonging to a relationship that has ended is the one
-      // thing this product exists not to render.
-      //
-      // An [ObjectKey] over the future makes a new future a new element, so the
-      // reload starts from no data and renders the loading state it is in. Same
-      // family as the reused `State` that made the six-state test read one
-      // screen six times — a widget's identity is not its position.
-      key: ObjectKey(_loaded),
-      future: _loaded,
-      builder: _scaffold,
-    );
-  }
-
-  Widget _scaffold(BuildContext context, AsyncSnapshot<_Loaded> snapshot) {
     final l10n = AppLocalizations.of(context);
-    final loaded = snapshot.data;
+    final loaded = _shown;
     return Scaffold(
       appBar: AppBar(
         title: Text(l10n.appTitle),
@@ -243,36 +345,21 @@ class _HomePageState extends State<HomePage> {
             ),
         ],
       ),
-      body: SafeArea(child: _content(l10n, snapshot)),
+      body: SafeArea(child: _content(l10n, loaded)),
     );
   }
 
-  Widget _content(AppLocalizations l10n, AsyncSnapshot<_Loaded> snapshot) {
-    if (snapshot.hasError) {
-      // The error object does not reach the screen. It used to, as
-      // `'${snapshot.error}'` under the summary, which put raw internal text
-      // like `Bad state: no payload` in front of the owner — past the i18n
-      // layer, in a shape nobody chose, and with no bound on what an exception
-      // might have put in its message.
-      //
-      // It goes to [debugLog], not to `debugPrint`: the second round of this
-      // review found that `debugPrint` still logs in release, so the first fix
-      // had moved the unbounded text off the screen and left it in the shipped
-      // APK's logcat.
-      //
-      // And it is passed as a closure rather than a string, because the third
-      // round found the first version of that fix still shipping the literal:
-      // an argument is evaluated before the callee's gate is reached, so only
-      // work placed *inside* the gate can be dead code. See `src/debug_log.dart`.
-      debugLog(() => 'snapshot unreadable: ${snapshot.error}');
+  Widget _content(AppLocalizations l10n, _Loaded? loaded) {
+    if (loaded != null) {
+      final (load, history, recordingFailed) = loaded;
+      return _body(l10n: l10n, load: load, history: history, recordingFailed: recordingFailed);
+    }
+    if (_broken) {
       return _Message.problem(icon: Icons.error_outline, text: l10n.snapshotUnreadable);
     }
-    final loaded = snapshot.data;
-    if (loaded == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    final (load, history, recordingFailed) = loaded;
-    return _body(l10n: l10n, load: load, history: history, recordingFailed: recordingFailed);
+    // Only before the first load of a pairing resolves. A refresh never gets
+    // here: it keeps [_shown].
+    return const Center(child: CircularProgressIndicator());
   }
 
   /// One exhaustive switch over what the phone actually has.
@@ -319,25 +406,30 @@ class _HomePageState extends State<HomePage> {
       case HomePaired(:final copy, :final diagnostics, :final baseline):
         switch (copy) {
           case HeldCopyHeld(:final payload):
-            return SnapshotView(
-              payload: payload,
-              history: history,
-              recordingFailed: recordingFailed,
-              deviceNow: (widget.clock ?? DateTime.now)(),
-              // **Fail-closed, and this is the placeholder, not the answer.**
-              // Until the platform monotonic source is given its anchor store
-              // this device cannot establish that its clock has run
-              // continuously, so it says so. The one default that would change
-              // a verdict is the one claiming continuity, which is why it is
-              // not the default.
-              continuity: (widget.continuity ?? _noContinuitySource)(),
-              // **Measured now, not asserted.** These two were
-              // `DiagnosticsAbsent()` and `BaselineAbsent()` written at this
-              // call site, which was true of a build that performed no fetches
-              // and is false of this one. They come off the same
-              // `pairing_id` as the copy above, read in the same load.
-              diagnostics: diagnostics,
-              baseline: baseline,
+            // Pulling down is the other way to ask, beside coming back to the
+            // app, and it shares the load a resume may already have started.
+            return RefreshIndicator(
+              onRefresh: _refresh,
+              child: SnapshotView(
+                payload: payload,
+                history: history,
+                recordingFailed: recordingFailed,
+                deviceNow: (widget.clock ?? DateTime.now)(),
+                // **Fail-closed, and this is the placeholder, not the answer.**
+                // Until the platform monotonic source is given its anchor
+                // store this device cannot establish that its clock has run
+                // continuously, so it says so. The one default that would
+                // change a verdict is the one claiming continuity, which is
+                // why it is not the default.
+                continuity: (widget.continuity ?? _noContinuitySource)(),
+                // **Measured now, not asserted.** These two were
+                // `DiagnosticsAbsent()` and `BaselineAbsent()` written at this
+                // call site, which was true of a build that performed no
+                // fetches and is false of this one. They come off the same
+                // `pairing_id` as the copy above, read in the same load.
+                diagnostics: diagnostics,
+                baseline: baseline,
+              ),
             );
           case HeldCopyAbsent():
             return _Message.neutral(icon: Icons.inbox_outlined, text: l10n.copyAbsent);
@@ -358,6 +450,16 @@ class _HomePageState extends State<HomePage> {
     }
   }
 }
+
+/// What the check this load made came back with, when it brought no copy.
+///
+/// Read off the records the load re-read, not off the refresh outcome, for
+/// [HomeLoader]'s reason: what the screen says comes from the stores. A load
+/// with no pairing has no records and made no check.
+String? _lastCheckMissed(AppLocalizations l10n, HomeLoad load) => switch (load) {
+      HomePaired(:final diagnostics) => lastCheckMissedText(l10n, diagnostics),
+      HomeNotPaired() || HomePairingUnreadable() => null,
+    };
 
 /// A screenful that is a sentence rather than a number.
 ///

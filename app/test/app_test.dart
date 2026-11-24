@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -542,6 +543,124 @@ void main() {
     });
   });
 
+  group('the copy on screen is refreshed without leaving the screen', () {
+    // **Owner report, 2026-11-23: "数据怎不不更新了".** The host had three newer
+    // publications and the phone had not asked for one in three hours: the only
+    // fetch was the one at process start, and Android keeps the process alive
+    // behind the launcher, so returning to the app fetched nothing.
+
+    testWidgets('returning to the app fetches, and the newer total replaces the old one',
+        (tester) async {
+      final host = _Host(publishing: readFixture(knownFixture));
+      await tester.pumpWidget(host.app());
+      await tester.pumpAndSettle();
+      expect(find.text(totalOfKnown), findsOneWidget);
+
+      await leaveAndReturn(tester, whileAway: () => host.publish(nextPublication()));
+      await tester.pumpAndSettle();
+
+      expect(find.text(totalOfNext), findsOneWidget);
+      expect(find.text(totalOfKnown), findsNothing);
+      expect(host.calls, 2);
+    });
+
+    testWidgets('while that fetch runs the copy stays, with no spinner over it', (tester) async {
+      final host = _Host(publishing: readFixture(knownFixture), parkFrom: 2);
+      await tester.pumpWidget(host.app());
+      await tester.pumpAndSettle();
+
+      await leaveAndReturn(tester, whileAway: () => host.publish(nextPublication()));
+      await tester.pumpAndSettle();
+
+      expect(host.calls, 2, reason: 'the resume did not ask');
+      expect(find.text(totalOfKnown), findsOneWidget);
+      expect(find.text('as of Sep 14, 2026, 13:15 PDT'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+
+      host.release();
+      await tester.pumpAndSettle();
+      expect(find.text(totalOfNext), findsOneWidget);
+    });
+
+    testWidgets('a resume during a load joins it rather than fetching again', (tester) async {
+      // Cold start does this on its own: the platform reports the first resume
+      // while the launch load is still out.
+      final host = _Host(publishing: readFixture(knownFixture), parkFrom: 1);
+      await tester.pumpWidget(host.app());
+      await tester.pump();
+
+      await leaveAndReturn(tester);
+      await tester.pump();
+      expect(host.calls, 1);
+
+      host.release();
+      await tester.pumpAndSettle();
+      expect(host.calls, 1);
+      expect(find.text(totalOfKnown), findsOneWidget);
+    });
+
+    testWidgets('pulling down fetches, and the copy stays while it does', (tester) async {
+      // Tall enough that the whole screenful fits: a scroll view with nothing
+      // to scroll reports no drag, which is the case a short test surface
+      // would never reach.
+      tester.view.physicalSize = const Size(2400, 7200);
+      addTearDown(tester.view.reset);
+      final host = _Host(publishing: readFixture(knownFixture), parkFrom: 2);
+      await tester.pumpWidget(host.app());
+      await tester.pumpAndSettle();
+      host.publish(nextPublication());
+
+      await tester.fling(find.byType(Headline), const Offset(0, 300), 1000);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(host.calls, 2, reason: 'the pull did not ask');
+      expect(find.byType(RefreshProgressIndicator), findsOneWidget);
+      expect(find.text(totalOfKnown), findsOneWidget);
+
+      host.release();
+      await tester.pumpAndSettle();
+      expect(find.text(totalOfNext), findsOneWidget);
+      expect(find.byType(RefreshProgressIndicator), findsNothing);
+    });
+
+    testWidgets('a fetch that fails keeps the copy and says why', (tester) async {
+      final host = _Host(publishing: readFixture(knownFixture));
+      await tester.pumpWidget(host.app());
+      await tester.pumpAndSettle();
+      expect(find.byType(SnackBar), findsNothing, reason: 'the first fetch succeeded');
+
+      await leaveAndReturn(tester, whileAway: () => host.failWith(FetchFailureClass.hostUnreachable));
+      await tester.pumpAndSettle();
+
+      expect(find.text(totalOfKnown), findsOneWidget);
+      expect(find.text('as of Sep 14, 2026, 13:15 PDT'), findsOneWidget);
+      // The copy row's sentence for the same record, with the last check that
+      // worked — the copy row itself is about the clock on every phone today.
+      expect(
+        find.text("the network is fine, but your server didn't answer — "
+            'last checked Sep 15, 2026, 05:00 PDT'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a refresh that breaks its contract keeps the copy too', (tester) async {
+      final host = _Host(publishing: readFixture(knownFixture));
+      await tester.pumpWidget(host.app());
+      await tester.pumpAndSettle();
+
+      await leaveAndReturn(tester, whileAway: () => host.breakContract = true);
+      await tester.pumpAndSettle();
+
+      expect(find.text(totalOfKnown), findsOneWidget);
+      expect(find.text("couldn't read the published snapshot"), findsOneWidget);
+      for (final line in renderedText(tester, find.byType(MaterialApp))) {
+        expect(line, isNot(contains('Bad state')));
+      }
+    });
+  });
+
   testWidgets('the app boots', (tester) async {
     await tester.pumpWidget(
       NetWorthApp(
@@ -554,6 +673,90 @@ void main() {
 
     expect(find.byType(Headline), findsOneWidget);
   });
+}
+
+const totalOfKnown = r'$42,500.00';
+const totalOfNext = r'$43,000.00';
+
+/// The host's next publication after `known.json`: a higher `seq`, a later
+/// instant and a different total, so the screen can only show it by fetching.
+String nextPublication() {
+  final json = jsonDecode(readFixture(knownFixture)) as Map<String, dynamic>;
+  json['seq'] = '42';
+  json['published_at'] = '2026-09-16T04:00:00.000000Z';
+  (json['total'] as Map<String, dynamic>)['value_minor'] = 4300000;
+  return jsonEncode(json);
+}
+
+/// The host as the phone sees it: each refresh brings back whatever it
+/// publishes at that moment, and files the attempt the way the real refresher
+/// does — a success, or a failure that keeps the last success beside it.
+///
+/// It accepts what it serves rather than running I6, because the subject here
+/// is *when* the screen asks; `snapshot_refresh_test.dart` is where a refresh
+/// decides what to keep.
+class _Host implements SnapshotRefreshing {
+  _Host({required String publishing, this.parkFrom}) : _published = publishing;
+
+  String _published;
+  FetchFailureClass? _failure;
+
+  /// Throw instead of answering — [SnapshotRefreshing]'s contract, broken.
+  bool breakContract = false;
+
+  /// The first call that does not return until [release].
+  final int? parkFrom;
+  final _parked = Completer<void>();
+
+  final _copies = _MemoryCopies(const HeldCopyAbsent());
+  final _diagnostics = _MemoryDiagnostics();
+  FetchSuccess? _lastSuccess;
+  int calls = 0;
+
+  void publish(String source) => _published = source;
+  void failWith(FetchFailureClass error) => _failure = error;
+  void release() => _parked.complete();
+
+  Widget app() => localized(
+        HomePage(
+          loader: HomeLoader(
+            vault: PairingVault(store: MemoryPairingStore(encoded)),
+            refresher: this,
+            heldCopies: _copies,
+            diagnostics: _diagnostics,
+            baselines: _MemoryBaselines(),
+          ),
+          historySource: const _NoHistory(),
+          intake: unusedIntake(),
+          clock: () => DateTime.utc(2026, 9, 15, 12),
+        ),
+        scaffold: false,
+      );
+
+  @override
+  Future<SnapshotRefreshOutcome> refresh() async {
+    calls += 1;
+    if (parkFrom case final from? when calls >= from) {
+      await _parked.future;
+    }
+    if (breakContract) {
+      throw StateError('no payload');
+    }
+    // One hour apart from 12:00Z, so each attempt has its own instant.
+    final at = DateTime.utc(2026, 9, 15, 11 + calls);
+    if (_failure case final error?) {
+      await _diagnostics.write(
+        FetchDiagnostics.failed(pairingId: pairingId, at: at, error: error, after: _lastSuccess),
+      );
+      return const RefreshKeptHeldCopy(RefreshRefusal.attemptFailed);
+    }
+    final payload = PhonePayload.fromJsonString(_published);
+    await _copies.hold(_published);
+    final seq = PublicationSeq.parse(payload.seq);
+    _lastSuccess = FetchSuccess(at: at, seq: seq);
+    await _diagnostics.write(FetchDiagnostics.succeeded(pairingId: pairingId, at: at, seq: seq));
+    return RefreshAccepted(payload);
+  }
 }
 
 /// A refresh that accepts a payload: it writes the copy and hands the payload

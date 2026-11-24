@@ -93,6 +93,24 @@ String? copyReasonText(AppLocalizations l10n, CopyState copy) => switch (copy) {
         _withLastChecked(l10n, _cannotCheckText(l10n, cause), since),
     };
 
+/// What the last check came back with **when it brought no copy** — `null` when
+/// it brought one, or when no check is on record.
+///
+/// The words are [copyReasonText]'s for the same record, so a failed refresh
+/// reads the same whether it is reported as it happens or later in the copy
+/// row. That row cannot carry it on its own: it speaks only once the copy is
+/// overdue, and not at all while this device cannot confirm its own clock.
+String? lastCheckMissedText(AppLocalizations l10n, DiagnosticsState diagnostics) =>
+    switch (diagnostics) {
+      DiagnosticsHeld(
+        diagnostics: FetchDiagnostics(lastError: final FetchFailureClass error, :final lastSuccess),
+      ) =>
+        _withLastChecked(l10n, _failureText(l10n, error), lastSuccess?.at),
+      DiagnosticsHeld(diagnostics: FetchDiagnostics(foundNoPublication: true, :final lastAttemptAt)) =>
+        l10n.copyReasonHostServingNothing(formatInstant(l10n, lastAttemptAt)),
+      DiagnosticsHeld() || DiagnosticsAbsent() || DiagnosticsUnreadable() => null,
+    };
+
 /// Appends the last successful check, when there was one.
 ///
 /// [since] is `null` on a phone that has attempted under this pairing and never
@@ -110,11 +128,13 @@ String _cannotCheckText(AppLocalizations l10n, CannotCheckCause cause) => switch
       // The sentence carries none of the stored bytes and names no path: this is
       // the owner's screen, and `RecordsUnusable.reason` is `debugLog`'s.
       RecordsUnusable() => l10n.copyReasonRecordsUnusable,
-      FetchFailed(:final errorClass) => switch (errorClass) {
-          FetchFailureClass.offline => l10n.copyReasonOffline,
-          FetchFailureClass.hostUnreachable => l10n.copyReasonHostUnreachable,
-          FetchFailureClass.credentialRejected => l10n.copyReasonCredentialRejected,
-          FetchFailureClass.transportError => l10n.copyReasonTransportError,
-          FetchFailureClass.unknownFailure => l10n.copyReasonUnknownFailure,
-        },
+      FetchFailed(:final errorClass) => _failureText(l10n, errorClass),
+    };
+
+String _failureText(AppLocalizations l10n, FetchFailureClass error) => switch (error) {
+      FetchFailureClass.offline => l10n.copyReasonOffline,
+      FetchFailureClass.hostUnreachable => l10n.copyReasonHostUnreachable,
+      FetchFailureClass.credentialRejected => l10n.copyReasonCredentialRejected,
+      FetchFailureClass.transportError => l10n.copyReasonTransportError,
+      FetchFailureClass.unknownFailure => l10n.copyReasonUnknownFailure,
     };
