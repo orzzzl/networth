@@ -12,6 +12,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
+from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
 
@@ -435,8 +436,17 @@ class FullSync:
                 failures.append(failure)
                 continue
 
-            source_as_of, source_clock = self._holdings_clock(account_holdings, item)
             total = totals[0]
+            # The value is the account total, so the holdings' clocks may date it
+            # only when it is their value. A total the institution has not
+            # refreshed since the holdings were priced is an old number, and under
+            # their date it would read as a fresh one. Such a total has no clock of
+            # its own: this reply's balances are cached, like `/accounts/get`'s.
+            source_as_of, source_clock = (
+                self._holdings_clock(account_holdings, item)
+                if _adds_up(total, account_holdings)
+                else (None, UNKNOWN)
+            )
             plans.append(
                 _Plan(
                     draft=ObservationDraft(
@@ -462,6 +472,7 @@ class FullSync:
         holdings: list[HoldingRecord],
         item: ItemHealth,
     ) -> tuple[datetime | None, str]:
+        # Only for a total `_adds_up` has accepted as these holdings' value.
         if not holdings or item.investments_last_successful_update is None:
             return None, UNKNOWN
 
@@ -551,6 +562,20 @@ class FullSync:
                 carried_forward=True,
             ),
         )
+
+
+def _adds_up(total: BalanceRecord, holdings: list[HoldingRecord]) -> bool:
+    """Whether the account total is the value of these holdings, to rounding.
+
+    Each figure — the total and every holding's value — may be rounded by up to
+    half a minor unit, so their sum may miss the total by that much per figure.
+    Measured against Production on 2026-11-23: the accounts whose holdings are
+    their total miss it by under a third of that allowance, and the one whose
+    total had not been refreshed missed it by almost six percent.
+    """
+    per_unit = to_minor_units(Decimal(1), currency=total.currency)
+    missed = abs(sum((h.institution_value for h in holdings), Decimal(0)) - total.current)
+    return missed * per_unit * 2 <= len(holdings) + 1
 
 
 __all__ = [
