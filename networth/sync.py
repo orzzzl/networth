@@ -525,10 +525,10 @@ class FullSync:
 
         Measured against Production on 2026-11-24: a total that stays at the
         previous close until its institution posts overnight equals that
-        account's holdings revalued at Plaid's close prices for that session, to
-        well under a minor unit, while the holdings themselves are priced later
-        in the day. So a total that adds up to the holdings at one session's
-        close prices confirms their quantities and cash, and they are the value.
+        account's holdings revalued at Plaid's close prices for that session,
+        within 0.00005% of it, while the holdings themselves are priced later in
+        the day. So a total that adds up to the holdings at one session's close
+        prices confirms their quantities and cash, and they are the value.
 
         The two sides do not advance together: Plaid moved its close prices
         hours after that session closed, while the total waited for the posting.

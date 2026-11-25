@@ -2302,9 +2302,10 @@ Otherwise the value is their sum when they list the account's cash (Plaid type
 **And their sum is the value only while the total confirms it** *(2026-11-24,
 the owner: "那我买卖了股票怎么保证数据是对的呢")*. The total that lags is not
 stale noise: measured that day, it equalled the holdings revalued at Plaid's own
-per-security `close_price` for the previous session, plus the cash, to well under
-a cent. Every sync that values an account from its holdings therefore checks the
-total against them and records the verdict (`holdings_check`, one row per run):
+per-security `close_price` for the previous session, plus the cash, within
+0.00005% of it. Every sync that values an account from its holdings therefore
+checks the total against them and records the verdict (`holdings_check`, one row
+per run):
 
 - **confirmed** — the holdings at one session's close prices (all one session,
   one the calendar says had closed by the fetch) add up to the total, to the same
