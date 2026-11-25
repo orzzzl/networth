@@ -105,8 +105,7 @@ _MESSAGES = {
         "have vested since then, its value is out of date until you confirm the new count."
     ),
     AlertKind.HOLDINGS_UNCONFIRMED: (
-        "An account is being checked against its institution's own figure — "
-        "nothing for you to do."
+        "An account is being checked against its institution's own figure — nothing for you to do."
     ),
 }
 

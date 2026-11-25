@@ -562,9 +562,7 @@ class FullSync:
             total_minor=total_minor,
             close_session=close_session,
             at_close_minor=(
-                None
-                if at_close is None
-                else to_minor_units(at_close[1], currency=total.currency)
+                None if at_close is None else to_minor_units(at_close[1], currency=total.currency)
             ),
             outcome=outcome,
             session=session,

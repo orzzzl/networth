@@ -5,13 +5,15 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from networth.model import (
     AggregateSourceClock,
+    HoldingsCheck,
+    HoldingsCheckOutcome,
     Observation,
     ObservationDraft,
     ObservationSource,
@@ -24,6 +26,7 @@ from networth.model import (
 )
 from networth.storage import migrate
 from networth.store import (
+    HoldingsCheckRepository,
     ItemRepository,
     ObservationConflictError,
     ObservationRepository,
@@ -465,7 +468,13 @@ def test_every_repository_requires_foreign_keys_on_each_callers_connection(
     try:
         connection.execute("BEGIN IMMEDIATE")
 
-        for repository in (Store, ItemRepository, ObservationRepository, SnapshotRepository):
+        for repository in (
+            Store,
+            HoldingsCheckRepository,
+            ItemRepository,
+            ObservationRepository,
+            SnapshotRepository,
+        ):
             with pytest.raises(StoreConfigurationError, match="PRAGMA foreign_keys"):
                 repository(connection)
 
@@ -491,8 +500,101 @@ def test_store_leaves_transaction_commit_and_rollback_to_its_caller(
 
 
 def test_append_only_repositories_offer_no_mutation_or_number_only_api(store: Store) -> None:
-    for repository in (store.observations, store.snapshots):
+    for repository in (store.observations, store.snapshots, store.holdings_checks):
         assert not hasattr(repository, "update")
         assert not hasattr(repository, "delete")
         assert not hasattr(repository, "value")
         assert not hasattr(repository, "total")
+
+
+def holdings_check(
+    run_id: str,
+    account_id: int,
+    *,
+    checked_at: datetime = NOW,
+    outcome: HoldingsCheckOutcome = HoldingsCheckOutcome.CONFIRMED,
+    total_minor: int = 100_000,
+) -> HoldingsCheck:
+    session = None if outcome is HoldingsCheckOutcome.UNCONFIRMED else date(2026, 1, 14)
+    return HoldingsCheck(
+        sync_run_id=run_id,
+        account_id=account_id,
+        checked_at=checked_at,
+        total_minor=total_minor,
+        close_session=date(2026, 1, 14),
+        at_close_minor=100_000,
+        outcome=outcome,
+        session=session,
+    )
+
+
+def test_holdings_checks_round_trip_and_the_latest_is_the_newest_check(
+    db: sqlite3.Connection, store: Store
+) -> None:
+    account_id = add_account(db, "Synthetic holdings account")
+    add_sync_run(db, "run-early")
+    add_sync_run(db, "run-late")
+    early = holdings_check("run-early", account_id)
+    late = holdings_check(
+        "run-late",
+        account_id,
+        checked_at=NOW + timedelta(hours=4),
+        outcome=HoldingsCheckOutcome.UNCONFIRMED,
+        total_minor=90_000,
+    )
+    store.holdings_checks.append(late)
+    store.holdings_checks.append(early)
+
+    assert store.holdings_checks.for_sync_run("run-early", account_id) == early
+    assert store.holdings_checks.for_sync_run("run-late", account_id) == late
+    assert store.holdings_checks.latest_for_account(account_id) == late
+    assert store.holdings_checks.for_sync_run("run-early", account_id + 1) is None
+    assert store.holdings_checks.latest_for_account(account_id + 1) is None
+
+
+@pytest.mark.parametrize(
+    ("outcome", "session", "close_session", "at_close"),
+    [
+        ("UNCONFIRMED", "2026-01-14", "2026-01-14", 100_000),
+        ("CONFIRMED", None, "2026-01-14", 100_000),
+        ("CONFIRMED", "2026-01-13", "2026-01-14", 100_000),
+        ("UNCHANGED", "2026-01-13", "2026-01-14", None),
+        ("MATCHED", "2026-01-14", "2026-01-14", 100_000),
+    ],
+    ids=[
+        "a session for an unconfirmed total",
+        "no session for a confirmed one",
+        "a confirmed session its close prices did not name",
+        "close prices that valued nothing",
+        "an outcome outside the vocabulary",
+    ],
+)
+def test_the_holdings_check_table_refuses_what_the_record_refuses(
+    db: sqlite3.Connection,
+    outcome: str,
+    session: str | None,
+    close_session: str | None,
+    at_close: int | None,
+) -> None:
+    account_id = add_account(db, "Synthetic holdings account")
+    add_sync_run(db, "run-raw")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute(
+            """
+            INSERT INTO holdings_check(
+                sync_run_id, account_id, checked_at, total_minor,
+                close_session, at_close_minor, outcome, session
+            ) VALUES ('run-raw', ?, ?, 100000, ?, ?, ?, ?)
+            """,
+            (account_id, NOW.isoformat(), close_session, at_close, outcome, session),
+        )
+
+
+def test_one_run_checks_an_account_once(db: sqlite3.Connection, store: Store) -> None:
+    account_id = add_account(db, "Synthetic holdings account")
+    add_sync_run(db, "run-once")
+    store.holdings_checks.append(holdings_check("run-once", account_id))
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.holdings_checks.append(holdings_check("run-once", account_id))
