@@ -104,6 +104,10 @@ _MESSAGES = {
         "This account's share count has not been confirmed since you set it. If shares "
         "have vested since then, its value is out of date until you confirm the new count."
     ),
+    AlertKind.HOLDINGS_UNCONFIRMED: (
+        "An account is being checked against its institution's own figure — "
+        "nothing for you to do."
+    ),
 }
 
 
@@ -154,6 +158,11 @@ class AccountSignal:
     ``freshness``, ``None`` is not evidence about the count — see that class for
     the difference between not looking and looking at nothing.
 
+    ``holdings_unconfirmed`` is whether the account's latest fresh read was
+    valued by its institution's total because nothing confirmed its holdings,
+    and ``None`` when the caller has no such read — a value carried forward
+    says nothing new about either.
+
     **The observation carries the clock and not the holding on purpose.**
     Passing the :class:`~networth.model.manual.EquityHolding` would hand this
     module a symbol and a quantity it has no use for, and the messages composed
@@ -169,6 +178,7 @@ class AccountSignal:
     is_pending_reconciliation: bool
     freshness: FreshnessAssessment | None = None
     share_count: ShareCountObservation | None = None
+    holdings_unconfirmed: bool | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.account_id, int) or isinstance(self.account_id, bool):
@@ -181,6 +191,10 @@ class AccountSignal:
             raise TypeError("freshness must be a FreshnessAssessment or None")
         if self.share_count is not None and not isinstance(self.share_count, ShareCountObservation):
             raise TypeError("share_count must be a ShareCountObservation or None")
+        if self.holdings_unconfirmed is not None and not isinstance(
+            self.holdings_unconfirmed, bool
+        ):
+            raise TypeError("holdings_unconfirmed must be a bool or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +298,7 @@ class AlertEvaluator:
             self._evaluate_frozen(account, existing_by_kind, at, raised, resolved)
             self._evaluate_reconciliation(account, existing_by_kind, at, raised, resolved)
             self._evaluate_share_count(account, existing_by_kind, at, raised, resolved)
+            self._evaluate_holdings(account, existing_by_kind, at, raised, resolved)
 
         return AlertEvaluation(raised=tuple(raised), resolved=tuple(resolved))
 
@@ -471,6 +486,32 @@ class AlertEvaluator:
                     )
                 )
             )
+
+    def _evaluate_holdings(
+        self,
+        account: AccountSignal,
+        existing_by_kind: dict[AlertKind, Alert],
+        at: datetime,
+        raised: list[Alert],
+        resolved: list[Alert],
+    ) -> None:
+        unconfirmed = account.holdings_unconfirmed
+        if unconfirmed is None:
+            return
+        open_alert = existing_by_kind.get(AlertKind.HOLDINGS_UNCONFIRMED)
+        if unconfirmed and open_alert is None:
+            raised.append(
+                self._alerts.raise_alert(
+                    AlertDraft(
+                        kind=AlertKind.HOLDINGS_UNCONFIRMED,
+                        created_at=at,
+                        message=_MESSAGES[AlertKind.HOLDINGS_UNCONFIRMED],
+                        account_id=account.account_id,
+                    )
+                )
+            )
+        elif not unconfirmed and open_alert is not None:
+            resolved.append(self._alerts.resolve(open_alert.id, at=at))
 
     @staticmethod
     def _may_prompt(alert: Alert, at: datetime) -> bool:

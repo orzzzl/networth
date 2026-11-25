@@ -34,6 +34,14 @@ and a manual account has no Item at all; because section 12 says a manual
 quantity is **never marked stale**; and because the two conditions ask the
 owner for different things.  The name says *unconfirmed* rather than *stale*
 for the same reason.
+
+``HOLDINGS_UNCONFIRMED`` is the sixth, and the second section 11 does not list.
+An account is valued from its holdings only while its institution's own total
+confirms them (:mod:`networth.sync`); while it does not, the account is valued by
+that total instead, and the phone says the account is being checked.  It is not
+frozen data, because the institution is answering, and it asks nothing of the
+owner.  It resolves on a state, as pending reconciliation does: the next read
+that is not unconfirmed ends it.
 """
 
 from __future__ import annotations
@@ -47,13 +55,14 @@ from networth.model.item import ItemState
 
 
 class AlertKind(StrEnum):
-    """The five kinds, and the only five this schema's vocabulary admits."""
+    """The six kinds, and the only six this schema's vocabulary admits."""
 
     NEEDS_REAUTH = "NEEDS_REAUTH"
     REVOKED = "REVOKED"
     FROZEN_DATA = "FROZEN_DATA"
     PENDING_RECONCILIATION = "PENDING_RECONCILIATION"
     SHARE_COUNT_UNCONFIRMED = "SHARE_COUNT_UNCONFIRMED"
+    HOLDINGS_UNCONFIRMED = "HOLDINGS_UNCONFIRMED"
 
     @property
     def is_item_scoped(self) -> bool:

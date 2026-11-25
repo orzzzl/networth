@@ -8,6 +8,7 @@ from networth.model.figure import (
     SnapshotAgeState,
     SourcedFigure,
 )
+from networth.model.holdings_check import HoldingsCheck, HoldingsCheckOutcome
 from networth.model.item import ItemHealth, ItemHealthUpdate, ItemState
 from networth.model.manual import (
     MANUAL_VALUED_AS_OF,
@@ -44,6 +45,8 @@ __all__ = [
     "FreshnessAssessment",
     "FreshnessPolicy",
     "FreshnessState",
+    "HoldingsCheck",
+    "HoldingsCheckOutcome",
     "ItemHealth",
     "ItemHealthUpdate",
     "ItemState",
