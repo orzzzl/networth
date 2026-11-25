@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -211,21 +212,43 @@ def holding(
     )
 
 
-def _sdk_security(kind: str) -> dict[str, Any]:
+@dataclass(frozen=True)
+class Position:
+    """One holding of a synthetic reply, and what Plaid says its security closed at.
+
+    The holding is valued at ``quantity`` × ``price``, the institution's price;
+    ``close`` is the security's ``close_price`` for the session ``close_as_of``,
+    which a total a session behind its holdings is made of.
+    """
+
+    kind: str
+    quantity: str
+    price: str
+    close: str | None = None
+    close_as_of: date | None = None
+
+
+def cash(amount: str) -> Position:
+    return Position("cash", amount, "1", "1", None)
+
+
+def _sdk_security(index: int, position: Position) -> dict[str, Any]:
     return {
-        "security_id": f"security-{kind}",
+        "security_id": f"security-{index}",
         "isin": None,
         "cusip": None,
         "sedol": None,
         "institution_security_id": None,
         "institution_id": None,
         "proxy_security_id": None,
-        "name": f"Synthetic {kind}",
-        "ticker_symbol": "CUR:USD" if kind == "cash" else "SYN",
-        "is_cash_equivalent": kind == "cash",
-        "type": kind,
-        "close_price": 1.0 if kind == "cash" else 10.0,
-        "close_price_as_of": None,
+        "name": f"Synthetic {position.kind} {index}",
+        "ticker_symbol": "CUR:USD" if position.kind == "cash" else f"SYN{index}",
+        "is_cash_equivalent": position.kind == "cash",
+        "type": position.kind,
+        "close_price": None if position.close is None else float(position.close),
+        "close_price_as_of": (
+            None if position.close_as_of is None else position.close_as_of.isoformat()
+        ),
         "iso_currency_code": "USD",
         "unofficial_currency_code": None,
         "market_identifier_code": None,
@@ -238,14 +261,38 @@ def _sdk_security(kind: str) -> dict[str, Any]:
     }
 
 
-def sdk_holdings_client(total: str, holdings: tuple[tuple[str, str], ...]) -> PlaidClient:
+def sdk_holdings_client(
+    total: str,
+    holdings: tuple[tuple[str, ...], ...],
+    *,
+    close_as_of: date | None = None,
+) -> PlaidClient:
     """The real reader, given one account's holdings reply as plaid-python builds it.
 
-    ``holdings`` is ``(security type, value)`` pairs, each priced at the close of
-    OLDER_SOURCE's day. A hand-built record cannot show what the reader makes of
-    a reply, and a stand-in object cannot show what the SDK does to one: its
-    holdings accounts refuse their own ``balances`` (test_plaid_client).
+    ``holdings`` is ``(security type, value[, close price])``, each priced at 10
+    (cash at 1) at the close of OLDER_SOURCE's day; the close price, when given,
+    is Plaid's for the session ``close_as_of``. A hand-built record cannot show
+    what the reader makes of a reply, and a stand-in object cannot show what the
+    SDK does to one: its holdings accounts refuse their own ``balances``
+    (test_plaid_client).
     """
+    positions = tuple(
+        cash(spec[1])
+        if spec[0] == "cash"
+        else Position(
+            spec[0],
+            str(Decimal(spec[1]) / 10),
+            "10",
+            spec[2] if len(spec) > 2 else None,
+            close_as_of if len(spec) > 2 else None,
+        )
+        for spec in holdings
+    )
+    return sdk_client(total, positions, priced_on=date(2026, 1, 13))
+
+
+def sdk_client(total: str, positions: tuple[Position, ...], *, priced_on: date) -> PlaidClient:
+    """The real reader over a reply the SDK built: one account, its holdings priced ``priced_on``."""
     body = {
         "accounts": [
             {
@@ -269,18 +316,18 @@ def sdk_holdings_client(total: str, holdings: tuple[tuple[str, str], ...]) -> Pl
             {
                 "account_id": "account-portfolio",
                 "cost_basis": None,
-                "institution_price": 1.0 if kind == "cash" else 10.0,
-                "institution_price_as_of": "2026-01-13",
+                "institution_price": float(position.price),
+                "institution_price_as_of": priced_on.isoformat(),
                 "institution_price_datetime": None,
-                "institution_value": float(value),
+                "institution_value": float(Decimal(position.quantity) * Decimal(position.price)),
                 "iso_currency_code": "USD",
-                "quantity": float(value) if kind == "cash" else float(value) / 10,
-                "security_id": f"security-{kind}",
+                "quantity": float(position.quantity),
+                "security_id": f"security-{index}",
                 "unofficial_currency_code": None,
             }
-            for kind, value in holdings
+            for index, position in enumerate(positions)
         ],
-        "securities": [_sdk_security(kind) for kind in sorted({kind for kind, _ in holdings})],
+        "securities": [_sdk_security(index, position) for index, position in enumerate(positions)],
         "item": {
             "available_products": ["balance"],
             "billed_products": ["investments"],
@@ -460,9 +507,15 @@ def test_missing_holding_clock_or_item_clock_is_unknown_not_inferred(
     [
         pytest.param(
             "1000.00",
-            (("etf", "700.00"), ("etf", "360.00"), ("cash", "0")),
+            (("etf", "700.00", "9.40"), ("etf", "360.00", "9.50"), ("cash", "0")),
             SourcedFigure(106_000, "USD", OLDER_SOURCE, HOLDING_PRICE_AS_OF),
             id="a total behind holdings that list the cash, even at zero, is their value",
+        ),
+        pytest.param(
+            "1000.00",
+            (("etf", "700.00"), ("etf", "360.00"), ("cash", "0")),
+            SourcedFigure(100_000, "USD", None, UNKNOWN),
+            id="unless nothing shows the total is those holdings a session ago",
         ),
         pytest.param(
             "1000.00",
@@ -499,7 +552,7 @@ def test_missing_holding_clock_or_item_clock_is_unknown_not_inferred(
 def test_a_holdings_account_is_valued_by_what_its_clock_dates(
     db: sqlite3.Connection,
     total: str,
-    holdings: tuple[tuple[str, str], ...],
+    holdings: tuple[tuple[str, ...], ...],
     expected: SourcedFigure,
 ) -> None:
     """The figure and its clock describe the same data (owner's report, 2026-11-23).
@@ -507,7 +560,9 @@ def test_a_holdings_account_is_valued_by_what_its_clock_dates(
     The total came from the reply's balance, which Plaid may cache, and the
     clock from the holdings' prices: a figure a session old, dated today. Each
     reply is read by the real reader from what the SDK built, and every row
-    the fix did not mean to move is pinned beside the two it did.
+    the fix did not mean to move is pinned beside the two it did. The first
+    row's total is its holdings at the previous session's close prices, which
+    is what lets them be its value (the check below).
     """
     item_id = add_item(db, "portfolio")
     add_account(db, item_id, "portfolio", policy=FreshnessPolicy.SYNCED_HOLDINGS)
@@ -515,7 +570,7 @@ def test_a_holdings_account_is_valued_by_what_its_clock_dates(
     db.commit()
     sync = FullSync(
         Store(db),
-        sdk_holdings_client(total, holdings),
+        sdk_holdings_client(total, holdings, close_as_of=date(2026, 1, 12)),
         FakeTokens(),
         balance_mode=BalanceMode.CACHED,
     )

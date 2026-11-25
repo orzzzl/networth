@@ -40,12 +40,13 @@
 -- created, for a vocabulary the only writer already validates, buys less than
 -- it risks.  Task 27 is what that choice bought: it added
 -- SHARE_COUNT_UNCONFIRMED with no migration at all, so the count is five and
--- not the four this comment was first written against.  What guards against a
--- careless sixth is therefore a test and not the schema:
+-- not the four this comment was first written against.  The holdings check
+-- added HOLDINGS_UNCONFIRMED the same way, which makes six.  What guards
+-- against a careless seventh is therefore a test and not the schema:
 --
---     test_there_are_exactly_five_kinds_and_publication_overdue_is_not_one
+--     test_there_are_exactly_six_kinds_and_publication_overdue_is_not_one
 --
--- That is the cost side of the same choice, and worth knowing before a seventh
+-- That is the cost side of the same choice, and worth knowing before an eighth
 -- is proposed.
 --
 -- Whether *publication overdue* may ever be stored, for `doctor`'s benefit

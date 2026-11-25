@@ -207,7 +207,7 @@ def manual_unread() -> AccountSignal:
 # --------------------------------------------------------------------------
 
 
-def test_there_are_exactly_five_kinds_and_publication_overdue_is_not_one() -> None:
+def test_there_are_exactly_six_kinds_and_publication_overdue_is_not_one() -> None:
     """Acceptance: *publication overdue* must not be added here and called delivered.
 
     It reports the failure of the very channel it would travel over, so a row
@@ -219,7 +219,8 @@ def test_there_are_exactly_five_kinds_and_publication_overdue_is_not_one() -> No
     assertion and its reason has not changed.  The first exists so that adding a
     kind is a decision someone argues for — as task 27 did, in
     :mod:`networth.model.alert` and in its PR — instead of a one-line diff that
-    widens the vocabulary on the way past.
+    widens the vocabulary on the way past.  The holdings check made it six, with
+    its argument in the same two places and in DESIGN section 11.
     """
 
     assert {kind.value for kind in AlertKind} == {
@@ -228,6 +229,7 @@ def test_there_are_exactly_five_kinds_and_publication_overdue_is_not_one() -> No
         "FROZEN_DATA",
         "PENDING_RECONCILIATION",
         "SHARE_COUNT_UNCONFIRMED",
+        "HOLDINGS_UNCONFIRMED",
     }
     assert not any("PUBLICATION" in kind.value for kind in AlertKind)
 
@@ -1041,7 +1043,7 @@ def test_the_whole_account_side_input_surface_is_declared_here() -> None:
     know a quantity from an id by type — both are ``int`` — which is why this is
     an allow-list of names rather than a hunt for suspicious ones.  Its whole
     force is that admitting a new input is a decision someone argues for, in the
-    way that the exactly-five-kinds test above makes adding a kind a decision.
+    way that the exactly-six-kinds test above makes adding a kind a decision.
     """
 
     assert _declared(AlertEvaluator.__init__) == {
@@ -1059,6 +1061,9 @@ def test_the_whole_account_side_input_surface_is_declared_here() -> None:
         "is_pending_reconciliation": "bool",
         "freshness": "FreshnessAssessment | None",
         "share_count": "ShareCountObservation | None",
+        # A verdict the sync already reached, and only that: whether the read
+        # was valued by the institution's total.  No figure travels with it.
+        "holdings_unconfirmed": "bool | None",
     }
     assert _declared_fields(ShareCountObservation) == {"confirmed_on": "datetime | None"}
 
