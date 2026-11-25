@@ -35,13 +35,13 @@ quantity is **never marked stale**; and because the two conditions ask the
 owner for different things.  The name says *unconfirmed* rather than *stale*
 for the same reason.
 
-``HOLDINGS_UNCONFIRMED`` is the sixth, and the second section 11 does not list.
-An account is valued from its holdings only while its institution's own total
-confirms them (:mod:`networth.sync`); while it does not, the account is valued by
-that total instead, and the phone says the account is being checked.  It is not
-frozen data, because the institution is answering, and it asks nothing of the
-owner.  It resolves on a state, as pending reconciliation does: the next read
-that is not unconfirmed ends it.
+``HOLDINGS_UNCONFIRMED`` is the sixth, and section 11 records it.  An account
+is valued from its holdings only while its institution's own total confirms them
+(:mod:`networth.sync`); while it does not, the account is valued by that total
+instead, and the phone says the account is being checked.  It is not frozen
+data, because the institution is answering, and it asks nothing of the owner.
+It resolves on a state, as pending reconciliation does: the next fresh read the
+check does not leave unconfirmed ends it.
 """
 
 from __future__ import annotations

@@ -2299,6 +2299,27 @@ day — so it keeps their clock only while they add up to it, to rounding.
 Otherwise the value is their sum when they list the account's cash (Plaid type
 `cash`), and the total, `UNKNOWN`, when they do not.
 
+**And their sum is the value only while the total confirms it** *(2026-11-24,
+the owner: "那我买卖了股票怎么保证数据是对的呢")*. The total that lags is not
+stale noise: measured that day, it equalled the holdings revalued at Plaid's own
+per-security `close_price` for the previous session, plus the cash, to well under
+a cent. Every sync that values an account from its holdings therefore checks the
+total against them and records the verdict (`holdings_check`, one row per run):
+
+- **confirmed** — the holdings at one session's close prices (all one session,
+  one the calendar says had closed by the fetch) add up to the total, to the same
+  rounding;
+- **unchanged** — the total is the figure an earlier check confirmed, so it
+  still describes that session. Plaid moves its close prices hours before the
+  institution posts its next total, and a trade moves value between shares and
+  cash before either does;
+- **unconfirmed** — anything else: margin debt the holdings omit, a transfer one
+  side has not seen yet, a reader defect. The account is valued by the total,
+  `UNKNOWN`, because nothing establishes which session it describes, and an
+  account-scoped `HOLDINGS_UNCONFIRMED` alert (§11) says it is being checked.
+  An unconfirmed total confirms nothing later, so a mismatch that persists stays
+  on the total; the next confirmed pair ends it.
+
 Market-close awareness stays where it belongs — on this axis. Plaid updates
 investments after close on market days, so a Friday-close value is legitimately
 ~63h old on Monday morning and must **not** alarm. A naive 24h rule would scream
@@ -3184,7 +3205,7 @@ surface for alerts, it is the **only** one, and two rules follow directly:
 
 | Channel | Used for | Mechanism |
 |---|---|---|
-| **In-app, in the payload** | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **accounts pending reconciliation**, **an unconfirmed share count** | `alert` rows on the host, serialized into the payload; persistent until resolved |
+| **In-app, in the payload** | `NEEDS_REAUTH`, `REVOKED`, **frozen data**, **accounts pending reconciliation**, **an unconfirmed share count**, **holdings their institution's total does not confirm** | `alert` rows on the host, serialized into the payload; persistent until resolved |
 | **In-app, phone-local** | **rejected downgrade / foreign `pairing_id`** (§9.3) | the phone's own observation; persistent until a newer `seq` arrives — **never reaches the host** |
 | **Local notification on the phone** | the same in-app alerts, when the app evaluates a newly-fetched payload in the background | Android local notification. Best-effort: it is a *prompt to open the app*, never the alert itself |
 
@@ -3209,6 +3230,14 @@ the table above named five things, the stored vocabulary names five kinds, and
 until this revision **they were not the same five**. A registry that keeps
 serving an entry after the thing it describes has changed is this project's
 founding failure, and it does not get an exemption for its own design document.
+
+**Then five became six** *(2026-11-24)*: `HOLDINGS_UNCONFIRMED`, an account valued
+by its institution's total because that total did not confirm its holdings
+(§8.1). It asks nothing of the owner and says so, and it resolves on a state, the
+next fresh read the check does not leave unconfirmed. A value carried forward
+says nothing new and resolves nothing. An installed app that predates the kind
+renders the host's own sentence for it, which is the unknown-kind path the
+phone keeps for exactly this.
 
 Three of the five deserve a note, because they are the ones a naive build would
 not have:
@@ -5654,6 +5683,14 @@ rotate)
   than written as an instruction with no executor, on the same reasoning this
   section already applies to its five corrected steps: a caveat that lands only
   in a preamble is not read by whoever is halfway through the procedure.
+- **`HOLDINGS_UNCONFIRMED`** ("an account is being checked against its
+  institution's own figure") → nothing for you to do. An account valued from its
+  holdings is, for now, valued by its institution's own total instead, because
+  that total did not confirm the holdings (§8.1), and the headline cannot be
+  dated meanwhile. It clears itself at the next sync the two agree, usually after
+  the institution posts its next day's figure. If it stays for days, the cause is
+  margin debt, a transfer, or a reader defect: something for an agent to look at,
+  not for you.
 - **The app says its copy is old, with the reason "reached the source; nothing
   published since &lt;time&gt;"** → this is `HOST_NOT_PUBLISHING` (§9.1), and on this
   architecture it is the **main way a host-side failure reaches you at all**, so

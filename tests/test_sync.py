@@ -703,6 +703,29 @@ def test_a_total_a_session_behind_is_confirmed_by_that_sessions_close_prices(
     assert open_alerts(db, at=utc(WED, 18)) == set()
 
 
+@pytest.mark.parametrize(
+    ("total", "expected"),
+    [
+        ("1001.18", HoldingsCheckOutcome.CONFIRMED),
+        ("1001.15", HoldingsCheckOutcome.UNCONFIRMED),
+    ],
+    ids=["half a cent, as the institution rounded it", "further than rounding reaches"],
+)
+def test_close_prices_confirm_a_total_to_rounding_and_no_further(
+    db: sqlite3.Connection, brokerage: int, total: str, expected: HoldingsCheckOutcome
+) -> None:
+    """A fractional quantity at its close is 1001.175; each of three figures may round.
+
+    The allowance is the one a total its holdings add up to gets: half a minor
+    unit for the total and for each holding, two cents here.
+    """
+    fractional = two_funds(AT_1042_40, AT_1000, (TUE, TUE), quantities=("70.125", "36"))
+
+    _, check = synced(db, brokerage, total, fractional, at=utc(WED, 18))
+
+    assert outcome(check)[0] is expected
+
+
 def test_close_prices_moving_before_the_total_leave_a_confirmed_total_standing(
     db: sqlite3.Connection, brokerage: int
 ) -> None:
