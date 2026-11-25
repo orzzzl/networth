@@ -91,6 +91,7 @@ List<String> _lines(AppLocalizations l10n, AlertSummary summary) {
     AlertKind.frozenData => [l10n.alertFrozenData(count)],
     AlertKind.pendingReconciliation => [l10n.alertPendingReconciliation(count)],
     AlertKind.shareCountUnconfirmed => [l10n.alertShareCountUnconfirmed(count)],
+    AlertKind.holdingsUnconfirmed => [l10n.alertHoldingsUnconfirmed(count)],
     null => summary.hostMessages,
   };
 }
@@ -105,5 +106,6 @@ IconData _icon(AlertKind? kind) => switch (kind) {
       AlertKind.frozenData => Icons.ac_unit,
       AlertKind.pendingReconciliation => Icons.merge_type,
       AlertKind.shareCountUnconfirmed => Icons.pin_outlined,
+      AlertKind.holdingsUnconfirmed => Icons.fact_check_outlined,
       null => Icons.info_outline,
     };

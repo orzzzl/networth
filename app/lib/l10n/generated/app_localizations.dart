@@ -232,6 +232,12 @@ abstract class AppLocalizations {
   /// **'{count, plural, one{A share count hasn\'t been confirmed since you set it, so its value may be out of date.} other{{count} share counts haven\'t been confirmed since you set them, so their values may be out of date.}}'**
   String alertShareCountUnconfirmed(int count);
 
+  /// AlertKind.HOLDINGS_UNCONFIRMED (§8.1, §11): an account valued by its institution's own total because that total did not confirm its holdings. The one kind that asks nothing of the owner, which is why it says so: it sits under the 'Action needed' label with the others. The singular is the host's own sentence word for word, so an app that predates the kind (which shows the host's sentence) and one that knows it say the same thing.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{An account is being checked against its institution\'s own figure — nothing for you to do.} other{{count} accounts are being checked against their institutions\' own figures — nothing for you to do.}}'**
+  String alertHoldingsUnconfirmed(int count);
+
   /// Row label for the copy dimension: how old THIS PHONE's copy of the snapshot is, as opposed to how old the data behind it is.
   ///
   /// In en, this message translates to:

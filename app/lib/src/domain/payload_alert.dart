@@ -15,7 +15,8 @@ enum AlertKind {
   revoked('REVOKED'),
   frozenData('FROZEN_DATA'),
   pendingReconciliation('PENDING_RECONCILIATION'),
-  shareCountUnconfirmed('SHARE_COUNT_UNCONFIRMED');
+  shareCountUnconfirmed('SHARE_COUNT_UNCONFIRMED'),
+  holdingsUnconfirmed('HOLDINGS_UNCONFIRMED');
 
   const AlertKind(this.wire);
 
@@ -214,7 +215,7 @@ final class AlertSummary {
   /// The host's sentences for this kind, de-duplicated, in first-seen order.
   ///
   /// Empty is never correct — an alert always carries a message — but this is
-  /// read only when [kind] is `null`, so for the five known kinds it is carried
+  /// read only when [kind] is `null`, so for the known kinds it is carried
   /// and unused.
   final List<String> hostMessages;
 }
@@ -226,7 +227,7 @@ final class AlertSummary {
 /// [AlertSubject.id]) — three re-auth alerts would render as three identical
 /// sentences, which reads as a rendering bug rather than as three accounts.
 ///
-/// Order: the five known kinds in [AlertKind]'s own declaration order, then any
+/// Order: the known kinds in [AlertKind]'s own declaration order, then any
 /// unknown kinds sorted by their wire string. Unknown ones go last because
 /// nothing here can rank them, and they are sorted so that two payloads with the
 /// same content cannot draw two different screens.

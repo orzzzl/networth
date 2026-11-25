@@ -154,6 +154,19 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String alertHoldingsUnconfirmed(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          '$count accounts are being checked against their institutions\' own figures — nothing for you to do.',
+      one:
+          'An account is being checked against its institution\'s own figure — nothing for you to do.',
+    );
+    return '$_temp0';
+  }
+
+  @override
   String get thisCopyLabel => 'This copy';
 
   @override
