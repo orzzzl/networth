@@ -130,6 +130,12 @@
     "placeholders": { "count": { "type": "int" } }
   },
 
+  "alertHoldingsUnconfirmed": "{count, plural, one{An account is being checked against its institution's own figure — nothing for you to do.} other{{count} accounts are being checked against their institutions' own figures — nothing for you to do.}}",
+  "@alertHoldingsUnconfirmed": {
+    "description": "AlertKind.HOLDINGS_UNCONFIRMED (§8.1, §11): an account valued by its institution's own total because that total did not confirm its holdings. The one kind that asks nothing of the owner, which is why it says so: it sits under the 'Action needed' label with the others. The singular is the host's own sentence word for word, so an app that predates the kind (which shows the host's sentence) and one that knows it say the same thing.",
+    "placeholders": { "count": { "type": "int" } }
+  },
+
   "thisCopyLabel": "This copy",
   "@thisCopyLabel": {
     "description": "Row label for the copy dimension: how old THIS PHONE's copy of the snapshot is, as opposed to how old the data behind it is."

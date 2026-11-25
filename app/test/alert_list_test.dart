@@ -65,7 +65,7 @@ void main() {
     );
   });
 
-  testWidgets('each of the five kinds has copy of its own', (tester) async {
+  testWidgets('each kind has copy of its own', (tester) async {
     // The point is not the wording, it is that no two kinds share a sentence.
     // REVOKED and NEEDS_REAUTH are the pair that matters: signing in again does
     // not fix a revoked connection, so a shared line sends the owner to the

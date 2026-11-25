@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -16,14 +17,22 @@ import plaid
 import pytest
 from plaid.model.investments_holdings_get_response import InvestmentsHoldingsGetResponse
 
+from networth.cycle_alerts import CycleAlertEvaluator
 from networth.model import (
+    AlertKind,
     FreshnessPolicy,
+    HoldingsCheck,
+    HoldingsCheckOutcome,
+    Observation,
     ObservationDraft,
     ObservationSource,
+    SnapshotAgeState,
     SourcedFigure,
 )
 from networth.plaid import BalanceRecord, HoldingRecord, InvestmentRecords
 from networth.plaid.client import PlaidClient
+from networth.snapshotter import Snapshotter
+from networth.staleness import UsEquityMarketCalendar
 from networth.storage import migrate
 from networth.store import ObservationConflictError, Store
 from networth.sync import (
@@ -211,21 +220,43 @@ def holding(
     )
 
 
-def _sdk_security(kind: str) -> dict[str, Any]:
+@dataclass(frozen=True)
+class Position:
+    """One holding of a synthetic reply, and what Plaid says its security closed at.
+
+    The holding is valued at ``quantity`` × ``price``, the institution's price;
+    ``close`` is the security's ``close_price`` for the session ``close_as_of``,
+    which a total a session behind its holdings is made of.
+    """
+
+    kind: str
+    quantity: str
+    price: str
+    close: str | None = None
+    close_as_of: date | None = None
+
+
+def cash(amount: str) -> Position:
+    return Position("cash", amount, "1", "1", None)
+
+
+def _sdk_security(index: int, position: Position) -> dict[str, Any]:
     return {
-        "security_id": f"security-{kind}",
+        "security_id": f"security-{index}",
         "isin": None,
         "cusip": None,
         "sedol": None,
         "institution_security_id": None,
         "institution_id": None,
         "proxy_security_id": None,
-        "name": f"Synthetic {kind}",
-        "ticker_symbol": "CUR:USD" if kind == "cash" else "SYN",
-        "is_cash_equivalent": kind == "cash",
-        "type": kind,
-        "close_price": 1.0 if kind == "cash" else 10.0,
-        "close_price_as_of": None,
+        "name": f"Synthetic {position.kind} {index}",
+        "ticker_symbol": "CUR:USD" if position.kind == "cash" else f"SYN{index}",
+        "is_cash_equivalent": position.kind == "cash",
+        "type": position.kind,
+        "close_price": None if position.close is None else float(position.close),
+        "close_price_as_of": (
+            None if position.close_as_of is None else position.close_as_of.isoformat()
+        ),
         "iso_currency_code": "USD",
         "unofficial_currency_code": None,
         "market_identifier_code": None,
@@ -238,14 +269,38 @@ def _sdk_security(kind: str) -> dict[str, Any]:
     }
 
 
-def sdk_holdings_client(total: str, holdings: tuple[tuple[str, str], ...]) -> PlaidClient:
+def sdk_holdings_client(
+    total: str,
+    holdings: tuple[tuple[str, ...], ...],
+    *,
+    close_as_of: date | None = None,
+) -> PlaidClient:
     """The real reader, given one account's holdings reply as plaid-python builds it.
 
-    ``holdings`` is ``(security type, value)`` pairs, each priced at the close of
-    OLDER_SOURCE's day. A hand-built record cannot show what the reader makes of
-    a reply, and a stand-in object cannot show what the SDK does to one: its
-    holdings accounts refuse their own ``balances`` (test_plaid_client).
+    ``holdings`` is ``(security type, value[, close price])``, each priced at 10
+    (cash at 1) at the close of OLDER_SOURCE's day; the close price, when given,
+    is Plaid's for the session ``close_as_of``. A hand-built record cannot show
+    what the reader makes of a reply, and a stand-in object cannot show what the
+    SDK does to one: its holdings accounts refuse their own ``balances``
+    (test_plaid_client).
     """
+    positions = tuple(
+        cash(spec[1])
+        if spec[0] == "cash"
+        else Position(
+            spec[0],
+            str(Decimal(spec[1]) / 10),
+            "10",
+            spec[2] if len(spec) > 2 else None,
+            close_as_of if len(spec) > 2 else None,
+        )
+        for spec in holdings
+    )
+    return sdk_client(total, positions, priced_on=date(2026, 1, 13))
+
+
+def sdk_client(total: str, positions: tuple[Position, ...], *, priced_on: date) -> PlaidClient:
+    """The real reader over a reply the SDK built: one account, holdings priced ``priced_on``."""
     body = {
         "accounts": [
             {
@@ -269,18 +324,18 @@ def sdk_holdings_client(total: str, holdings: tuple[tuple[str, str], ...]) -> Pl
             {
                 "account_id": "account-portfolio",
                 "cost_basis": None,
-                "institution_price": 1.0 if kind == "cash" else 10.0,
-                "institution_price_as_of": "2026-01-13",
+                "institution_price": float(position.price),
+                "institution_price_as_of": priced_on.isoformat(),
                 "institution_price_datetime": None,
-                "institution_value": float(value),
+                "institution_value": float(Decimal(position.quantity) * Decimal(position.price)),
                 "iso_currency_code": "USD",
-                "quantity": float(value) if kind == "cash" else float(value) / 10,
-                "security_id": f"security-{kind}",
+                "quantity": float(position.quantity),
+                "security_id": f"security-{index}",
                 "unofficial_currency_code": None,
             }
-            for kind, value in holdings
+            for index, position in enumerate(positions)
         ],
-        "securities": [_sdk_security(kind) for kind in sorted({kind for kind, _ in holdings})],
+        "securities": [_sdk_security(index, position) for index, position in enumerate(positions)],
         "item": {
             "available_products": ["balance"],
             "billed_products": ["investments"],
@@ -460,9 +515,15 @@ def test_missing_holding_clock_or_item_clock_is_unknown_not_inferred(
     [
         pytest.param(
             "1000.00",
-            (("etf", "700.00"), ("etf", "360.00"), ("cash", "0")),
+            (("etf", "700.00", "9.40"), ("etf", "360.00", "9.50"), ("cash", "0")),
             SourcedFigure(106_000, "USD", OLDER_SOURCE, HOLDING_PRICE_AS_OF),
             id="a total behind holdings that list the cash, even at zero, is their value",
+        ),
+        pytest.param(
+            "1000.00",
+            (("etf", "700.00"), ("etf", "360.00"), ("cash", "0")),
+            SourcedFigure(100_000, "USD", None, UNKNOWN),
+            id="unless nothing shows the total is those holdings a session ago",
         ),
         pytest.param(
             "1000.00",
@@ -499,7 +560,7 @@ def test_missing_holding_clock_or_item_clock_is_unknown_not_inferred(
 def test_a_holdings_account_is_valued_by_what_its_clock_dates(
     db: sqlite3.Connection,
     total: str,
-    holdings: tuple[tuple[str, str], ...],
+    holdings: tuple[tuple[str, ...], ...],
     expected: SourcedFigure,
 ) -> None:
     """The figure and its clock describe the same data (owner's report, 2026-11-23).
@@ -507,7 +568,9 @@ def test_a_holdings_account_is_valued_by_what_its_clock_dates(
     The total came from the reply's balance, which Plaid may cache, and the
     clock from the holdings' prices: a figure a session old, dated today. Each
     reply is read by the real reader from what the SDK built, and every row
-    the fix did not mean to move is pinned beside the two it did.
+    the fix did not mean to move is pinned beside the two it did. The first
+    row's total is its holdings at the previous session's close prices, which
+    is what lets them be its value (the check below).
     """
     item_id = add_item(db, "portfolio")
     add_account(db, item_id, "portfolio", policy=FreshnessPolicy.SYNCED_HOLDINGS)
@@ -515,7 +578,7 @@ def test_a_holdings_account_is_valued_by_what_its_clock_dates(
     db.commit()
     sync = FullSync(
         Store(db),
-        sdk_holdings_client(total, holdings),
+        sdk_holdings_client(total, holdings, close_as_of=date(2026, 1, 12)),
         FakeTokens(),
         balance_mode=BalanceMode.CACHED,
     )
@@ -524,6 +587,320 @@ def test_a_holdings_account_is_valued_by_what_its_clock_dates(
 
     assert result.ok
     assert result.observations[0].figure == expected
+
+
+# --------------------------------------------------------------------------
+# The check: an institution's own total confirms its holdings, or values them
+# --------------------------------------------------------------------------
+
+#: A week of January 2026. Eastern time is UTC-5, so a session closes at
+#: 21:00Z; Monday 19 January is a market holiday.
+TUE, WED, THU, FRI = (date(2026, 1, day) for day in (13, 14, 15, 16))
+SAT, SUN, HOLIDAY, AFTER_HOLIDAY = (date(2026, 1, day) for day in (17, 18, 19, 20))
+
+#: At the default quantities (70 and 36 units) these prices make 1000.00,
+#: 1042.40 and 1060.00.
+AT_1000, AT_1042_40, AT_1060 = ("9.40", "9.50"), ("9.80", "9.90"), ("10", "10")
+
+
+def utc(day: date, hour: int, minute: int = 0) -> datetime:
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=UTC)
+
+
+def refreshed(day: date) -> datetime:
+    """When the Item's holdings were refreshed on ``day``: before the open."""
+    return utc(day, 12, 20)
+
+
+def two_funds(
+    price: tuple[str, str],
+    close: tuple[str, str],
+    close_as_of: tuple[date, date],
+    *,
+    quantities: tuple[str, str] = ("70", "36"),
+    cash_amount: str = "0",
+) -> tuple[Position, ...]:
+    """Two funds, priced by the institution at ``price``, and the account's cash."""
+    return (
+        Position("etf", quantities[0], price[0], close[0], close_as_of[0]),
+        Position("etf", quantities[1], price[1], close[1], close_as_of[1]),
+        cash(cash_amount),
+    )
+
+
+@pytest.fixture
+def brokerage(db: sqlite3.Connection) -> int:
+    item_id = add_item(db, "portfolio", investments_update=refreshed(WED))
+    return add_account(db, item_id, "portfolio", policy=FreshnessPolicy.SYNCED_HOLDINGS)
+
+
+def synced(
+    db: sqlite3.Connection,
+    account_id: int,
+    total: str,
+    positions: tuple[Position, ...],
+    *,
+    at: datetime,
+    priced_on: date = WED,
+) -> tuple[Observation, HoldingsCheck | None]:
+    """One full sync at ``at`` of a reply the SDK built; its observation and its check.
+
+    The Item's investments clock is that morning's refresh of ``priced_on``,
+    which is when an institution whose total lags refreshes its holdings.
+    """
+    db.execute(
+        "UPDATE item SET investments_last_successful_update = ?",
+        (_db_time(refreshed(priced_on)),),
+    )
+    run_id = f"run-{at:%d-%H%M}"
+    add_run(db, run_id, at)
+    db.commit()
+    sync = FullSync(
+        Store(db),
+        sdk_client(total, positions, priced_on=priced_on),
+        FakeTokens(),
+        balance_mode=BalanceMode.CACHED,
+    )
+    result = sync.run(run_id, at=at)
+    db.commit()
+    assert result.ok
+    (observation,) = result.observations
+    return observation, Store(db).holdings_checks.for_sync_run(run_id, account_id)
+
+
+def open_alerts(db: sqlite3.Connection, *, at: datetime) -> set[AlertKind]:
+    db.execute("BEGIN IMMEDIATE")
+    CycleAlertEvaluator(db).evaluate(at=at)
+    db.commit()
+    return {alert.kind for alert in Store(db).alerts.open()}
+
+
+def outcome(check: HoldingsCheck | None) -> tuple[object, ...]:
+    assert check is not None, "an account valued by holdings its total disagrees with is checked"
+    return check.outcome, check.session, check.close_session
+
+
+def test_a_total_a_session_behind_is_confirmed_by_that_sessions_close_prices(
+    db: sqlite3.Connection, brokerage: int
+) -> None:
+    """The shape measured on 2026-11-24: the total is the holdings at the previous close.
+
+    The holdings are priced on Wednesday morning, the total is the figure
+    Tuesday's close made, and Plaid's close prices are Tuesday's. The holdings
+    at those prices, plus the cash, are the total exactly — so the total
+    confirms their quantities and cash, they are the value with their own
+    clock, and the check records the session that confirmed them.
+    """
+    observed, check = synced(
+        db, brokerage, "1000.00", two_funds(AT_1042_40, AT_1000, (TUE, TUE)), at=utc(WED, 18)
+    )
+
+    assert observed.figure == SourcedFigure(
+        104_240, "USD", refreshed(WED), INVESTMENTS_STATUS_UPDATE
+    )
+    assert outcome(check) == (HoldingsCheckOutcome.CONFIRMED, TUE, TUE)
+    assert check is not None and (check.total_minor, check.at_close_minor) == (100_000, 100_000)
+    assert open_alerts(db, at=utc(WED, 18)) == set()
+
+
+@pytest.mark.parametrize(
+    ("total", "expected"),
+    [
+        ("1001.18", HoldingsCheckOutcome.CONFIRMED),
+        ("1001.15", HoldingsCheckOutcome.UNCONFIRMED),
+    ],
+    ids=["half a cent, as the institution rounded it", "further than rounding reaches"],
+)
+def test_close_prices_confirm_a_total_to_rounding_and_no_further(
+    db: sqlite3.Connection, brokerage: int, total: str, expected: HoldingsCheckOutcome
+) -> None:
+    """A fractional quantity at its close is 1001.175; each of three figures may round.
+
+    The allowance is the one a total its holdings add up to gets: half a minor
+    unit for the total and for each holding, two cents here.
+    """
+    fractional = two_funds(AT_1042_40, AT_1000, (TUE, TUE), quantities=("70.125", "36"))
+
+    _, check = synced(db, brokerage, total, fractional, at=utc(WED, 18))
+
+    assert outcome(check)[0] is expected
+
+
+def test_close_prices_moving_before_the_total_leave_a_confirmed_total_standing(
+    db: sqlite3.Connection, brokerage: int
+) -> None:
+    """Measured 2026-11-24: Plaid moved its close prices hours before the total moved.
+
+    Meanwhile the total is still the figure Tuesday's prices confirmed, so it
+    still describes Tuesday — while Plaid has moved one price, and once it has
+    moved both — and the holdings stay the value until a different total arrives.
+    """
+    synced(db, brokerage, "1000.00", two_funds(AT_1042_40, AT_1000, (TUE, TUE)), at=utc(WED, 18))
+
+    one_moved = two_funds(AT_1060, ("10", "9.50"), (WED, TUE))
+    observed, check = synced(db, brokerage, "1000.00", one_moved, at=utc(THU, 0, 35))
+    assert observed.figure.value_minor == 106_000
+    assert outcome(check) == (HoldingsCheckOutcome.UNCHANGED, TUE, None)
+
+    both_moved = two_funds(AT_1060, AT_1060, (WED, WED))
+    observed, check = synced(db, brokerage, "1000.00", both_moved, at=utc(THU, 0, 40))
+    assert observed.figure.value_minor == 106_000
+    assert outcome(check) == (HoldingsCheckOutcome.UNCHANGED, TUE, WED)
+
+    posted = two_funds(AT_1042_40, AT_1060, (WED, WED))
+    observed, check = synced(db, brokerage, "1060.00", posted, at=utc(THU, 18), priced_on=THU)
+    assert observed.figure.value_minor == 104_240
+    assert outcome(check) == (HoldingsCheckOutcome.CONFIRMED, WED, WED)
+    assert open_alerts(db, at=utc(THU, 18)) == set()
+
+
+def test_a_transfer_one_side_has_not_seen_values_the_account_by_its_institutions_total(
+    db: sqlite3.Connection, brokerage: int
+) -> None:
+    """A deposit the holdings list and Wednesday's posted total does not include.
+
+    Nothing establishes which session such a total describes, so it is the
+    value with no clock and the total cannot be dated; the phone is told the
+    account is being checked. A value carried forward says nothing new, and a
+    later pair that agrees ends both.
+    """
+    synced(db, brokerage, "1000.00", two_funds(AT_1042_40, AT_1000, (TUE, TUE)), at=utc(WED, 18))
+    deposited = two_funds(AT_1060, AT_1060, (WED, WED), cash_amount="500")
+
+    observed, check = synced(db, brokerage, "1060.00", deposited, at=utc(THU, 18), priced_on=THU)
+
+    assert observed.figure == SourcedFigure(106_000, "USD", None, UNKNOWN)
+    assert outcome(check) == (HoldingsCheckOutcome.UNCONFIRMED, None, WED)
+    assert check is not None and (check.total_minor, check.at_close_minor) == (106_000, 156_000)
+    db.execute(
+        "UPDATE sync_run SET finished_at = ?, ok = 1 WHERE id = ?",
+        (_db_time(utc(THU, 18)), observed.sync_run_id),
+    )
+    snapshot = Snapshotter(Store(db)).run(observed.sync_run_id, at=utc(THU, 18))
+    db.commit()
+    assert snapshot.age.state is SnapshotAgeState.UNKNOWN
+    assert open_alerts(db, at=utc(THU, 18)) == {AlertKind.HOLDINGS_UNCONFIRMED}
+
+    add_run(db, "run-outage", utc(THU, 22))
+    db.commit()
+    outage = FakeClient(db, investments=RuntimeError("synthetic outage"))
+    sync_for(db, outage, mode=BalanceMode.CACHED).run("run-outage", at=utc(THU, 22))
+    db.commit()
+    assert open_alerts(db, at=utc(THU, 22)) == {AlertKind.HOLDINGS_UNCONFIRMED}
+
+    posted = two_funds(AT_1042_40, AT_1060, (THU, THU), cash_amount="500")
+    observed, check = synced(db, brokerage, "1560.00", posted, at=utc(FRI, 18), priced_on=FRI)
+    assert observed.figure == SourcedFigure(
+        154_240, "USD", refreshed(FRI), INVESTMENTS_STATUS_UPDATE
+    )
+    assert outcome(check) == (HoldingsCheckOutcome.CONFIRMED, THU, THU)
+    assert open_alerts(db, at=utc(FRI, 18)) == set()
+
+
+def test_holdings_that_overstate_the_total_by_margin_debt_never_become_the_value(
+    db: sqlite3.Connection, brokerage: int
+) -> None:
+    """Margin debt the holdings omit: at any session's close they exceed the total by it.
+
+    No close ever makes the total, so nothing confirms the holdings and the
+    account is the total on every run — including a run whose total is the
+    same as the last, because an unconfirmed total established nothing.
+    """
+    runs = (
+        ("800.00", two_funds(AT_1042_40, AT_1000, (TUE, TUE)), utc(WED, 18), WED),
+        ("800.00", two_funds(AT_1042_40, AT_1000, (TUE, TUE)), utc(WED, 22), WED),
+        ("860.00", two_funds(AT_1060, AT_1060, (WED, WED)), utc(THU, 18), THU),
+    )
+    for total, positions, at, priced_on in runs:
+        observed, check = synced(db, brokerage, total, positions, at=at, priced_on=priced_on)
+        assert observed.figure == SourcedFigure(int(Decimal(total) * 100), "USD", None, UNKNOWN)
+        assert outcome(check)[0] is HoldingsCheckOutcome.UNCONFIRMED
+    assert open_alerts(db, at=utc(THU, 18)) == {AlertKind.HOLDINGS_UNCONFIRMED}
+
+
+def test_margin_taken_after_a_confirmed_check_ends_in_the_total_once_it_posts(
+    db: sqlite3.Connection, brokerage: int
+) -> None:
+    """Twenty more units bought on margin after Tuesday's total confirmed the holdings.
+
+    Until the institution posts, its total is still Tuesday's figure and the
+    holdings stand, new units and all. The posted total is their value at
+    Wednesday's close less the debt, which no close makes, so from then on the
+    account is the total and stays the total.
+    """
+    synced(db, brokerage, "1000.00", two_funds(AT_1042_40, AT_1000, (TUE, TUE)), at=utc(WED, 18))
+    bought = two_funds(AT_1042_40, AT_1000, (TUE, TUE), quantities=("90", "36"))
+    observed, check = synced(db, brokerage, "1000.00", bought, at=utc(WED, 22))
+    assert observed.figure.value_minor == 123_840
+    assert outcome(check) == (HoldingsCheckOutcome.UNCHANGED, TUE, TUE)
+
+    posted = two_funds(AT_1060, AT_1060, (WED, WED), quantities=("90", "36"))
+    for at in (utc(THU, 18), utc(THU, 22)):
+        observed, check = synced(db, brokerage, "1064.00", posted, at=at, priced_on=THU)
+        assert observed.figure == SourcedFigure(106_400, "USD", None, UNKNOWN)
+        assert outcome(check) == (HoldingsCheckOutcome.UNCONFIRMED, None, WED)
+
+
+def test_a_check_across_a_weekend_and_a_holiday_is_confirmed_by_fridays_close(
+    db: sqlite3.Connection, brokerage: int
+) -> None:
+    """Saturday, Sunday and a Monday holiday are not sessions; Friday's close is the latest."""
+    assert UsEquityMarketCalendar().session_close(HOLIDAY) is None, "premise: a market holiday"
+    friday = two_funds(AT_1060, AT_1000, (FRI, FRI))
+    for at in (utc(SAT, 18), utc(SUN, 14), utc(HOLIDAY, 10)):
+        observed, check = synced(db, brokerage, "1000.00", friday, at=at, priced_on=FRI)
+        assert observed.figure == SourcedFigure(
+            106_000, "USD", refreshed(FRI), INVESTMENTS_STATUS_UPDATE
+        )
+        assert outcome(check) == (HoldingsCheckOutcome.CONFIRMED, FRI, FRI)
+
+
+@pytest.mark.parametrize("closed_on", [SAT, HOLIDAY], ids=["a Saturday", "a market holiday"])
+def test_close_prices_dated_a_day_the_market_was_shut_confirm_nothing(
+    db: sqlite3.Connection, brokerage: int, closed_on: date
+) -> None:
+    shut = two_funds(AT_1060, AT_1000, (closed_on, closed_on))
+
+    observed, check = synced(
+        db, brokerage, "1000.00", shut, at=utc(AFTER_HOLIDAY, 18), priced_on=AFTER_HOLIDAY
+    )
+
+    assert observed.figure == SourcedFigure(100_000, "USD", None, UNKNOWN)
+    assert outcome(check) == (HoldingsCheckOutcome.UNCONFIRMED, None, None)
+
+
+def test_close_prices_for_a_session_still_open_confirm_nothing(
+    db: sqlite3.Connection, brokerage: int
+) -> None:
+    """At 13:00 ET a price dated today is not that day's close, whatever its field says."""
+    still_open = two_funds(AT_1060, AT_1000, (WED, WED))
+
+    observed, check = synced(db, brokerage, "1000.00", still_open, at=utc(WED, 18))
+
+    assert observed.figure == SourcedFigure(100_000, "USD", None, UNKNOWN)
+    assert outcome(check) == (HoldingsCheckOutcome.UNCONFIRMED, None, None)
+
+
+@pytest.mark.parametrize("with_cash", [True, False], ids=["listing cash", "listing none"])
+def test_holdings_that_add_up_to_their_total_are_not_checked(
+    db: sqlite3.Connection, brokerage: int, with_cash: bool
+) -> None:
+    """Most institutions' totals are their holdings, priced alike, and nothing changes for them.
+
+    Their close prices here are Tuesday's and do not make the total, which is
+    beside the point: a total its holdings add up to is never checked.
+    """
+    positions = two_funds(AT_1042_40, AT_1000, (TUE, TUE))
+
+    observed, check = synced(
+        db, brokerage, "1042.40", positions if with_cash else positions[:2], at=utc(WED, 18)
+    )
+
+    assert observed.figure == SourcedFigure(
+        104_240, "USD", refreshed(WED), INVESTMENTS_STATUS_UPDATE
+    )
+    assert check is None
+    assert open_alerts(db, at=utc(WED, 18)) == set()
 
 
 def test_failed_fetch_carries_the_whole_previous_observation_without_advancing_either_clock(

@@ -986,6 +986,130 @@ def test_a_holdings_reply_the_sdk_built_can_be_read() -> None:
     ] == [("acct-1", Decimal("1000.0"), "USD", date(2026, 9, 4))]
 
 
+def _priced_reply_from_the_sdk() -> Any:
+    """One account's holdings beside the securities Plaid prices them by, as the SDK builds them."""
+    import plaid
+    from plaid.model.investments_holdings_get_response import InvestmentsHoldingsGetResponse
+
+    def holding(security_id: str, quantity: float, value: float) -> dict[str, Any]:
+        return {
+            "account_id": "acct-1",
+            "cost_basis": None,
+            "institution_price": value / quantity,
+            "institution_price_as_of": "2026-09-08",
+            "institution_price_datetime": None,
+            "institution_value": value,
+            "iso_currency_code": "USD",
+            "quantity": quantity,
+            "security_id": security_id,
+            "unofficial_currency_code": None,
+        }
+
+    def security(
+        security_id: str, kind: str, close: float | None, as_of: str | None
+    ) -> dict[str, Any]:
+        return {
+            "security_id": security_id,
+            "isin": None,
+            "cusip": None,
+            "sedol": None,
+            "institution_security_id": None,
+            "institution_id": None,
+            "proxy_security_id": None,
+            "name": "Synthetic security",
+            "ticker_symbol": "CUR:USD" if kind == "cash" else "SYN",
+            "is_cash_equivalent": kind == "cash",
+            "type": kind,
+            "close_price": close,
+            "close_price_as_of": as_of,
+            "iso_currency_code": "USD",
+            "unofficial_currency_code": None,
+            "market_identifier_code": None,
+            "sector": None,
+            "industry": None,
+            "cfi_code": None,
+            "figi": None,
+            "option_contract": None,
+            "fixed_income": None,
+        }
+
+    body = {
+        "accounts": [
+            {
+                "account_id": "acct-1",
+                "balances": {
+                    "available": None,
+                    "current": 100.0,
+                    "iso_currency_code": "USD",
+                    "limit": None,
+                    "margin_loan_amount": None,
+                    "unofficial_currency_code": None,
+                },
+                "mask": "0000",
+                "name": "Synthetic Brokerage",
+                "official_name": None,
+                "subtype": "brokerage",
+                "type": "investment",
+            }
+        ],
+        "holdings": [
+            holding("sec-closed", 3.5, 45.5),
+            holding("sec-unpriced", 2.0, 30.0),
+            holding("sec-cash", 24.5, 24.5),
+            holding("sec-absent", 1.0, 1.0),
+        ],
+        "securities": [
+            security("sec-closed", "equity", 12.25, "2026-09-04"),
+            security("sec-unpriced", "etf", None, None),
+            security("sec-cash", "cash", 1.0, "2026-09-08"),
+        ],
+        "item": {
+            "available_products": ["balance"],
+            "billed_products": ["investments"],
+            "consent_expiration_time": None,
+            "error": None,
+            "institution_id": "ins_x",
+            "item_id": "item-1",
+            "update_type": "background",
+            "webhook": "",
+        },
+        "request_id": "req-1",
+        "is_investments_fallback_item": False,
+    }
+    return plaid.ApiClient().deserialize(
+        SimpleNamespace(data=json.dumps(body)), (InvestmentsHoldingsGetResponse,), True
+    )
+
+
+def test_a_holding_carries_its_value_at_plaids_own_close_price() -> None:
+    """The second valuation the holdings check needs, read from the reply the SDK built.
+
+    ``value_at_close`` is the quantity at the security's ``close_price``, and
+    ``close_price_as_of`` is the session that price is for. A security with no
+    close price, or a holding whose security the reply does not list, has
+    neither — and keeps its holding, because no value depends on them. Like
+    every figure here, the second value stays out of ``repr``.
+    """
+    client, _ = sandbox_client(investments_holdings_get=_priced_reply_from_the_sdk())
+
+    holdings = client.fetch_holdings("access").holdings
+
+    assert [(h.value_at_close, h.close_price_as_of, h.is_cash) for h in holdings] == [
+        (Decimal("42.875"), date(2026, 9, 4), False),
+        (None, None, False),
+        (Decimal("24.5"), date(2026, 9, 8), True),
+        (None, None, False),
+    ]
+    assert [h.institution_value for h in holdings] == [
+        Decimal("45.5"),
+        Decimal("30.0"),
+        Decimal("24.5"),
+        Decimal("1.0"),
+    ]
+    assert "42.875" not in repr(holdings[0])
+    assert "2026, 9, 4" in repr(holdings[0])
+
+
 def test_value_fetch_refuses_unusable_provider_fields_without_echoing_them() -> None:
     malformed = SimpleNamespace(
         accounts=[

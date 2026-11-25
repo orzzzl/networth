@@ -10,7 +10,7 @@ method.
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import cast
 
 from networth.model import (
@@ -18,6 +18,8 @@ from networth.model import (
     AlertDraft,
     AlertKind,
     FreshnessPolicy,
+    HoldingsCheck,
+    HoldingsCheckOutcome,
     ItemHealth,
     ItemHealthUpdate,
     ItemState,
@@ -77,6 +79,11 @@ _OBSERVATION_COLUMNS = """
     o.id, o.sync_run_id, o.account_id, o.observed_at,
     o.value_minor, o.currency, o.source, o.fetched_at,
     o.source_as_of, o.source_clock, o.is_carried_forward
+"""
+
+_HOLDINGS_CHECK_COLUMNS = """
+    sync_run_id, account_id, checked_at, total_minor,
+    close_session, at_close_minor, outcome, session
 """
 
 _SNAPSHOT_COLUMNS = """
@@ -277,6 +284,36 @@ def _observation_from_row(row: tuple[object, ...]) -> Observation:
         )
     except (IndexError, TypeError, ValueError) as exc:
         raise StoredDataError("observation row violates the domain model") from exc
+
+
+def _optional_date_from_db(value: object, *, field: str) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(_text(value, field=field))
+    except ValueError:
+        raise StoredDataError(f"{field} is not an ISO-8601 date") from None
+
+
+def _holdings_check_from_row(row: tuple[object, ...]) -> HoldingsCheck:
+    try:
+        at_close = row[5]
+        return HoldingsCheck(
+            sync_run_id=_text(row[0], field="holdings_check.sync_run_id"),
+            account_id=_integer(row[1], field="holdings_check.account_id"),
+            checked_at=_timestamp_from_db(row[2], field="holdings_check.checked_at"),
+            total_minor=_integer(row[3], field="holdings_check.total_minor"),
+            close_session=_optional_date_from_db(row[4], field="holdings_check.close_session"),
+            at_close_minor=(
+                None
+                if at_close is None
+                else _integer(at_close, field="holdings_check.at_close_minor")
+            ),
+            outcome=HoldingsCheckOutcome(_text(row[6], field="holdings_check.outcome")),
+            session=_optional_date_from_db(row[7], field="holdings_check.session"),
+        )
+    except (IndexError, TypeError, ValueError) as exc:
+        raise StoredDataError("holdings_check row violates the domain model") from exc
 
 
 def _snapshot_from_row(row: tuple[object, ...]) -> Snapshot:
@@ -673,6 +710,67 @@ class ObservationRepository:
         return tuple(_observation_from_row(row) for row in rows)
 
 
+class HoldingsCheckRepository:
+    """Insert and read holdings checks; append-only, like the observations they qualify."""
+
+    __slots__ = ("_connection",)
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        _require_foreign_keys(connection)
+        self._connection = connection
+
+    def append(self, check: HoldingsCheck) -> HoldingsCheck:
+        if not isinstance(check, HoldingsCheck):
+            raise TypeError("check must be a HoldingsCheck")
+        self._connection.execute(
+            """
+            INSERT INTO holdings_check(
+                sync_run_id, account_id, checked_at, total_minor,
+                close_session, at_close_minor, outcome, session
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                check.sync_run_id,
+                check.account_id,
+                _timestamp_to_db(check.checked_at),
+                check.total_minor,
+                None if check.close_session is None else check.close_session.isoformat(),
+                check.at_close_minor,
+                check.outcome.value,
+                None if check.session is None else check.session.isoformat(),
+            ),
+        )
+        return check
+
+    def latest_for_account(self, account_id: int) -> HoldingsCheck | None:
+        row = _row(
+            self._connection.execute(
+                f"""
+                SELECT {_HOLDINGS_CHECK_COLUMNS}
+                FROM holdings_check
+                WHERE account_id = ?
+                ORDER BY checked_at DESC, id DESC
+                LIMIT 1
+                """,
+                (account_id,),
+            )
+        )
+        return None if row is None else _holdings_check_from_row(row)
+
+    def for_sync_run(self, sync_run_id: str, account_id: int) -> HoldingsCheck | None:
+        row = _row(
+            self._connection.execute(
+                f"""
+                SELECT {_HOLDINGS_CHECK_COLUMNS}
+                FROM holdings_check
+                WHERE sync_run_id = ? AND account_id = ?
+                """,
+                (sync_run_id, account_id),
+            )
+        )
+        return None if row is None else _holdings_check_from_row(row)
+
+
 class SnapshotRepository:
     """Append and read successful-run snapshots; no mutation API exists."""
 
@@ -1033,10 +1131,11 @@ class Store:
     so the Store asserts it instead of mutating caller-owned connection state.
     """
 
-    __slots__ = ("accounts", "alerts", "items", "observations", "snapshots")
+    __slots__ = ("accounts", "alerts", "holdings_checks", "items", "observations", "snapshots")
 
     accounts: AccountRepository
     alerts: AlertRepository
+    holdings_checks: HoldingsCheckRepository
     items: ItemRepository
     observations: ObservationRepository
     snapshots: SnapshotRepository
@@ -1045,6 +1144,7 @@ class Store:
         _require_foreign_keys(connection)
         self.accounts = AccountRepository(connection)
         self.alerts = AlertRepository(connection)
+        self.holdings_checks = HoldingsCheckRepository(connection)
         self.items = ItemRepository(connection)
         self.observations = ObservationRepository(connection)
         self.snapshots = SnapshotRepository(connection)

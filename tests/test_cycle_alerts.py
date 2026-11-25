@@ -18,6 +18,8 @@ from networth.model import (
     MANUAL_VALUED_AS_OF,
     AlertKind,
     FreshnessPolicy,
+    HoldingsCheck,
+    HoldingsCheckOutcome,
     ItemState,
     ObservationSource,
 )
@@ -58,9 +60,40 @@ def runner(db: sqlite3.Connection, tmp_path: Path) -> AlertDispatcher:
     return AlertDispatcher(db, lock_path=tmp_path / "sync.lock", clock=lambda: NOW)
 
 
-def test_all_five_kinds_reach_real_encrypted_publication(
+def add_unconfirmed_holdings(db: sqlite3.Connection, item_id: int) -> int:
+    """An account its institution's total did not confirm, valued by that total."""
+
+    account = add_account(db, "holdings", item_id=item_id, policy=FreshnessPolicy.SYNCED_HOLDINGS)
+    store = Store(db)
+    add_observation(
+        store,
+        "cycle",
+        account,
+        300,
+        source_as_of=None,
+        source_clock="UNKNOWN",
+        source=ObservationSource.PLAID_HOLDINGS,
+    )
+    store.holdings_checks.append(
+        HoldingsCheck(
+            sync_run_id="cycle",
+            account_id=account,
+            checked_at=NOW,
+            total_minor=300,
+            close_session=None,
+            at_close_minor=None,
+            outcome=HoldingsCheckOutcome.UNCONFIRMED,
+            session=None,
+        )
+    )
+    db.commit()
+    return account
+
+
+def test_all_six_kinds_reach_real_encrypted_publication(
     db: sqlite3.Connection, tmp_path: Path
 ) -> None:
+    holdings = add_unconfirmed_holdings(db, item_id=1)
     result = runner(db, tmp_path).run()
     assert {alert.kind for alert in result.raised} == set(AlertKind)
     assert not db.in_transaction
@@ -69,7 +102,9 @@ def test_all_five_kinds_reach_real_encrypted_publication(
     assert pending.account_id == 2
     frozen = next(a for a in result.raised if a.kind is AlertKind.FROZEN_DATA)
     assert frozen.raised_source_as_of == NOW - timedelta(days=15)
-    assert db.execute("SELECT notified_at FROM alert").fetchall() == [(None,)] * 5
+    unconfirmed = next(a for a in result.raised if a.kind is AlertKind.HOLDINGS_UNCONFIRMED)
+    assert unconfirmed.account_id == holdings
+    assert db.execute("SELECT notified_at FROM alert").fetchall() == [(None,)] * 6
     db.execute("BEGIN IMMEDIATE")
     Snapshotter(Store(db)).run("cycle", at=NOW)
     pairing = "00000000-0000-4000-8000-000000000016"

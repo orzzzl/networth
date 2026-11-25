@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
 from networth.model import (
     FreshnessPolicy,
+    HoldingsCheck,
+    HoldingsCheckOutcome,
     ReconciliationState,
     SnapshotAccount,
     SnapshotAge,
@@ -188,3 +190,43 @@ def test_unreconciled_noncontributor_does_not_make_known_age_unknown() -> None:
     )
 
     assert draft.age.state is SnapshotAgeState.KNOWN
+
+
+def _check(**changes: object) -> HoldingsCheck:
+    fields: dict[str, object] = {
+        "sync_run_id": "run-1",
+        "account_id": 1,
+        "checked_at": datetime(2026, 1, 14, 18, 0, tzinfo=UTC),
+        "total_minor": 100_000,
+        "close_session": date(2026, 1, 13),
+        "at_close_minor": 100_000,
+        "outcome": HoldingsCheckOutcome.CONFIRMED,
+        "session": date(2026, 1, 13),
+    }
+    fields.update(changes)
+    return HoldingsCheck(**fields)  # type: ignore[arg-type]
+
+
+def test_a_holdings_check_names_its_session_exactly_when_it_found_one() -> None:
+    assert _check().session == date(2026, 1, 13)
+    unconfirmed = _check(outcome=HoldingsCheckOutcome.UNCONFIRMED, session=None)
+    assert unconfirmed.session is None
+    with pytest.raises(ValueError, match="exactly when it is not UNCONFIRMED"):
+        _check(outcome=HoldingsCheckOutcome.UNCONFIRMED)
+    with pytest.raises(ValueError, match="exactly when it is not UNCONFIRMED"):
+        _check(outcome=HoldingsCheckOutcome.UNCHANGED, session=None)
+    with pytest.raises(ValueError, match="describes the session its close prices name"):
+        _check(session=date(2026, 1, 12))
+    with pytest.raises(ValueError, match="exactly when they name a session"):
+        _check(close_session=None, outcome=HoldingsCheckOutcome.UNCHANGED)
+    with pytest.raises(TypeError, match="session must be a date"):
+        _check(session=datetime(2026, 1, 13, tzinfo=UTC))
+    with pytest.raises(ValueError):
+        _check(checked_at=datetime(2026, 1, 14, 18, 0))
+
+
+def test_a_holdings_check_keeps_its_figures_out_of_repr() -> None:
+    shown = repr(_check(total_minor=123_457, at_close_minor=123_456))
+
+    assert "123457" not in shown and "123456" not in shown
+    assert "CONFIRMED" in shown

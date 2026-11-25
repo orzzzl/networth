@@ -18,6 +18,8 @@ from typing import Protocol
 
 from networth.model import (
     FreshnessPolicy,
+    HoldingsCheck,
+    HoldingsCheckOutcome,
     ItemHealth,
     LinkedAccount,
     Observation,
@@ -99,6 +101,7 @@ class FullSyncResult:
 @dataclass(frozen=True, slots=True)
 class _Plan:
     draft: ObservationDraft
+    check: HoldingsCheck | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +126,7 @@ class FullSyncPlan:
     observations: tuple[ObservationDraft, ...]
     failures: tuple[SyncFailure, ...]
     items: tuple[SyncItemOutcome, ...]
+    checks: tuple[HoldingsCheck, ...] = ()
 
 
 class FullSync:
@@ -209,6 +213,7 @@ class FullSync:
             observations=tuple(plan.draft for plan in plans),
             failures=tuple(failures),
             items=tuple(outcomes),
+            checks=tuple(plan.check for plan in plans if plan.check is not None),
         )
 
     def persist(self, plan: FullSyncPlan) -> FullSyncResult:
@@ -229,6 +234,8 @@ class FullSync:
                     fetched_at=observation.fetched_at,
                     source_as_of=observation.figure.as_of,
                 )
+        for check in plan.checks:
+            self._store.holdings_checks.append(check)
 
         return FullSyncResult(
             attempted_count=plan.attempted_count,
@@ -437,8 +444,13 @@ class FullSync:
                 continue
 
             total = totals[0]
-            value_minor, source_as_of, source_clock = self._holdings_value(
-                total, account_holdings, item
+            value_minor, source_as_of, source_clock, check = self._holdings_value(
+                target,
+                total,
+                account_holdings,
+                item,
+                sync_run_id=sync_run_id,
+                fetched_at=fetched_at,
             )
             plans.append(
                 _Plan(
@@ -456,16 +468,21 @@ class FullSync:
                         fetched_at=fetched_at,
                         is_carried_forward=False,
                     ),
+                    check=check,
                 )
             )
         return plans, failures
 
     def _holdings_value(
         self,
+        target: LinkedAccount,
         total: BalanceRecord,
         holdings: list[HoldingRecord],
         item: ItemHealth,
-    ) -> tuple[int, datetime | None, str]:
+        *,
+        sync_run_id: str,
+        fetched_at: datetime,
+    ) -> tuple[int, datetime | None, str, HoldingsCheck | None]:
         """An account's value, with a clock that dates that value and no other.
 
         Only the holdings carry clocks. The account total in the same reply "may
@@ -474,19 +491,113 @@ class FullSync:
         close — an old number that the holdings' date passed off as a fresh one.
         So the total keeps their clock only while it is their value. When it is
         not, the holdings are the value if they list the account's cash, since
-        then nothing in the account is missing from them; otherwise the total
-        stands with no clock, because holdings without cash may be leaving some
-        out.
+        then nothing in the account is missing from them — and only while the
+        total confirms them (``_check_holdings``); otherwise the total stands
+        with no clock, because holdings without cash may be leaving some out,
+        and holdings it does not confirm may be overstating it.
         """
         held = sum((holding.institution_value for holding in holdings), Decimal(0))
+        check = None
         if _adds_up(total, held, len(holdings)):
             value = total.current
         elif any(holding.is_cash for holding in holdings):
+            check = self._check_holdings(
+                target, total, holdings, sync_run_id=sync_run_id, fetched_at=fetched_at
+            )
+            if check.outcome is HoldingsCheckOutcome.UNCONFIRMED:
+                return check.total_minor, None, UNKNOWN, check
             value = held
         else:
-            return to_minor_units(total.current, currency=total.currency), None, UNKNOWN
+            return to_minor_units(total.current, currency=total.currency), None, UNKNOWN, None
         source_as_of, source_clock = self._holdings_clock(holdings, item)
-        return to_minor_units(value, currency=total.currency), source_as_of, source_clock
+        return to_minor_units(value, currency=total.currency), source_as_of, source_clock, check
+
+    def _check_holdings(
+        self,
+        target: LinkedAccount,
+        total: BalanceRecord,
+        holdings: list[HoldingRecord],
+        *,
+        sync_run_id: str,
+        fetched_at: datetime,
+    ) -> HoldingsCheck:
+        """Whether the institution's own total confirms holdings that do not add up to it.
+
+        Measured against Production on 2026-11-24: a total that stays at the
+        previous close until its institution posts overnight equals that
+        account's holdings revalued at Plaid's close prices for that session,
+        within 0.00005% of it, while the holdings themselves are priced later in
+        the day. So a total that adds up to the holdings at one session's close
+        prices confirms their quantities and cash, and they are the value.
+
+        The two sides do not advance together: Plaid moved its close prices
+        hours after that session closed, while the total waited for the posting.
+        A total that is the same figure as one already established still
+        describes that session, so the verdict stands until a different total
+        arrives. Any other total — margin debt the holdings omit, a transfer one
+        side has not seen, a reader defect — is unconfirmed until a later pair
+        is confirmed, and the account is valued by the total meanwhile.
+        """
+        total_minor = to_minor_units(total.current, currency=total.currency)
+        at_close = self._at_close(holdings, fetched_at)
+        close_session = None if at_close is None else at_close[0]
+        if at_close is not None and _adds_up(total, at_close[1], len(holdings)):
+            outcome, session = HoldingsCheckOutcome.CONFIRMED, close_session
+        else:
+            previous = self._store.holdings_checks.latest_for_account(target.id)
+            session = (
+                previous.session
+                if previous is not None and previous.total_minor == total_minor
+                else None
+            )
+            outcome = (
+                HoldingsCheckOutcome.UNCONFIRMED
+                if session is None
+                else HoldingsCheckOutcome.UNCHANGED
+            )
+        return HoldingsCheck(
+            sync_run_id=sync_run_id,
+            account_id=target.id,
+            checked_at=fetched_at,
+            total_minor=total_minor,
+            close_session=close_session,
+            at_close_minor=(
+                None if at_close is None else to_minor_units(at_close[1], currency=total.currency)
+            ),
+            outcome=outcome,
+            session=session,
+        )
+
+    def _at_close(
+        self,
+        holdings: list[HoldingRecord],
+        fetched_at: datetime,
+    ) -> tuple[date, Decimal] | None:
+        """The one market session whose close prices value these holdings, and that value.
+
+        Cash is cash at any close. Every other holding needs Plaid's close price,
+        all for one session, and it must be a session the calendar says had
+        closed by the fetch: close prices from several sessions, or dated a day
+        the market was shut, describe no figure an institution could publish.
+        """
+        session: date | None = None
+        value = Decimal(0)
+        for holding in holdings:
+            if holding.is_cash:
+                value += holding.institution_value
+                continue
+            if holding.value_at_close is None or holding.close_price_as_of is None:
+                return None
+            if session not in (None, holding.close_price_as_of):
+                return None
+            session = holding.close_price_as_of
+            value += holding.value_at_close
+        if session is None:
+            return None
+        close = self._calendar.session_close(session)
+        if close is None or close > fetched_at:
+            return None
+        return session, value
 
     def _holdings_clock(
         self,

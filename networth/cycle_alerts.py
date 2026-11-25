@@ -17,7 +17,13 @@ from networth.alerts import (
     ShareCountObservation,
 )
 from networth.manual import NotARevisionError, PropertyRevisionLog
-from networth.model import FreshnessPolicy, Observation, ReconciliationState, SnapshotAccount
+from networth.model import (
+    FreshnessPolicy,
+    HoldingsCheckOutcome,
+    Observation,
+    ReconciliationState,
+    SnapshotAccount,
+)
 from networth.model.figure import require_utc
 from networth.staleness import StalenessMachine
 from networth.store import Store
@@ -85,6 +91,7 @@ class CycleAlertEvaluator:
                     ),
                     freshness=freshness,
                     share_count=self._share_count(account.id),
+                    holdings_unconfirmed=self._holdings_unconfirmed(account, observation),
                 )
             )
         return AlertEvaluator(self._store.alerts).evaluate(at=at, items=items, accounts=signals)
@@ -102,6 +109,19 @@ class CycleAlertEvaluator:
         if revision is None:
             return None
         return next(observation for observation in history if observation.id == revision.sequence)
+
+    def _holdings_unconfirmed(
+        self, account: SnapshotAccount, observation: Observation | None
+    ) -> bool | None:
+        """Whether the latest fresh read fell back to the institution's total."""
+        if (
+            account.freshness_policy is not FreshnessPolicy.SYNCED_HOLDINGS
+            or observation is None
+            or observation.is_carried_forward
+        ):
+            return None
+        check = self._store.holdings_checks.for_sync_run(observation.sync_run_id, account.id)
+        return check is not None and check.outcome is HoldingsCheckOutcome.UNCONFIRMED
 
     def _share_count(self, account_id: int) -> ShareCountObservation:
         row = self._db.execute(

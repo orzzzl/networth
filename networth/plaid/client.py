@@ -558,6 +558,11 @@ class HoldingRecord:
     ``is_cash`` is whether its security is Plaid's ``cash`` type — "cash,
     currency, and money market funds". It is how an institution that lists an
     account's uninvested money among its holdings lists it, even at zero.
+
+    ``value_at_close`` is its quantity at its security's ``close_price``, the
+    closing price Plaid itself holds for the session ``close_price_as_of`` —
+    a second valuation of the same position, at a price the institution did not
+    supply. Either is ``None`` when the reply lacks what it needs.
     """
 
     account_id: str
@@ -566,6 +571,8 @@ class HoldingRecord:
     institution_price_datetime: datetime | None
     institution_price_as_of: date | None
     is_cash: bool
+    value_at_close: Decimal | None = None
+    close_price_as_of: date | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -593,6 +600,15 @@ class HoldingRecord:
             raise ValueError("institution_price_as_of must be a date")
         if not isinstance(self.is_cash, bool):
             raise ValueError("is_cash must be a bool")
+        if self.value_at_close is not None and (
+            not isinstance(self.value_at_close, Decimal) or not self.value_at_close.is_finite()
+        ):
+            raise ValueError("value_at_close must be a finite Decimal")
+        if self.close_price_as_of is not None and (
+            not isinstance(self.close_price_as_of, date)
+            or isinstance(self.close_price_as_of, datetime)
+        ):
+            raise ValueError("close_price_as_of must be a date")
 
     def __repr__(self) -> str:
         return (
@@ -600,7 +616,8 @@ class HoldingRecord:
             f"currency={self.currency!r}, "
             f"institution_price_datetime={self.institution_price_datetime!r}, "
             f"institution_price_as_of={self.institution_price_as_of!r}, "
-            f"is_cash={self.is_cash!r})"
+            f"is_cash={self.is_cash!r}, value_at_close=<redacted>, "
+            f"close_price_as_of={self.close_price_as_of!r})"
         )
 
 
@@ -815,20 +832,54 @@ def _account_descriptors(response: Any, *, step: str) -> tuple[AccountDescriptor
     return tuple(converted)
 
 
-def _cash_securities(response: Any, *, step: str) -> frozenset[str]:
-    """The ids of the reply's securities that Plaid types ``cash``."""
-    cash: set[str] = set()
+@dataclass(frozen=True, slots=True)
+class _Security:
+    is_cash: bool
+    close_price: Decimal | None
+    close_price_as_of: date | None
+
+
+def _securities(response: Any, *, step: str) -> dict[str, _Security]:
+    """The reply's securities by id: whether Plaid types each ``cash``, and its close."""
+    securities: dict[str, _Security] = {}
     for security in _response_records(response, "securities", step=step):
         security_id = _optional_text(security, "security_id", step=step)
-        if security_id is not None and _optional_text(security, "type", step=step) == "cash":
-            cash.add(security_id)
-    return frozenset(cash)
+        if security_id is None:
+            continue
+        try:
+            close_price_as_of = _optional_date(security, "close_price_as_of", step=step)
+        except PlaidCallError:
+            close_price_as_of = None  # as `_optional_money` explains
+        securities[security_id] = _Security(
+            is_cash=_optional_text(security, "type", step=step) == "cash",
+            close_price=_optional_money(security, "close_price", step=step),
+            close_price_as_of=close_price_as_of,
+        )
+    return securities
+
+
+def _optional_money(record: Any, field: str, *, step: str) -> Decimal | None:
+    """A figure only a cross-check needs: one the reply did not make usable is absent.
+
+    Raising, as ``_money`` does, would fail every account of the Item over a field
+    no value depends on; absent leaves the check unable to confirm, which is the
+    safe side of it.
+    """
+    if getattr(record, field, None) is None:
+        return None
+    try:
+        return _money(record, field, step=step)
+    except PlaidCallError:
+        return None
 
 
 def _holding_records(response: Any, *, step: str) -> tuple[HoldingRecord, ...]:
-    cash = _cash_securities(response, step=step)
+    securities = _securities(response, step=step)
     converted: list[HoldingRecord] = []
     for holding in _response_records(response, "holdings", step=step):
+        security = securities.get(_optional_text(holding, "security_id", step=step) or "")
+        quantity = _optional_money(holding, "quantity", step=step)
+        close_price = None if security is None else security.close_price
         try:
             converted.append(
                 HoldingRecord(
@@ -841,7 +892,11 @@ def _holding_records(response: Any, *, step: str) -> tuple[HoldingRecord, ...]:
                     institution_price_as_of=_optional_date(
                         holding, "institution_price_as_of", step=step
                     ),
-                    is_cash=_optional_text(holding, "security_id", step=step) in cash,
+                    is_cash=security is not None and security.is_cash,
+                    value_at_close=(
+                        None if quantity is None or close_price is None else quantity * close_price
+                    ),
+                    close_price_as_of=None if security is None else security.close_price_as_of,
                 )
             )
         except ValueError:

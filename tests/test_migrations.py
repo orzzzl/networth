@@ -135,8 +135,8 @@ def _insert_link_flow(
 def test_migrations_run_from_empty_and_are_idempotent() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        assert migrate(connection) == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
-        assert connection.execute("PRAGMA user_version").fetchone() == (12,)
+        assert migrate(connection) == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+        assert connection.execute("PRAGMA user_version").fetchone() == (13,)
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
         assert connection.execute("PRAGMA busy_timeout").fetchone() == (5000,)
         before = connection.execute(
@@ -173,8 +173,8 @@ def test_item_health_migration_upgrades_v1_without_rewriting_items() -> None:
         )
         connection.commit()
 
-        assert migrate(connection) == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
-        assert connection.execute("PRAGMA user_version").fetchone() == (12,)
+        assert migrate(connection) == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+        assert connection.execute("PRAGMA user_version").fetchone() == (13,)
         assert connection.execute(
             """
             SELECT plaid_item_id, status, last_health_poll_at,
@@ -224,7 +224,7 @@ def test_success_only_migration_preserves_every_envelope_and_sequence_trigger() 
         )
         connection.commit()
 
-        assert migrate(connection) == (5, 6, 7, 8, 9, 10, 11, 12)
+        assert migrate(connection) == (5, 6, 7, 8, 9, 10, 11, 12, 13)
 
         assert _columns(connection, "publication") == (
             "id",
@@ -314,7 +314,7 @@ def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
     database_path = tmp_path / "networth.db"
     connection = sqlite3.connect(database_path)
     try:
-        assert migrate(connection) == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+        assert migrate(connection) == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
     finally:
         connection.close()
@@ -329,10 +329,10 @@ def test_migration_persists_wal_mode_for_file_database(tmp_path: Path) -> None:
 def test_migration_refuses_a_database_from_the_future() -> None:
     connection = sqlite3.connect(":memory:")
     try:
-        connection.execute("PRAGMA user_version = 13")
+        connection.execute("PRAGMA user_version = 14")
         with pytest.raises(SchemaTooNewError, match="newer than supported"):
             migrate(connection)
-        assert connection.execute("PRAGMA user_version").fetchone() == (13,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (14,)
     finally:
         connection.close()
 
@@ -582,6 +582,19 @@ def test_schema_has_exactly_the_required_tables_and_columns(db: sqlite3.Connecti
                 "resolved_at",
                 "resolution_note",
                 "additional_slots",
+            ),
+            # Migration 0013: an institution's own total checked against the
+            # holdings of an account valued from them, once per sync run.
+            "holdings_check": (
+                "id",
+                "sync_run_id",
+                "account_id",
+                "checked_at",
+                "total_minor",
+                "close_session",
+                "at_close_minor",
+                "outcome",
+                "session",
             ),
         }
     )
@@ -938,7 +951,7 @@ def test_full_sync_kind_migration_preserves_legacy_success_as_other() -> None:
         _insert_sync_run(connection, "synthetic-legacy-success")
         connection.commit()
         before = connection.execute("SELECT * FROM sync_run").fetchone()
-        assert migrate(connection) == (10, 11, 12)
+        assert migrate(connection) == (10, 11, 12, 13)
         after = connection.execute("SELECT * FROM sync_run").fetchone()
         assert after is not None and after[:-1] == before and after[-1] == "OTHER"
         with pytest.raises(sqlite3.IntegrityError):
